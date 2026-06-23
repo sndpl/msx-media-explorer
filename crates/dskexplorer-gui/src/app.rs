@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use msx_disk::fs::map::SectorKind;
 use msx_disk::recoil::{self, FnCompanions};
 use msx_disk::search;
 use msx_disk::view::basic;
@@ -18,6 +19,14 @@ enum ViewMode {
     Text,
     Basic,
     Screen,
+}
+
+/// Top-level view: browse files, view raw sectors, or the disk map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppView {
+    Files,
+    Sectors,
+    Map,
 }
 
 /// The largest amount of a file rendered in the text view at once.
@@ -53,6 +62,14 @@ pub struct DskExplorerApp {
     confirm_delete: Option<String>,
     /// Editable hex text when editing the current file's bytes.
     hex_edit: Option<String>,
+    /// Top-level view selection.
+    app_view: AppView,
+    /// Sector shown in the Sectors view.
+    current_sector: usize,
+    /// Editable hex text when editing the current sector.
+    sector_edit: Option<String>,
+    /// Cached sector-usage map for the open disk.
+    disk_map: Option<msx_disk::fs::map::DiskMap>,
 }
 
 /// Largest file (bytes) offered for in-app hex editing, to keep the editor
@@ -78,6 +95,10 @@ impl Default for DskExplorerApp {
             renaming: None,
             confirm_delete: None,
             hex_edit: None,
+            app_view: AppView::Files,
+            current_sector: 0,
+            sector_edit: None,
+            disk_map: None,
         }
     }
 }
@@ -95,6 +116,9 @@ impl DskExplorerApp {
                 self.disk = Some(disk);
                 self.selected = None;
                 self.content = None;
+                self.current_sector = 0;
+                self.sector_edit = None;
+                self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
             }
             Err(e) => self.status = format!("Failed to open {}: {e}", path.display()),
         }
@@ -176,6 +200,13 @@ impl DskExplorerApp {
                 }
             }
         });
+        if self.disk.is_some() {
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.app_view, AppView::Files, "Files");
+                ui.selectable_value(&mut self.app_view, AppView::Sectors, "Sectors");
+                ui.selectable_value(&mut self.app_view, AppView::Map, "Map");
+            });
+        }
     }
 
     fn tree_panel(&mut self, ui: &mut egui::Ui) {
@@ -414,6 +445,7 @@ impl DskExplorerApp {
                 self.content = None;
                 self.search_matches.clear();
                 self.hex_edit = None;
+                self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
             }
             Err(e) => self.status = format!("Write failed: {e}"),
         }
@@ -586,6 +618,201 @@ impl DskExplorerApp {
                 Err(e) => format!("Failed to extract: {e}"),
             };
         }
+    }
+
+    /// "View disk by sector" — a hex view of one sector, optionally editable.
+    fn sector_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(sector_count) = self.disk.as_ref().map(LoadedDisk::sector_count) else {
+            ui.weak("No disk open.");
+            return;
+        };
+        if sector_count == 0 {
+            ui.weak("Empty disk.");
+            return;
+        }
+        if self.current_sector >= sector_count {
+            self.current_sector = sector_count - 1;
+        }
+        let writable = self.disk_writable();
+        ui.horizontal(|ui| {
+            ui.label("Sector:");
+            let mut s = self.current_sector;
+            if ui
+                .add(egui::DragValue::new(&mut s).range(0..=sector_count - 1))
+                .changed()
+            {
+                self.current_sector = s;
+                self.sector_edit = None;
+            }
+            if ui.button("\u{25C0}").clicked() && self.current_sector > 0 {
+                self.current_sector -= 1;
+                self.sector_edit = None;
+            }
+            if ui.button("\u{25B6}").clicked() && self.current_sector + 1 < sector_count {
+                self.current_sector += 1;
+                self.sector_edit = None;
+            }
+            ui.label(format!(
+                "/ {sector_count}    offset {:#08X}",
+                self.current_sector * 512
+            ));
+            if self.sector_edit.is_some() {
+                ui.separator();
+                if ui.button("Save sector").clicked() {
+                    self.save_sector_edit();
+                }
+                if ui.button("Cancel").clicked() {
+                    self.sector_edit = None;
+                }
+            } else if writable && ui.button("Edit sector").clicked() {
+                if let Some(b) = self
+                    .disk
+                    .as_ref()
+                    .and_then(|d| d.sector_bytes(self.current_sector))
+                {
+                    self.sector_edit = Some(format_hex_for_edit(&b));
+                }
+            }
+        });
+        ui.separator();
+
+        if self.sector_edit.is_some() {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if let Some(text) = self.sector_edit.as_mut() {
+                        ui.add(
+                            egui::TextEdit::multiline(text)
+                                .code_editor()
+                                .desired_width(f32::INFINITY),
+                        );
+                    }
+                });
+        } else if let Some(bytes) = self
+            .disk
+            .as_ref()
+            .and_then(|d| d.sector_bytes(self.current_sector))
+        {
+            render_hex(ui, &bytes, 16, None, None);
+        }
+    }
+
+    fn save_sector_edit(&mut self) {
+        let Some(edited) = self.sector_edit.clone() else {
+            return;
+        };
+        let Some(bytes) = search::parse_hex(&edited) else {
+            self.status = "Invalid hex: need whole byte pairs".to_string();
+            return;
+        };
+        if bytes.len() != 512 {
+            self.status = format!("A sector is 512 bytes (got {})", bytes.len());
+            return;
+        }
+        let idx = self.current_sector;
+        let result = self.disk.as_mut().unwrap().write_sector(idx, &bytes);
+        match result {
+            Ok(()) => {
+                self.status = format!("Saved sector {idx}");
+                self.sector_edit = None;
+                self.content = None;
+                self.selected = None;
+                self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
+            }
+            Err(e) => self.status = format!("Write failed: {e}"),
+        }
+    }
+
+    /// Graphical disk-usage map; the selected file's sectors are outlined.
+    fn map_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(map) = self.disk_map.as_ref() else {
+            ui.weak("No disk map available.");
+            return;
+        };
+        let file_set: std::collections::HashSet<usize> = self
+            .selected
+            .as_deref()
+            .map(|p| {
+                self.disk
+                    .as_ref()
+                    .map(|d| d.file_sectors(p))
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        ui.horizontal_wrapped(|ui| {
+            for (label, color) in [
+                ("Reserved", kind_color(SectorKind::Reserved)),
+                ("FAT", kind_color(SectorKind::Fat)),
+                ("Root", kind_color(SectorKind::RootDir)),
+                ("Used", kind_color(SectorKind::DataUsed)),
+                ("Free", kind_color(SectorKind::DataFree)),
+            ] {
+                ui.colored_label(color, "\u{25A0}");
+                ui.label(label);
+                ui.add_space(6.0);
+            }
+            if !file_set.is_empty() {
+                ui.separator();
+                ui.label("white outline = selected file");
+            }
+        });
+        ui.separator();
+
+        const COLS: usize = 64;
+        const CELL: f32 = 9.0;
+        let count = map.sector_count;
+        let rows = count.div_ceil(COLS);
+        let mut clicked = None;
+        egui::ScrollArea::both().show(ui, |ui| {
+            let (resp, painter) = ui.allocate_painter(
+                egui::vec2(COLS as f32 * CELL, rows as f32 * CELL),
+                egui::Sense::click(),
+            );
+            let origin = resp.rect.min;
+            for i in 0..count {
+                let pos = origin + egui::vec2((i % COLS) as f32 * CELL, (i / COLS) as f32 * CELL);
+                let rect = egui::Rect::from_min_size(pos, egui::vec2(CELL - 1.0, CELL - 1.0));
+                painter.rect_filled(rect, 0.0, kind_color(map.kinds[i]));
+                if file_set.contains(&i) {
+                    painter.rect_stroke(
+                        rect,
+                        0.0,
+                        egui::Stroke::new(1.5, egui::Color32::WHITE),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+            if resp.clicked() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    let rel = p - origin;
+                    if rel.x >= 0.0 && rel.y >= 0.0 {
+                        let idx = (rel.y / CELL) as usize * COLS + (rel.x / CELL) as usize;
+                        if idx < count {
+                            clicked = Some(idx);
+                        }
+                    }
+                }
+            }
+        });
+        if let Some(idx) = clicked {
+            self.current_sector = idx;
+            self.sector_edit = None;
+            self.app_view = AppView::Sectors;
+        }
+    }
+}
+
+/// Colour for a sector-usage category in the disk map.
+fn kind_color(kind: SectorKind) -> egui::Color32 {
+    match kind {
+        SectorKind::Reserved => egui::Color32::from_gray(110),
+        SectorKind::Fat => egui::Color32::from_rgb(80, 120, 200),
+        SectorKind::RootDir => egui::Color32::from_rgb(150, 90, 180),
+        SectorKind::DataUsed => egui::Color32::from_rgb(70, 160, 90),
+        SectorKind::DataFree => egui::Color32::from_gray(45),
     }
 }
 
@@ -794,8 +1021,10 @@ impl eframe::App for DskExplorerApp {
             .show_inside(ui, |ui| {
                 self.tree_panel(ui);
             });
-        egui::CentralPanel::default().show_inside(ui, |ui| {
-            self.viewer_panel(ui);
+        egui::CentralPanel::default().show_inside(ui, |ui| match self.app_view {
+            AppView::Files => self.viewer_panel(ui),
+            AppView::Sectors => self.sector_panel(ui),
+            AppView::Map => self.map_panel(ui),
         });
 
         self.delete_confirmation(ui.ctx());

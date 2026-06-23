@@ -55,6 +55,40 @@ impl LoadedDisk {
         msx_disk::image::xsa::compress(self.image.data())
     }
 
+    /// Number of 512-byte sectors on the disk.
+    pub fn sector_count(&self) -> usize {
+        self.image.sector_count()
+    }
+
+    /// A copy of sector `idx`'s 512 bytes, if in range.
+    pub fn sector_bytes(&self, idx: usize) -> Option<Vec<u8>> {
+        self.image.sector(idx).map(<[u8]>::to_vec)
+    }
+
+    /// Overwrite a raw sector and persist the change to the source image.
+    pub fn write_sector(&mut self, idx: usize, bytes: &[u8]) -> msx_disk::Result<()> {
+        if bytes.len() != 512 {
+            return Err(Error::Unsupported("a sector is 512 bytes".into()));
+        }
+        let mut data = self.image.data().to_vec();
+        let start = idx * 512;
+        if start + 512 > data.len() {
+            return Err(Error::Unsupported("sector out of range".into()));
+        }
+        data[start..start + 512].copy_from_slice(bytes);
+        self.write_back(data)
+    }
+
+    /// Classify every sector by usage.
+    pub fn disk_map(&self) -> Option<msx_disk::fs::map::DiskMap> {
+        msx_disk::fs::map::disk_usage(self.image.data())
+    }
+
+    /// The sectors occupied by a file (its cluster chain).
+    pub fn file_sectors(&self, path: &str) -> Vec<usize> {
+        msx_disk::fs::map::file_sectors(self.image.data(), path)
+    }
+
     /// Find a companion file: the sibling of `base_path` (same directory and
     /// stem) whose extension is `ext`, matched case-insensitively.
     pub fn companion(&self, base_path: &str, ext: &str) -> Option<Vec<u8>> {
