@@ -1,7 +1,7 @@
 //! Top-level application state and the `eframe::App` implementation.
 
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use msx_disk::fs::map::SectorKind;
 use msx_disk::recoil::{self, FnCompanions};
@@ -32,6 +32,12 @@ enum AppView {
 
 /// The largest amount of a file rendered in the text view at once.
 const MAX_TEXT_BYTES: usize = 128 * 1024;
+
+/// Extensions recognized as openable disk images (for the Open dialog filter
+/// and to decide whether a dropped file should open vs. be added to the disk).
+const DISK_IMAGE_EXTS: &[&str] = &[
+    "dsk", "di1", "ds1", "di2", "ds2", "img", "msx", "ddi", "xsa",
+];
 
 /// Cached contents of the selected file (full bytes; views render lazily).
 struct FileContent {
@@ -191,9 +197,29 @@ impl DskExplorerApp {
     }
 
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
-        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        if let Some(path) = dropped.into_iter().find_map(|f| f.path) {
-            self.open_path(&path);
+        let paths: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        if paths.is_empty() {
+            return;
+        }
+        // A single disk image opens (and replaces the current disk); anything
+        // dropped onto an open, writable disk is added to it; otherwise fall
+        // back to trying to open the first dropped path.
+        if let [only] = paths.as_slice() {
+            if is_disk_image(only) {
+                self.open_path(only);
+                return;
+            }
+        }
+        if self.disk_writable() {
+            self.add_paths(&paths);
+        } else {
+            self.open_path(&paths[0]);
         }
     }
 
@@ -201,12 +227,7 @@ impl DskExplorerApp {
         ui.horizontal(|ui| {
             if ui.button("Open…").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
-                    .add_filter(
-                        "MSX disk images",
-                        &[
-                            "dsk", "di1", "ds1", "di2", "ds2", "img", "msx", "ddi", "xsa",
-                        ],
-                    )
+                    .add_filter("MSX disk images", DISK_IMAGE_EXTS)
                     .pick_file()
                 {
                     self.open_path(&path);
@@ -582,12 +603,21 @@ impl DskExplorerApp {
             self.status = "This image is read-only (.xsa or no source file).".to_string();
             return;
         }
-        let Some(paths) = rfd::FileDialog::new().pick_files() else {
+        if let Some(paths) = rfd::FileDialog::new().pick_files() {
+            self.add_paths(&paths);
+        }
+    }
+
+    /// Read each path from the filesystem and add it to the open disk under a
+    /// sanitized 8.3 name. Used by both the Add dialog and drag-in.
+    fn add_paths(&mut self, paths: &[PathBuf]) {
+        if !self.disk_writable() {
+            self.status = "This image is read-only (.xsa or no source file).".to_string();
             return;
-        };
+        }
         let mut files = Vec::new();
         for path in paths {
-            match std::fs::read(&path) {
+            match std::fs::read(path) {
                 Ok(bytes) => {
                     let raw = path
                         .file_name()
@@ -1286,6 +1316,14 @@ fn base_name(path: &str) -> String {
     path.rsplit('/').next().unwrap_or("file").to_string()
 }
 
+/// Whether `path`'s extension marks it as an openable disk image.
+fn is_disk_image(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .is_some_and(|e| DISK_IMAGE_EXTS.contains(&e.as_str()))
+}
+
 fn sanitize_msx_name(name: &str) -> String {
     let upper = name.to_uppercase();
     let (stem, ext) = match upper.rsplit_once('.') {
@@ -1586,6 +1624,17 @@ mod tests {
         assert_eq!(base_name("A/B/C.BIN"), "C.BIN");
         assert_eq!(base_name("ROOT.COM"), "ROOT.COM");
         assert_eq!(base_name("DIR/SUB/"), "");
+    }
+
+    #[test]
+    fn is_disk_image_matches_known_extensions_case_insensitively() {
+        assert!(is_disk_image(Path::new("GAME.DSK")));
+        assert!(is_disk_image(Path::new("game.xsa")));
+        assert!(is_disk_image(Path::new("/tmp/disk.Di2")));
+        assert!(!is_disk_image(Path::new("README.TXT")));
+        assert!(!is_disk_image(Path::new("noext")));
+        // .cas is a tape, not a disk image, so it is added rather than opened.
+        assert!(!is_disk_image(Path::new("tape.cas")));
     }
 
     #[test]
