@@ -154,6 +154,43 @@ fn sector_map_on_real_disk() {
 }
 
 #[test]
+fn dmk_normalizes_to_standard_size_and_mounts() {
+    // This fixture is a copy-protected bootable game (track 0 deliberately
+    // omits sector 8 and the BPB is DOS1 boot-code garbage), so it normalizes
+    // to a standard 720KB image and mounts, but has no FAT files to list.
+    let path = skip_if_absent!("Ancient Ys Vanished - Omen (1987)(Falcom).dmk");
+    let image = DiskImage::open(&path).expect("open dmk");
+    assert_eq!(image.format(), ImageFormat::Dmk);
+    assert!(!image.is_writable(), "dmk is a read-only container");
+    assert_eq!(image.data().len(), 737_280, "snaps to standard 720KB");
+
+    // Mounting succeeds even though the protected disk lists no files.
+    let fs = DiskFs::from_image(&image).expect("mount normalized dmk");
+    let _ = fs.tree().expect("tree reads without error");
+}
+
+#[test]
+fn dmk_analyze_reports_real_track_layout() {
+    use msx_disk::image::dmk;
+    let path = skip_if_absent!("Ancient Ys Vanished - Omen (1987)(Falcom).dmk");
+    let bytes = std::fs::read(&path).expect("read dmk");
+    let analysis = dmk::analyze(&bytes).expect("analyze");
+
+    assert_eq!(analysis.sides, 2);
+    assert_eq!(analysis.tracks, 82);
+    assert_eq!(analysis.track_infos.len(), 82 * 2);
+    let standard = analysis
+        .track_infos
+        .iter()
+        .filter(|t| t.is_standard())
+        .count();
+    assert!(
+        standard >= 150,
+        "expected most tracks standard, got {standard}/164"
+    );
+}
+
+#[test]
 fn cas_tape_lists_files() {
     let path = skip_if_absent!("Cannon Ball (1983)(Hudson Soft).cas");
     let bytes = std::fs::read(&path).expect("read cas");

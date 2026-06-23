@@ -6,6 +6,7 @@
 //! so they never need to know which on-disk container they came from.
 
 mod ddi;
+pub mod dmk;
 mod dsk;
 pub mod geometry;
 mod img;
@@ -30,6 +31,8 @@ pub enum ImageFormat {
     Ddi,
     /// Compressed XelaSoft Archive: `.xsa`.
     Xsa,
+    /// David Keil raw-track image: `.dmk`.
+    Dmk,
 }
 
 impl ImageFormat {
@@ -41,6 +44,7 @@ impl ImageFormat {
             "msx" => Some(ImageFormat::Msx),
             "ddi" => Some(ImageFormat::Ddi),
             "xsa" => Some(ImageFormat::Xsa),
+            "dmk" => Some(ImageFormat::Dmk),
             _ => None,
         }
     }
@@ -131,6 +135,7 @@ impl DiskImage {
                 (bytes[..header_len].to_vec(), data)
             }
             ImageFormat::Xsa => (Vec::new(), xsa::decompress(&bytes)?),
+            ImageFormat::Dmk => (Vec::new(), dmk::normalize(&bytes)?),
         };
         let geometry = Geometry::for_raw_len(data.len())
             .ok_or_else(|| Error::Malformed("normalized image is not sector-aligned".into()))?;
@@ -148,10 +153,11 @@ impl DiskImage {
     /// Returns an error for `.xsa`, which would require re-compression
     /// (planned for a later phase); save those as `.dsk` instead.
     pub fn reencode(&self, data: &[u8]) -> Result<Vec<u8>> {
-        if self.format == ImageFormat::Xsa {
-            return Err(Error::Unsupported(
-                "cannot write back to .xsa yet; save as .dsk instead".into(),
-            ));
+        if !self.is_writable() {
+            return Err(Error::Unsupported(format!(
+                "cannot write back to {:?}; save as .dsk instead",
+                self.format
+            )));
         }
         let mut out = Vec::with_capacity(self.prefix.len() + data.len());
         out.extend_from_slice(&self.prefix);
@@ -160,8 +166,10 @@ impl DiskImage {
     }
 
     /// Whether modified data can be written back to this image's container.
+    /// Compressed (`.xsa`) and raw-track (`.dmk`) containers are read-only;
+    /// save them as `.dsk` to edit.
     pub fn is_writable(&self) -> bool {
-        self.format != ImageFormat::Xsa
+        !matches!(self.format, ImageFormat::Xsa | ImageFormat::Dmk)
     }
 }
 
