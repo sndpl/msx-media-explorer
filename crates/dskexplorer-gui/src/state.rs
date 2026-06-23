@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use msx_disk::fs::write;
+use msx_disk::fs::{detect_dos_version, DosVersion};
 use msx_disk::image::geometry::Geometry;
 use msx_disk::{DirEntry, DiskFs, DiskImage, Error, ImageFormat};
 
@@ -12,6 +13,9 @@ pub struct LoadedDisk {
     pub format: ImageFormat,
     pub geometry: Geometry,
     pub label: Option<String>,
+    /// Detected MSX-DOS generation (governs whether date/time + attributes are
+    /// shown, since only DOS2 maintains them).
+    pub dos: DosVersion,
     pub tree: Vec<DirEntry>,
     image: DiskImage,
     fs: DiskFs,
@@ -29,11 +33,13 @@ impl LoadedDisk {
         let fs = DiskFs::from_image(&image)?;
         let label = fs.volume_label();
         let tree = fs.tree()?;
+        let dos = detect_dos_version(image.data());
         Ok(LoadedDisk {
             path,
             format: image.format(),
             geometry: image.geometry(),
             label,
+            dos,
             tree,
             image,
             fs,
@@ -53,6 +59,11 @@ impl LoadedDisk {
     /// Compress the disk's sectors into an `.xsa` image.
     pub fn to_xsa_bytes(&self) -> Vec<u8> {
         msx_disk::image::xsa::compress(self.image.data())
+    }
+
+    /// The raw normalized sector data (for disk-wide search).
+    pub fn data(&self) -> &[u8] {
+        self.image.data()
     }
 
     /// Number of 512-byte sectors on the disk.

@@ -72,6 +72,16 @@ pub struct DskExplorerApp {
     disk_map: Option<msx_disk::fs::map::DiskMap>,
     /// OS clipboard handle (kept alive so copied data persists on Linux).
     clipboard: Option<arboard::Clipboard>,
+    /// Disk-wide search (Sectors view).
+    disk_search_query: String,
+    disk_search_is_hex: bool,
+    /// Byte offsets of disk-wide matches, with the active index.
+    disk_search_matches: Vec<usize>,
+    disk_search_pos: usize,
+    /// One-shot scroll-to-row request for the sector hex view.
+    sector_scroll_row: Option<usize>,
+    /// (sector, row) to highlight in the sector hex view.
+    sector_highlight: Option<(usize, usize)>,
 }
 
 /// Largest file (bytes) offered for in-app hex editing, to keep the editor
@@ -102,6 +112,12 @@ impl Default for DskExplorerApp {
             sector_edit: None,
             disk_map: None,
             clipboard: None,
+            disk_search_query: String::new(),
+            disk_search_is_hex: false,
+            disk_search_matches: Vec::new(),
+            disk_search_pos: 0,
+            sector_scroll_row: None,
+            sector_highlight: None,
         }
     }
 }
@@ -218,7 +234,14 @@ impl DskExplorerApp {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    render_entries(ui, &disk.tree, self.selected.as_deref(), &mut clicked);
+                    let show_meta = disk.dos == msx_disk::fs::DosVersion::Dos2;
+                    render_entries(
+                        ui,
+                        &disk.tree,
+                        self.selected.as_deref(),
+                        show_meta,
+                        &mut clicked,
+                    );
                 });
         } else {
             ui.weak("No disk open.");
@@ -792,6 +815,29 @@ impl DskExplorerApp {
                 }
             }
         });
+        ui.horizontal(|ui| {
+            ui.label("Find on disk:");
+            let resp = ui
+                .add(egui::TextEdit::singleline(&mut self.disk_search_query).desired_width(160.0));
+            ui.checkbox(&mut self.disk_search_is_hex, "Hex");
+            let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if ui.button("Find").clicked() || submit {
+                self.run_disk_search();
+            }
+            if !self.disk_search_matches.is_empty() {
+                if ui.button("\u{25C0}").clicked() {
+                    self.step_disk_search(false);
+                }
+                if ui.button("\u{25B6}").clicked() {
+                    self.step_disk_search(true);
+                }
+                ui.label(format!(
+                    "{}/{}",
+                    self.disk_search_pos + 1,
+                    self.disk_search_matches.len()
+                ));
+            }
+        });
         ui.separator();
 
         if self.sector_edit.is_some() {
@@ -806,12 +852,73 @@ impl DskExplorerApp {
                         );
                     }
                 });
-        } else if let Some(bytes) = self
+            return;
+        }
+        let bytes = self
             .disk
             .as_ref()
-            .and_then(|d| d.sector_bytes(self.current_sector))
-        {
-            render_hex(ui, &bytes, 16, None, None);
+            .and_then(|d| d.sector_bytes(self.current_sector));
+        if let Some(bytes) = bytes {
+            let scroll = self.sector_scroll_row.take();
+            let highlight = self
+                .sector_highlight
+                .filter(|(s, _)| *s == self.current_sector)
+                .map(|(_, r)| r);
+            render_hex(ui, &bytes, 16, scroll, highlight);
+        }
+    }
+
+    fn run_disk_search(&mut self) {
+        let matches = if self.disk_search_is_hex {
+            match search::parse_hex(&self.disk_search_query) {
+                Some(needle) => self
+                    .disk
+                    .as_ref()
+                    .map(|d| search::find_bytes(d.data(), &needle))
+                    .unwrap_or_default(),
+                None => {
+                    self.status = "Invalid hex pattern".to_string();
+                    return;
+                }
+            }
+        } else {
+            self.disk
+                .as_ref()
+                .map(|d| search::find_text(d.data(), &self.disk_search_query, true))
+                .unwrap_or_default()
+        };
+        if matches.is_empty() {
+            self.status = format!("No matches for \"{}\"", self.disk_search_query);
+            self.disk_search_matches.clear();
+            return;
+        }
+        self.status = format!("{} match(es) on disk", matches.len());
+        self.disk_search_matches = matches;
+        self.disk_search_pos = 0;
+        self.jump_to_disk_match();
+    }
+
+    fn step_disk_search(&mut self, forward: bool) {
+        let n = self.disk_search_matches.len();
+        if n == 0 {
+            return;
+        }
+        self.disk_search_pos = if forward {
+            (self.disk_search_pos + 1) % n
+        } else {
+            (self.disk_search_pos + n - 1) % n
+        };
+        self.jump_to_disk_match();
+    }
+
+    fn jump_to_disk_match(&mut self) {
+        if let Some(&off) = self.disk_search_matches.get(self.disk_search_pos) {
+            let sector = off / 512;
+            let row = (off % 512) / 16;
+            self.current_sector = sector;
+            self.sector_edit = None;
+            self.sector_scroll_row = Some(row);
+            self.sector_highlight = Some((sector, row));
         }
     }
 
@@ -979,18 +1086,32 @@ fn render_entries(
     ui: &mut egui::Ui,
     entries: &[DirEntry],
     selected: Option<&str>,
+    show_meta: bool,
     clicked: &mut Option<String>,
 ) {
     for entry in entries {
         if entry.is_dir {
-            egui::CollapsingHeader::new(format!("\u{1F4C1} {}", entry.name))
+            // Plain header on DOS1; monospace with aligned date/attr columns on DOS2.
+            let header: egui::WidgetText = if show_meta {
+                egui::RichText::new(format!(
+                    "\u{1F4C1} {:<12}  {:<16}  {}",
+                    entry.name,
+                    format_timestamp(entry.modified),
+                    format_attributes(entry.attributes)
+                ))
+                .monospace()
+                .into()
+            } else {
+                format!("\u{1F4C1} {}", entry.name).into()
+            };
+            egui::CollapsingHeader::new(header)
                 .default_open(true)
                 .show(ui, |ui| {
-                    render_entries(ui, &entry.children, selected, clicked);
+                    render_entries(ui, &entry.children, selected, show_meta, clicked);
                 });
         } else {
             let is_selected = selected == Some(entry.path.as_str());
-            let label = format!("{:<14} {:>8}", entry.name, entry.size);
+            let label = format_file_row(entry, show_meta);
             if ui
                 .selectable_label(is_selected, egui::RichText::new(label).monospace())
                 .clicked()
@@ -1312,5 +1433,43 @@ mod tests {
         let row = format_file_row(&e, true);
         assert!(row.contains("1991-03-25 14:30"), "row: {row}");
         assert!(row.trim_end().ends_with("---A"), "row: {row}");
+    }
+
+    #[test]
+    fn disk_search_jump_maps_offset_to_sector_and_row() {
+        // Offset 1234 -> sector 2 (1024..1536), row (1234 % 512) / 16 = 210/16 = 13.
+        let mut app = DskExplorerApp {
+            disk_search_matches: vec![1234],
+            ..Default::default()
+        };
+        app.jump_to_disk_match();
+        assert_eq!(app.current_sector, 2);
+        assert_eq!(app.sector_scroll_row, Some(13));
+        assert_eq!(app.sector_highlight, Some((2, 13)));
+    }
+
+    #[test]
+    fn disk_search_step_wraps_in_both_directions() {
+        let mut app = DskExplorerApp {
+            disk_search_matches: vec![0, 512, 1024],
+            ..Default::default()
+        };
+        app.step_disk_search(true);
+        assert_eq!(app.disk_search_pos, 1);
+        app.step_disk_search(false);
+        assert_eq!(app.disk_search_pos, 0);
+        // Wrap backwards from first to last.
+        app.step_disk_search(false);
+        assert_eq!(app.disk_search_pos, 2);
+        // Wrap forwards from last to first.
+        app.step_disk_search(true);
+        assert_eq!(app.disk_search_pos, 0);
+    }
+
+    #[test]
+    fn disk_search_step_is_noop_without_matches() {
+        let mut app = DskExplorerApp::default();
+        app.step_disk_search(true);
+        assert_eq!(app.disk_search_pos, 0);
     }
 }

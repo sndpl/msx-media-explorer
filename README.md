@@ -23,16 +23,17 @@ MSX-DOS 1 boot code is never clobbered.
 Conversions: create a new blank disk (360/720 KB), and Save As to convert any
 open image to `.dsk` or `.xsa` (full XSA compressor + decompressor).
 
-Disk views: a "view disk by sector" hex view with in-place sector editing, and
-a graphical disk-usage map (reserved / FAT / root / used / free) that outlines
-the selected file's sectors; clicking a cell opens that sector.
+Disk views: a "view disk by sector" hex view with in-place sector editing and
+disk-wide search (text or hex, jump between matches), and a graphical disk-usage
+map (reserved / FAT / root / used / free) that outlines the selected file's
+sectors; clicking a cell opens that sector.
 
 Clipboard & export: copy the current view to the OS clipboard (hex dump / text /
 BASIC listing as text, or the decoded screen image as a bitmap), and save the
 viewed MSX image as a PNG.
 
-Still to come: drag-and-drop in/out of the OS file manager, multi-file
-selection, and disk-wide (not just per-file) search.
+Still to come: drag-and-drop in/out of the OS file manager and multi-file
+selection.
 
 ## Supported image formats (read)
 
