@@ -72,8 +72,12 @@ fn msxdos2_disk_lists_subdirectory_and_label() {
 fn detects_dos2_from_real_boot_sector() {
     let path = skip_if_absent!("MSX-DOS2 TOOLS.dsk");
     let image = DiskImage::open(&path).expect("open");
+    let tree = DiskFs::from_image(&image)
+        .expect("mount")
+        .tree()
+        .expect("tree");
     assert_eq!(
-        msx_disk::fs::detect_dos_version(image.data()),
+        msx_disk::fs::detect_dos_version(image.data(), &tree),
         msx_disk::fs::DosVersion::Dos2,
     );
 }

@@ -17,8 +17,9 @@ MSX Interchange (MIF/MIG), Maki-chan (MAG/MKI/MAX), and PI/PIC. Companion
 palette/interlace files are read from the same disk.
 
 Editing (write-back to the source image): add, rename, and delete files, and
-edit a file's bytes in hex. The original boot sector is always preserved, so
-MSX-DOS 1 boot code is never clobbered.
+edit a file's bytes in hex. Cmd/Ctrl-click marks multiple files for batch
+extract or delete. The original boot sector is always preserved, so MSX-DOS 1
+boot code is never clobbered.
 
 Conversions: create a new blank disk (360/720 KB), and Save As to convert any
 open image to `.dsk` or `.xsa` (full XSA compressor + decompressor).
@@ -32,8 +33,7 @@ Clipboard & export: copy the current view to the OS clipboard (hex dump / text /
 BASIC listing as text, or the decoded screen image as a bitmap), and save the
 viewed MSX image as a PNG.
 
-Still to come: drag-and-drop in/out of the OS file manager and multi-file
-selection.
+Still to come: drag-and-drop in/out of the OS file manager.
 
 ## Supported image formats (read)
 

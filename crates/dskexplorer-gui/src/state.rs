@@ -33,7 +33,7 @@ impl LoadedDisk {
         let fs = DiskFs::from_image(&image)?;
         let label = fs.volume_label();
         let tree = fs.tree()?;
-        let dos = detect_dos_version(image.data());
+        let dos = detect_dos_version(image.data(), &tree);
         Ok(LoadedDisk {
             path,
             format: image.format(),

@@ -1,5 +1,6 @@
 //! Top-level application state and the `eframe::App` implementation.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use msx_disk::fs::map::SectorKind;
@@ -42,7 +43,10 @@ struct FileContent {
 pub struct DskExplorerApp {
     disk: Option<LoadedDisk>,
     status: String,
+    /// The file currently shown in the viewer (the last one clicked).
     selected: Option<String>,
+    /// All files marked for batch extract/delete (Cmd/Ctrl-click to toggle).
+    selection: BTreeSet<String>,
     content: Option<FileContent>,
     view_mode: ViewMode,
     bytes_per_row: usize,
@@ -58,8 +62,8 @@ pub struct DskExplorerApp {
     pending_scroll_row: Option<usize>,
     /// New name being typed when renaming the selected file.
     renaming: Option<String>,
-    /// Path pending a delete confirmation.
-    confirm_delete: Option<String>,
+    /// Paths pending a delete confirmation.
+    confirm_delete: Option<Vec<String>>,
     /// Editable hex text when editing the current file's bytes.
     hex_edit: Option<String>,
     /// Top-level view selection.
@@ -94,6 +98,7 @@ impl Default for DskExplorerApp {
             disk: None,
             status: "Open a disk image (or drag one in) to get started.".to_string(),
             selected: None,
+            selection: BTreeSet::new(),
             content: None,
             view_mode: ViewMode::Hex,
             bytes_per_row: 16,
@@ -134,6 +139,7 @@ impl DskExplorerApp {
                 );
                 self.disk = Some(disk);
                 self.selected = None;
+                self.selection.clear();
                 self.content = None;
                 self.current_sector = 0;
                 self.sector_edit = None;
@@ -143,22 +149,44 @@ impl DskExplorerApp {
         }
     }
 
-    fn select_file(&mut self, path: String) {
-        let Some(disk) = &self.disk else { return };
-        match disk.read_file(&path) {
-            Ok(bytes) => {
-                self.status = format!("{path} — {} bytes", bytes.len());
-                self.view_mode = default_view_mode(&path);
-                self.search_matches.clear();
-                self.search_pos = 0;
-                self.hex_edit = None;
-                self.content = Some(FileContent {
-                    path: path.clone(),
-                    bytes,
-                });
-                self.selected = Some(path);
+    /// Open a file in the viewer. With `toggle` (Cmd/Ctrl-click), add or remove
+    /// it from the multi-selection; otherwise it becomes the sole selection.
+    fn select_file(&mut self, path: String, toggle: bool) {
+        let bytes = match self.disk.as_ref().map(|d| d.read_file(&path)) {
+            Some(Ok(bytes)) => bytes,
+            Some(Err(e)) => {
+                self.status = format!("Cannot read {path}: {e}");
+                return;
             }
-            Err(e) => self.status = format!("Cannot read {path}: {e}"),
+            None => return,
+        };
+        self.status = format!("{path} — {} bytes", bytes.len());
+        self.view_mode = default_view_mode(&path);
+        self.search_matches.clear();
+        self.search_pos = 0;
+        self.hex_edit = None;
+        if toggle {
+            if !self.selection.remove(&path) {
+                self.selection.insert(path.clone());
+            }
+        } else {
+            self.selection.clear();
+            self.selection.insert(path.clone());
+        }
+        self.content = Some(FileContent {
+            path: path.clone(),
+            bytes,
+        });
+        self.selected = Some(path);
+    }
+
+    /// The files targeted by batch operations: the multi-selection, or the
+    /// single viewed file when nothing is explicitly marked.
+    fn selection_paths(&self) -> Vec<String> {
+        if self.selection.is_empty() {
+            self.selected.iter().cloned().collect()
+        } else {
+            self.selection.iter().cloned().collect()
         }
     }
 
@@ -229,25 +257,28 @@ impl DskExplorerApp {
     }
 
     fn tree_panel(&mut self, ui: &mut egui::Ui) {
-        let mut clicked: Option<String> = None;
+        if self.selection.len() > 1 {
+            ui.horizontal(|ui| {
+                ui.label(format!("{} files selected", self.selection.len()));
+                if ui.button("Clear").clicked() {
+                    self.selection.clear();
+                }
+            });
+            ui.separator();
+        }
+        let mut clicked: Option<(String, bool)> = None;
         if let Some(disk) = &self.disk {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let show_meta = disk.dos == msx_disk::fs::DosVersion::Dos2;
-                    render_entries(
-                        ui,
-                        &disk.tree,
-                        self.selected.as_deref(),
-                        show_meta,
-                        &mut clicked,
-                    );
+                    render_entries(ui, &disk.tree, &self.selection, show_meta, &mut clicked);
                 });
         } else {
             ui.weak("No disk open.");
         }
-        if let Some(path) = clicked {
-            self.select_file(path);
+        if let Some((path, toggle)) = clicked {
+            self.select_file(path, toggle);
         }
     }
 
@@ -291,7 +322,12 @@ impl DskExplorerApp {
             }
             if self.content.is_some() {
                 ui.separator();
-                if ui.button("Extract…").clicked() {
+                let extract_label = if self.selection.len() > 1 {
+                    format!("Extract {}…", self.selection.len())
+                } else {
+                    "Extract…".to_string()
+                };
+                if ui.button(extract_label).clicked() {
                     self.extract_selected();
                 }
                 let copy_label = if self.view_mode == ViewMode::Screen {
@@ -334,8 +370,13 @@ impl DskExplorerApp {
                         .to_string();
                     self.renaming = Some(base);
                 }
-                if ui.button("Delete").clicked() {
-                    self.confirm_delete = self.selected.clone();
+                let delete_label = if self.selection.len() > 1 {
+                    format!("Delete {}", self.selection.len())
+                } else {
+                    "Delete".to_string()
+                };
+                if ui.button(delete_label).clicked() {
+                    self.confirm_delete = Some(self.selection_paths());
                 }
             }
         });
@@ -479,6 +520,7 @@ impl DskExplorerApp {
             Ok(()) => {
                 self.status = ok_msg;
                 self.selected = None;
+                self.selection.clear();
                 self.content = None;
                 self.search_matches.clear();
                 self.hex_edit = None;
@@ -578,15 +620,19 @@ impl DskExplorerApp {
     }
 
     fn confirm_delete_now(&mut self) {
-        let Some(path) = self.confirm_delete.take() else {
+        let Some(paths) = self.confirm_delete.take() else {
             return;
         };
-        let result = self
-            .disk
-            .as_mut()
-            .unwrap()
-            .delete(std::slice::from_ref(&path));
-        self.after_mutation(result, format!("Deleted {path}"));
+        if paths.is_empty() {
+            return;
+        }
+        let msg = if paths.len() == 1 {
+            format!("Deleted {}", paths[0])
+        } else {
+            format!("Deleted {} files", paths.len())
+        };
+        let result = self.disk.as_mut().unwrap().delete(&paths);
+        self.after_mutation(result, msg);
     }
 
     fn save_hex_edit(&mut self) {
@@ -608,9 +654,13 @@ impl DskExplorerApp {
 
     /// Render the delete-confirmation modal if a deletion is pending.
     fn delete_confirmation(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.confirm_delete.clone() else {
+        let Some(paths) = self.confirm_delete.clone() else {
             return;
         };
+        if paths.is_empty() {
+            self.confirm_delete = None;
+            return;
+        }
         let mut do_delete = false;
         let mut cancel = false;
         egui::Window::new("Confirm delete")
@@ -618,7 +668,18 @@ impl DskExplorerApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label(format!("Delete \"{path}\" from the disk?"));
+                if let [path] = paths.as_slice() {
+                    ui.label(format!("Delete \"{path}\" from the disk?"));
+                } else {
+                    ui.label(format!("Delete these {} files from the disk?", paths.len()));
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            for path in &paths {
+                                ui.monospace(path);
+                            }
+                        });
+                }
                 ui.label("This rewrites the image file on disk.");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -638,14 +699,25 @@ impl DskExplorerApp {
     }
 
     fn extract_selected(&mut self) {
-        let Some(content) = &self.content else { return };
-        let default_name = content
-            .path
-            .rsplit('/')
-            .next()
-            .unwrap_or("file")
-            .to_string();
-        let bytes = content.bytes.clone();
+        let paths = self.selection_paths();
+        match paths.as_slice() {
+            [] => {}
+            [path] => self.extract_one(path),
+            many => self.extract_many(many),
+        }
+    }
+
+    /// Extract a single file via a save-as dialog (lets the user rename it).
+    fn extract_one(&mut self, path: &str) {
+        let Some(disk) = &self.disk else { return };
+        let bytes = match disk.read_file(path) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                self.status = format!("Cannot read {path}: {e}");
+                return;
+            }
+        };
+        let default_name = base_name(path);
         if let Some(target) = rfd::FileDialog::new()
             .set_file_name(&default_name)
             .save_file()
@@ -655,6 +727,36 @@ impl DskExplorerApp {
                 Err(e) => format!("Failed to extract: {e}"),
             };
         }
+    }
+
+    /// Extract several files into a chosen folder, keeping their disk names.
+    fn extract_many(&mut self, paths: &[String]) {
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        let mut ok = 0usize;
+        let mut failed = 0usize;
+        for path in paths {
+            let read = self.disk.as_ref().map(|d| d.read_file(path));
+            match read {
+                Some(Ok(bytes)) => {
+                    if std::fs::write(dir.join(base_name(path)), &bytes).is_ok() {
+                        ok += 1;
+                    } else {
+                        failed += 1;
+                    }
+                }
+                _ => failed += 1,
+            }
+        }
+        self.status = if failed == 0 {
+            format!("Extracted {ok} file(s) to {}", dir.display())
+        } else {
+            format!(
+                "Extracted {ok} file(s) to {}, {failed} failed",
+                dir.display()
+            )
+        };
     }
 
     fn ensure_clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
@@ -1085,9 +1187,9 @@ fn format_file_row(entry: &DirEntry, show_meta: bool) -> String {
 fn render_entries(
     ui: &mut egui::Ui,
     entries: &[DirEntry],
-    selected: Option<&str>,
+    selection: &BTreeSet<String>,
     show_meta: bool,
-    clicked: &mut Option<String>,
+    clicked: &mut Option<(String, bool)>,
 ) {
     for entry in entries {
         if entry.is_dir {
@@ -1107,16 +1209,17 @@ fn render_entries(
             egui::CollapsingHeader::new(header)
                 .default_open(true)
                 .show(ui, |ui| {
-                    render_entries(ui, &entry.children, selected, show_meta, clicked);
+                    render_entries(ui, &entry.children, selection, show_meta, clicked);
                 });
         } else {
-            let is_selected = selected == Some(entry.path.as_str());
+            let is_selected = selection.contains(&entry.path);
             let label = format_file_row(entry, show_meta);
             if ui
                 .selectable_label(is_selected, egui::RichText::new(label).monospace())
                 .clicked()
             {
-                *clicked = Some(entry.path.clone());
+                let toggle = ui.input(|i| i.modifiers.command);
+                *clicked = Some((entry.path.clone(), toggle));
             }
         }
     }
@@ -1178,6 +1281,11 @@ fn format_hex_for_edit(bytes: &[u8]) -> String {
 }
 
 /// Coerce a host filename into an MSX-DOS 8.3 uppercase name.
+/// The final path component (file name) of a slash-separated disk path.
+fn base_name(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or("file").to_string()
+}
+
 fn sanitize_msx_name(name: &str) -> String {
     let upper = name.to_uppercase();
     let (stem, ext) = match upper.rsplit_once('.') {
@@ -1471,5 +1579,34 @@ mod tests {
         let mut app = DskExplorerApp::default();
         app.step_disk_search(true);
         assert_eq!(app.disk_search_pos, 0);
+    }
+
+    #[test]
+    fn base_name_takes_last_path_component() {
+        assert_eq!(base_name("A/B/C.BIN"), "C.BIN");
+        assert_eq!(base_name("ROOT.COM"), "ROOT.COM");
+        assert_eq!(base_name("DIR/SUB/"), "");
+    }
+
+    #[test]
+    fn selection_paths_prefers_marked_set_in_sorted_order() {
+        let app = DskExplorerApp {
+            selection: BTreeSet::from(["B.TXT".to_string(), "A.TXT".to_string()]),
+            selected: Some("C.TXT".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(app.selection_paths(), vec!["A.TXT", "B.TXT"]);
+    }
+
+    #[test]
+    fn selection_paths_falls_back_to_viewed_file() {
+        let app = DskExplorerApp {
+            selected: Some("ONLY.TXT".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(app.selection_paths(), vec!["ONLY.TXT"]);
+
+        let empty = DskExplorerApp::default();
+        assert!(empty.selection_paths().is_empty());
     }
 }
