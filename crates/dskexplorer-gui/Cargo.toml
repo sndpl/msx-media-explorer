@@ -15,7 +15,9 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+arboard = { version = "3.6.1", features = ["image-data"] }
 eframe = "0.34.3"
 egui = "0.34.3"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 msx-disk = { path = "../msx-disk" }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }

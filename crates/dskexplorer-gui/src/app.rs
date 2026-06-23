@@ -6,7 +6,7 @@ use msx_disk::fs::map::SectorKind;
 use msx_disk::recoil::{self, FnCompanions};
 use msx_disk::search;
 use msx_disk::view::basic;
-use msx_disk::view::hex::ascii_char;
+use msx_disk::view::hex::{ascii_char, dump_to_string, HexConfig};
 use msx_disk::view::text::{self, ControlMode};
 use msx_disk::DirEntry;
 
@@ -70,6 +70,8 @@ pub struct DskExplorerApp {
     sector_edit: Option<String>,
     /// Cached sector-usage map for the open disk.
     disk_map: Option<msx_disk::fs::map::DiskMap>,
+    /// OS clipboard handle (kept alive so copied data persists on Linux).
+    clipboard: Option<arboard::Clipboard>,
 }
 
 /// Largest file (bytes) offered for in-app hex editing, to keep the editor
@@ -99,6 +101,7 @@ impl Default for DskExplorerApp {
             current_sector: 0,
             sector_edit: None,
             disk_map: None,
+            clipboard: None,
         }
     }
 }
@@ -267,6 +270,17 @@ impl DskExplorerApp {
                 ui.separator();
                 if ui.button("Extract…").clicked() {
                     self.extract_selected();
+                }
+                let copy_label = if self.view_mode == ViewMode::Screen {
+                    "Copy image"
+                } else {
+                    "Copy"
+                };
+                if ui.button(copy_label).clicked() {
+                    self.copy_current_view();
+                }
+                if self.view_mode == ViewMode::Screen && ui.button("Save PNG…").clicked() {
+                    self.save_screen_png();
                 }
             }
 
@@ -620,6 +634,110 @@ impl DskExplorerApp {
         }
     }
 
+    fn ensure_clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
+        if self.clipboard.is_none() {
+            self.clipboard = arboard::Clipboard::new().ok();
+        }
+        self.clipboard.as_mut()
+    }
+
+    fn copy_text_to_clipboard(&mut self, text: String) {
+        let result = match self.ensure_clipboard() {
+            Some(cb) => cb.set_text(text).map_err(|e| e.to_string()),
+            None => Err("clipboard unavailable".to_string()),
+        };
+        self.status = match result {
+            Ok(()) => "Copied to clipboard".to_string(),
+            Err(e) => format!("Clipboard error: {e}"),
+        };
+    }
+
+    /// Decode the currently-selected file as an MSX image, if it is one.
+    fn decode_current_screen(&self) -> Option<recoil::Image> {
+        let disk = self.disk.as_ref()?;
+        let content = self.content.as_ref()?;
+        let path = content.path.clone();
+        let companions = FnCompanions(|ext: &str| disk.companion(&path, ext));
+        recoil::decode(&content.path, &content.bytes, &companions)
+    }
+
+    /// Copy the current view to the clipboard: the decoded image in Screen mode,
+    /// otherwise the rendered text (hex dump / text / BASIC listing).
+    fn copy_current_view(&mut self) {
+        if self.view_mode == ViewMode::Screen {
+            let Some(img) = self.decode_current_screen() else {
+                self.status = "Nothing to copy".to_string();
+                return;
+            };
+            let image = arboard::ImageData {
+                width: img.width,
+                height: img.height,
+                bytes: img.to_rgba().into(),
+            };
+            let result = match self.ensure_clipboard() {
+                Some(cb) => cb.set_image(image).map_err(|e| e.to_string()),
+                None => Err("clipboard unavailable".to_string()),
+            };
+            self.status = match result {
+                Ok(()) => "Copied image to clipboard".to_string(),
+                Err(e) => format!("Clipboard error: {e}"),
+            };
+            return;
+        }
+
+        let Some(content) = self.content.as_ref() else {
+            return;
+        };
+        let text = match self.view_mode {
+            ViewMode::Hex => dump_to_string(
+                &content.bytes,
+                HexConfig {
+                    bytes_per_row: self.bytes_per_row,
+                    base_address: 0,
+                },
+            ),
+            ViewMode::Text => text::to_text(
+                &content.bytes,
+                if self.text_show_all {
+                    ControlMode::ShowAll
+                } else {
+                    ControlMode::Dots
+                },
+            ),
+            ViewMode::Basic => basic::detokenize(&content.bytes),
+            ViewMode::Screen => unreachable!("handled above"),
+        };
+        self.copy_text_to_clipboard(text);
+    }
+
+    /// Save the currently-viewed MSX image as a PNG.
+    fn save_screen_png(&mut self) {
+        let Some(img) = self.decode_current_screen() else {
+            self.status = "Not a decodable MSX image".to_string();
+            return;
+        };
+        let default = self
+            .selected
+            .as_deref()
+            .and_then(|p| p.rsplit('/').next())
+            .and_then(|n| n.rsplit_once('.').map(|(s, _)| s).or(Some(n)))
+            .map(|stem| format!("{stem}.png"))
+            .unwrap_or_else(|| "image.png".to_string());
+        let Some(target) = rfd::FileDialog::new().set_file_name(&default).save_file() else {
+            return;
+        };
+        let Some(buffer) =
+            image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.to_rgba())
+        else {
+            self.status = "Image buffer error".to_string();
+            return;
+        };
+        self.status = match buffer.save(&target) {
+            Ok(()) => format!("Saved {}", target.display()),
+            Err(e) => format!("Failed to save PNG: {e}"),
+        };
+    }
+
     /// "View disk by sector" — a hex view of one sector, optionally editable.
     fn sector_panel(&mut self, ui: &mut egui::Ui) {
         let Some(sector_count) = self.disk.as_ref().map(LoadedDisk::sector_count) else {
@@ -813,6 +931,46 @@ fn kind_color(kind: SectorKind) -> egui::Color32 {
         SectorKind::RootDir => egui::Color32::from_rgb(150, 90, 180),
         SectorKind::DataUsed => egui::Color32::from_rgb(70, 160, 90),
         SectorKind::DataFree => egui::Color32::from_gray(45),
+    }
+}
+
+/// Render a DOS attribute set as a fixed 4-character `RHSA` field, using `-`
+/// for each absent flag (e.g. read-only + archive -> `R--A`).
+fn format_attributes(attrs: msx_disk::fs::Attributes) -> String {
+    let flag = |on: bool, c: char| if on { c } else { '-' };
+    [
+        flag(attrs.read_only, 'R'),
+        flag(attrs.hidden, 'H'),
+        flag(attrs.system, 'S'),
+        flag(attrs.archive, 'A'),
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// Render a timestamp as `YYYY-MM-DD HH:MM`, or an empty string when absent.
+fn format_timestamp(ts: Option<msx_disk::fs::Timestamp>) -> String {
+    match ts {
+        Some(t) => format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}",
+            t.year, t.month, t.day, t.hour, t.minute
+        ),
+        None => String::new(),
+    }
+}
+
+/// Build the label for a file row: name + size, plus date/time and attribute
+/// columns when `show_meta` is set (MSX-DOS 2 disks).
+fn format_file_row(entry: &DirEntry, show_meta: bool) -> String {
+    let base = format!("{:<14} {:>8}", entry.name, entry.size);
+    if show_meta {
+        format!(
+            "{base}  {:<16}  {}",
+            format_timestamp(entry.modified),
+            format_attributes(entry.attributes)
+        )
+    } else {
+        base
     }
 }
 
@@ -1066,5 +1224,93 @@ mod tests {
         assert_eq!(default_view_mode("README.TXT"), ViewMode::Text);
         assert_eq!(default_view_mode("AUTOEXEC.BAT"), ViewMode::Text);
         assert_eq!(default_view_mode("notes.txt"), ViewMode::Text);
+    }
+
+    fn file_entry(
+        name: &str,
+        size: u64,
+        attributes: msx_disk::fs::Attributes,
+        modified: Option<msx_disk::fs::Timestamp>,
+    ) -> DirEntry {
+        DirEntry {
+            name: name.to_string(),
+            path: name.to_string(),
+            is_dir: false,
+            size,
+            attributes,
+            modified,
+            children: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn attributes_render_as_rhsa_flags() {
+        use msx_disk::fs::Attributes;
+        assert_eq!(format_attributes(Attributes::default()), "----");
+        assert_eq!(
+            format_attributes(Attributes {
+                read_only: true,
+                archive: true,
+                ..Attributes::default()
+            }),
+            "R--A"
+        );
+        assert_eq!(
+            format_attributes(Attributes {
+                read_only: true,
+                hidden: true,
+                system: true,
+                archive: true,
+            }),
+            "RHSA"
+        );
+    }
+
+    #[test]
+    fn timestamp_formats_iso_minute_or_empty() {
+        use msx_disk::fs::Timestamp;
+        assert_eq!(
+            format_timestamp(Some(Timestamp {
+                year: 1991,
+                month: 3,
+                day: 25,
+                hour: 14,
+                minute: 30,
+            })),
+            "1991-03-25 14:30"
+        );
+        assert_eq!(format_timestamp(None), "");
+    }
+
+    #[test]
+    fn file_row_omits_metadata_for_dos1() {
+        let e = file_entry("GAME.COM", 1234, msx_disk::fs::Attributes::default(), None);
+        assert_eq!(
+            format_file_row(&e, false),
+            format!("{:<14} {:>8}", "GAME.COM", 1234u64)
+        );
+    }
+
+    #[test]
+    fn file_row_appends_metadata_for_dos2() {
+        use msx_disk::fs::{Attributes, Timestamp};
+        let e = file_entry(
+            "GAME.COM",
+            1234,
+            Attributes {
+                archive: true,
+                ..Attributes::default()
+            },
+            Some(Timestamp {
+                year: 1991,
+                month: 3,
+                day: 25,
+                hour: 14,
+                minute: 30,
+            }),
+        );
+        let row = format_file_row(&e, true);
+        assert!(row.contains("1991-03-25 14:30"), "row: {row}");
+        assert!(row.trim_end().ends_with("---A"), "row: {row}");
     }
 }

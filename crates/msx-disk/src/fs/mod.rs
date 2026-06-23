@@ -6,10 +6,12 @@
 //! they come through transparently.
 
 mod boot;
+pub mod dos;
 pub mod entry;
 pub mod map;
 pub mod write;
 
+pub use dos::{detect_dos_version, DosVersion};
 pub use entry::{Attributes, DirEntry, Timestamp};
 
 use std::io::{Cursor, Read};

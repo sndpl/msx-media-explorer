@@ -69,6 +69,16 @@ fn msxdos2_disk_lists_subdirectory_and_label() {
 }
 
 #[test]
+fn detects_dos2_from_real_boot_sector() {
+    let path = skip_if_absent!("MSX-DOS2 TOOLS.dsk");
+    let image = DiskImage::open(&path).expect("open");
+    assert_eq!(
+        msx_disk::fs::detect_dos_version(image.data()),
+        msx_disk::fs::DosVersion::Dos2,
+    );
+}
+
+#[test]
 fn detokenizes_real_basic_program() {
     let path = skip_if_absent!("TWINSAU2.XSA");
     let fs = DiskFs::from_image(&DiskImage::open(&path).expect("open")).expect("mount");
