@@ -92,6 +92,10 @@ pub struct DskExplorerApp {
     sector_scroll_row: Option<usize>,
     /// (sector, row) to highlight in the sector hex view.
     sector_highlight: Option<(usize, usize)>,
+    /// Disk paths awaiting an OS drag-out, started once the window handle is
+    /// available at the end of the frame.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    pending_drag_out: Option<Vec<String>>,
 }
 
 /// Largest file (bytes) offered for in-app hex editing, to keep the editor
@@ -129,6 +133,8 @@ impl Default for DskExplorerApp {
             disk_search_pos: 0,
             sector_scroll_row: None,
             sector_highlight: None,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            pending_drag_out: None,
         }
     }
 }
@@ -288,12 +294,20 @@ impl DskExplorerApp {
             ui.separator();
         }
         let mut clicked: Option<(String, bool)> = None;
+        let mut drag_started: Option<String> = None;
         if let Some(disk) = &self.disk {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let show_meta = disk.dos == msx_disk::fs::DosVersion::Dos2;
-                    render_entries(ui, &disk.tree, &self.selection, show_meta, &mut clicked);
+                    render_entries(
+                        ui,
+                        &disk.tree,
+                        &self.selection,
+                        show_meta,
+                        &mut clicked,
+                        &mut drag_started,
+                    );
                 });
         } else {
             ui.weak("No disk open.");
@@ -301,6 +315,18 @@ impl DskExplorerApp {
         if let Some((path, toggle)) = clicked {
             self.select_file(path, toggle);
         }
+        // On macOS/Windows, a dragged row hands its file(s) to the OS drag.
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        if let Some(path) = drag_started {
+            let paths = if self.selection.contains(&path) && self.selection.len() > 1 {
+                self.selection_paths()
+            } else {
+                vec![path]
+            };
+            self.pending_drag_out = Some(paths);
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let _ = &drag_started;
     }
 
     fn viewer_panel(&mut self, ui: &mut egui::Ui) {
@@ -789,6 +815,43 @@ impl DskExplorerApp {
         };
     }
 
+    /// If a row was dragged this frame, write the file(s) to a temp directory
+    /// and hand them to the OS drag, using the window handle from `frame`.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn process_drag_out(&mut self, frame: &eframe::Frame) {
+        let Some(paths) = self.pending_drag_out.take() else {
+            return;
+        };
+        match self.stage_files_for_drag(&paths) {
+            Ok(staged) => {
+                if let Err(e) = crate::dnd::start_file_drag(frame, staged) {
+                    self.status = format!("Drag failed: {e}");
+                }
+            }
+            Err(e) => self.status = e,
+        }
+    }
+
+    /// Extract `paths` to a temp directory (the OS drag transfers file paths,
+    /// not bytes) and return their absolute locations.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    fn stage_files_for_drag(&self, paths: &[String]) -> Result<Vec<PathBuf>, String> {
+        let disk = self.disk.as_ref().ok_or("No disk open")?;
+        let dir = std::env::temp_dir().join("dskexplorer-dragout");
+        std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
+        let mut staged = Vec::with_capacity(paths.len());
+        for path in paths {
+            let bytes = disk
+                .read_file(path)
+                .map_err(|e| format!("read {path}: {e}"))?;
+            let target = dir.join(base_name(path));
+            std::fs::write(&target, &bytes)
+                .map_err(|e| format!("write {}: {e}", target.display()))?;
+            staged.push(target);
+        }
+        Ok(staged)
+    }
+
     fn ensure_clipboard(&mut self) -> Option<&mut arboard::Clipboard> {
         if self.clipboard.is_none() {
             self.clipboard = arboard::Clipboard::new().ok();
@@ -1220,6 +1283,7 @@ fn render_entries(
     selection: &BTreeSet<String>,
     show_meta: bool,
     clicked: &mut Option<(String, bool)>,
+    drag_started: &mut Option<String>,
 ) {
     for entry in entries {
         if entry.is_dir {
@@ -1239,17 +1303,27 @@ fn render_entries(
             egui::CollapsingHeader::new(header)
                 .default_open(true)
                 .show(ui, |ui| {
-                    render_entries(ui, &entry.children, selection, show_meta, clicked);
+                    render_entries(
+                        ui,
+                        &entry.children,
+                        selection,
+                        show_meta,
+                        clicked,
+                        drag_started,
+                    );
                 });
         } else {
             let is_selected = selection.contains(&entry.path);
             let label = format_file_row(entry, show_meta);
-            if ui
+            let resp = ui
                 .selectable_label(is_selected, egui::RichText::new(label).monospace())
-                .clicked()
-            {
+                .interact(egui::Sense::click_and_drag());
+            if resp.clicked() {
                 let toggle = ui.input(|i| i.modifiers.command);
                 *clicked = Some((entry.path.clone(), toggle));
+            }
+            if resp.drag_started() {
+                *drag_started = Some(entry.path.clone());
             }
         }
     }
@@ -1434,7 +1508,7 @@ fn render_text(ui: &mut egui::Ui, bytes: &[u8], show_all: bool) {
 }
 
 impl eframe::App for DskExplorerApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.handle_dropped_files(ui.ctx());
 
         egui::Panel::top("toolbar").show_inside(ui, |ui| {
@@ -1460,6 +1534,11 @@ impl eframe::App for DskExplorerApp {
         });
 
         self.delete_confirmation(ui.ctx());
+
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        self.process_drag_out(frame);
+        #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+        let _ = frame;
     }
 }
 
