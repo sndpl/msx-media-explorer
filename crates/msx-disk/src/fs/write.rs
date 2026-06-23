@@ -129,6 +129,37 @@ pub fn rename(normalized: &[u8], old_path: &str, new_path: &str) -> Result<Vec<u
     transaction(normalized, |root| root.rename(old_path, root, new_path))
 }
 
+/// Create a blank, freshly-formatted MSX FAT12 disk image.
+///
+/// `double_sided` selects 720KB (media 0xF9) versus 360KB (media 0xF8). The
+/// canonical MSX boot sector / BPB is written so the disk is readable by both
+/// MSX-DOS 1 (which assumes the standard layout) and MSX-DOS 2.
+pub fn create_blank(double_sided: bool) -> Result<Vec<u8>> {
+    use crate::image::geometry::{SIZE_360K, SIZE_720K};
+
+    let (size, media, sectors_per_fat) = if double_sided {
+        (SIZE_720K, 0xF9u8, 3usize)
+    } else {
+        (SIZE_360K, 0xF8u8, 2usize)
+    };
+
+    // A zeroed standard-size image gets the canonical BPB + boot signature.
+    let mut buf = vec![0u8; size];
+    super::boot::repair_boot_sector(&mut buf)?;
+
+    // Initialize both FATs: entry 0 is the media descriptor, entry 1 the
+    // end-of-chain marker (the remaining 8 bits of the 12-bit pair).
+    const RESERVED_SECTORS: usize = 1;
+    const FAT_COUNT: usize = 2;
+    for fat in 0..FAT_COUNT {
+        let start = (RESERVED_SECTORS + fat * sectors_per_fat) * SECTOR_SIZE;
+        buf[start] = media;
+        buf[start + 1] = 0xFF;
+        buf[start + 2] = 0xFF;
+    }
+    Ok(buf)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +210,21 @@ mod tests {
         let fs = DiskFs::mount(out).unwrap();
         assert_eq!(fs.read_file("NEW.TXT").unwrap(), b"data");
         assert!(fs.read_file("OLD.TXT").is_err());
+    }
+
+    #[test]
+    fn create_blank_makes_empty_usable_disk() {
+        for (double_sided, size) in [(true, SIZE_720K), (false, 368_640)] {
+            let blank = create_blank(double_sided).unwrap();
+            assert_eq!(blank.len(), size);
+            let fs = DiskFs::mount(blank.clone()).unwrap();
+            assert!(fs.tree().unwrap().is_empty(), "new disk should be empty");
+
+            // And it accepts a file.
+            let out = add_files(&blank, &[("READY.TXT", b"ok")]).unwrap();
+            let fs = DiskFs::mount(out).unwrap();
+            assert_eq!(fs.read_file("READY.TXT").unwrap(), b"ok");
+        }
     }
 
     #[test]

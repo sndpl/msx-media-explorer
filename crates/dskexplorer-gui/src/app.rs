@@ -141,6 +141,19 @@ impl DskExplorerApp {
                     self.open_path(&path);
                 }
             }
+            ui.menu_button("New…", |ui| {
+                if ui.button("720 KB (double-sided)").clicked() {
+                    self.new_disk(true);
+                    ui.close();
+                }
+                if ui.button("360 KB (single-sided)").clicked() {
+                    self.new_disk(false);
+                    ui.close();
+                }
+            });
+            if self.disk.is_some() && ui.button("Save as .dsk…").clicked() {
+                self.save_as_dsk();
+            }
             let writable = self.disk_writable();
             if writable && ui.button("Add files…").clicked() {
                 self.add_files_dialog();
@@ -394,6 +407,43 @@ impl DskExplorerApp {
                 self.hex_edit = None;
             }
             Err(e) => self.status = format!("Write failed: {e}"),
+        }
+    }
+
+    fn new_disk(&mut self, double_sided: bool) {
+        let bytes = match msx_disk::fs::write::create_blank(double_sided) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = format!("Could not create disk: {e}");
+                return;
+            }
+        };
+        let default = if double_sided {
+            "blank720.dsk"
+        } else {
+            "blank360.dsk"
+        };
+        if let Some(path) = rfd::FileDialog::new().set_file_name(default).save_file() {
+            match std::fs::write(&path, &bytes) {
+                Ok(()) => self.open_path(&path),
+                Err(e) => self.status = format!("Failed to write {}: {e}", path.display()),
+            }
+        }
+    }
+
+    fn save_as_dsk(&mut self) {
+        let Some((bytes, default)) = self.disk.as_ref().map(|d| {
+            let title = d.title();
+            let stem = title.rsplit_once('.').map(|(s, _)| s).unwrap_or(&title);
+            (d.to_dsk_bytes(), format!("{stem}.dsk"))
+        }) else {
+            return;
+        };
+        if let Some(path) = rfd::FileDialog::new().set_file_name(&default).save_file() {
+            self.status = match std::fs::write(&path, &bytes) {
+                Ok(()) => format!("Saved {}", path.display()),
+                Err(e) => format!("Failed to save: {e}"),
+            };
         }
     }
 

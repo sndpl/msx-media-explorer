@@ -45,6 +45,11 @@ impl LoadedDisk {
         self.fs.read_file(path)
     }
 
+    /// The disk's normalized sector data — a ready-to-write `.dsk` image.
+    pub fn to_dsk_bytes(&self) -> Vec<u8> {
+        self.image.data().to_vec()
+    }
+
     /// Whether this disk can be modified in place (has a path and a writable
     /// container format).
     pub fn writable(&self) -> bool {
