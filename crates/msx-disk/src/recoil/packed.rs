@@ -1,7 +1,7 @@
 //! MSX paint-tool formats, ported from RECOIL: Dynamic Publisher (`.PCT`/`.FNT`),
 //! DD-Graph (`.CMP`), and MSX Interchange (`.MIF`/`.MIG`).
 
-use super::bitstream::{unpack_mif, CciStream, MigStream, ZimStream};
+use super::bitstream::{unpack_mag, unpack_mif, CciStream, MigStream, ZimStream};
 use super::{get32_le, is_string_at, Recoil, Resolution};
 
 fn get_mig_mode(reg0: i32, reg1: i32, reg19: i32, length: i32) -> i32 {
@@ -9,6 +9,129 @@ fn get_mig_mode(reg0: i32, reg1: i32, reg19: i32, length: i32) -> i32 {
 }
 
 impl Recoil<'_> {
+    /// MSX colour restriction for a palette entry (3 bits/component).
+    fn restrict_platform_color(&self, rgb: i32) -> i32 {
+        let rgb = rgb & 0xe0e0e0;
+        rgb | rgb >> 3 | (rgb >> 6 & 0x030303)
+    }
+
+    /// Load a 3-byte-per-entry palette (`.PI`/`.MAG`); `r_offset` selects the
+    /// R/G byte order.
+    fn set_pi_palette(&mut self, content: &[u8], offset: usize, colors: usize, r_offset: usize) {
+        for c in 0..colors {
+            let o = offset + c * 3;
+            let rgb = (content[o + r_offset] as i32) << 16
+                | (content[o + 1 - r_offset] as i32) << 8
+                | content[o + 2] as i32;
+            self.content_palette[c] = self.restrict_platform_color(rgb);
+        }
+    }
+
+    /// Maki-chan Graphics (`.MAG`/`.MKI`/`.MAX`) — MSX modes only.
+    pub(super) fn decode_mag(&mut self, content: &[u8]) -> bool {
+        if content.len() < 8 || !is_string_at(content, 0, b"MAKI02  ") {
+            // MAKI01 is PC-98/X68000, not MSX.
+            return false;
+        }
+        let mut header_offset = 0usize;
+        loop {
+            if header_offset >= content.len() {
+                return false;
+            }
+            let c = content[header_offset];
+            header_offset += 1;
+            if c == 0x1a {
+                break;
+            }
+        }
+        if header_offset + (32 + 16 * 3) > content.len() || content[header_offset] != 0 {
+            return false;
+        }
+        let left =
+            content[header_offset + 4] as usize + ((content[header_offset + 5] as usize) << 8);
+        let mut width =
+            content[header_offset + 8] as usize + ((content[header_offset + 9] as usize) << 8) + 1;
+        let bytes_per_line;
+        let colors;
+        if content[header_offset + 3] < 0x80 {
+            width -= left & !7;
+            bytes_per_line = (width + 1) >> 1;
+            colors = 16;
+        } else {
+            if header_offset + (32 + 256 * 3) >= content.len() {
+                return false;
+            }
+            width -= left & !3;
+            bytes_per_line = width;
+            colors = 256;
+        }
+
+        if content[header_offset + 1] != 0x03 {
+            // Non-MSX platform (PC-88/PC-98/X68000/Mac) — out of scope.
+            return false;
+        }
+        let msx_mode = (content[header_offset + 2] & 0xfc) as i32;
+        let resolution = match msx_mode {
+            0x00 | 0x14 | 0x54 => Resolution::Msx21x1,
+            0x04 => Resolution::Msx21x2,
+            0x10 | 0x50 => Resolution::Msx22x1i,
+            0x20 | 0x40 => {
+                if colors == 16 {
+                    width >>= 1;
+                }
+                Resolution::Msx2Plus2x1i
+            }
+            0x24 | 0x44 => {
+                if colors == 16 {
+                    width >>= 1;
+                }
+                Resolution::Msx2Plus1x1
+            }
+            0x60 => {
+                width = bytes_per_line << 2;
+                Resolution::Msx21x1i
+            }
+            0x64 => {
+                width = bytes_per_line << 2;
+                Resolution::Msx21x2
+            }
+            _ => return false,
+        };
+        let height = content[header_offset + 10] as i32 - content[header_offset + 6] as i32
+            + ((content[header_offset + 11] as i32 - content[header_offset + 7] as i32) << 8)
+            + 1;
+        if height < 1 {
+            return false;
+        }
+        let height = height as usize;
+        if !self.set_scaled_size(width, height, resolution) {
+            return false;
+        }
+        let mut unpacked = vec![0u8; bytes_per_line * height];
+        if !unpack_mag(
+            content,
+            header_offset,
+            bytes_per_line,
+            height,
+            &mut unpacked,
+        ) {
+            return false;
+        }
+        self.set_pi_palette(content, header_offset + 32, colors, 1);
+        match msx_mode {
+            0x20 | 0x24 => self.decode_msx_yjk_screen(&unpacked, 0, true),
+            0x40 | 0x44 => self.decode_msx_yjk_screen(&unpacked, 0, false),
+            0x60 | 0x64 => self.decode_msx6(&unpacked, 0),
+            _ => {
+                if colors == 16 {
+                    self.decode_nibbles(&unpacked, 0, bytes_per_line);
+                } else {
+                    self.decode_bytes(&unpacked, 0);
+                }
+            }
+        }
+        true
+    }
     /// Dynamic Publisher screen (`.PCT`) or font (`.FNT`): 1-bit, RLE-compressed.
     pub(super) fn decode_pct(&mut self, content: &[u8]) -> bool {
         if content.len() < 384

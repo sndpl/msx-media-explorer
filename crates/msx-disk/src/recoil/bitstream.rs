@@ -192,6 +192,79 @@ pub(super) fn unpack_mif(
     Some(unpacked)
 }
 
+/// Maki-chan Graphics (`.MAG`) delta + flag decompressor. Fills `unpacked`
+/// (`bytes_per_line * height`). Returns false on error.
+pub(super) fn unpack_mag(
+    content: &[u8],
+    header_offset: usize,
+    bytes_per_line: usize,
+    height: usize,
+    unpacked: &mut [u8],
+) -> bool {
+    use super::get32_le;
+    const DELTA_X: [usize; 16] = [0, 2, 4, 8, 0, 2, 0, 2, 4, 0, 2, 4, 0, 2, 4, 0];
+    const DELTA_Y: [usize; 16] = [0, 0, 0, 0, 1, 1, 2, 2, 2, 4, 4, 4, 8, 8, 8, 16];
+
+    let mut have_delta = BitStream::new(
+        content,
+        header_offset + get32_le(content, header_offset + 12) as usize,
+    );
+    let mut delta_offset = header_offset + get32_le(content, header_offset + 16) as usize;
+    let mut color_offset = header_offset + get32_le(content, header_offset + 24) as usize;
+
+    let dsize = (bytes_per_line + 3) >> 2;
+    let mut deltas = vec![0u8; dsize];
+    for y in 0..height {
+        let mut delta = 0i32;
+        for x in 0..bytes_per_line {
+            if x & 1 == 0 {
+                delta = deltas[x >> 2] as i32;
+                if x & 2 == 0 {
+                    match have_delta.read_bit() {
+                        0 => {}
+                        1 => {
+                            if delta_offset >= content.len() {
+                                return false;
+                            }
+                            delta ^= content[delta_offset] as i32;
+                            delta_offset += 1;
+                            deltas[x >> 2] = delta as u8;
+                        }
+                        _ => return false,
+                    }
+                    delta >>= 4;
+                } else {
+                    delta &= 0xf;
+                }
+            }
+            if delta == 0 {
+                if color_offset >= content.len() {
+                    return false;
+                }
+                unpacked[y * bytes_per_line + x] = content[color_offset];
+                color_offset += 1;
+            } else {
+                let sx = x as i32 - DELTA_X[delta as usize] as i32;
+                let sy = y as i32 - DELTA_Y[delta as usize] as i32;
+                if sx < 0 || sy < 0 {
+                    return false;
+                }
+                unpacked[y * bytes_per_line + x] =
+                    unpacked[sy as usize * bytes_per_line + sx as usize];
+            }
+        }
+        if bytes_per_line & 1 != 0 && delta == 0 {
+            color_offset += 1;
+        }
+        if (bytes_per_line + 1) & 2 != 0
+            && deltas.get(bytes_per_line >> 2).copied().unwrap_or(0) & 0xf == 0
+        {
+            color_offset += 2;
+        }
+    }
+    true
+}
+
 /// Dynamic Publisher byte RLE (used by `.PCT`/`.FNT`).
 pub(super) struct CciStream<'a> {
     bs: BitStream<'a>,
