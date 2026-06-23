@@ -47,6 +47,10 @@ pub struct DskExplorerApp {
     search_pos: usize,
     /// One-shot request to scroll the hex view to a row.
     pending_scroll_row: Option<usize>,
+    /// New name being typed when renaming the selected file.
+    renaming: Option<String>,
+    /// Path pending a delete confirmation.
+    confirm_delete: Option<String>,
 }
 
 impl Default for DskExplorerApp {
@@ -65,6 +69,8 @@ impl Default for DskExplorerApp {
             search_matches: Vec::new(),
             search_pos: 0,
             pending_scroll_row: None,
+            renaming: None,
+            confirm_delete: None,
         }
     }
 }
@@ -127,12 +133,20 @@ impl DskExplorerApp {
                     self.open_path(&path);
                 }
             }
+            let writable = self.disk_writable();
+            if writable && ui.button("Add files…").clicked() {
+                self.add_files_dialog();
+            }
             if let Some(disk) = &self.disk {
                 ui.separator();
                 ui.label(disk.title());
                 if let Some(label) = &disk.label {
                     ui.separator();
                     ui.label(format!("Label: {label}"));
+                }
+                if !disk.writable() {
+                    ui.separator();
+                    ui.weak("read-only");
                 }
             }
         });
@@ -155,6 +169,7 @@ impl DskExplorerApp {
     }
 
     fn viewer_panel(&mut self, ui: &mut egui::Ui) {
+        let writable = self.disk_writable();
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.view_mode, ViewMode::Hex, "Hex");
             ui.selectable_value(&mut self.view_mode, ViewMode::Text, "Text");
@@ -177,6 +192,38 @@ impl DskExplorerApp {
                 ui.separator();
                 if ui.button("Extract…").clicked() {
                     self.extract_selected();
+                }
+            }
+
+            let file_selected = self.selected.is_some() && self.content.is_some();
+            if self.renaming.is_some() {
+                let mut apply = false;
+                let mut cancel = false;
+                if let Some(name) = self.renaming.as_mut() {
+                    ui.separator();
+                    ui.label("New name:");
+                    ui.add(egui::TextEdit::singleline(name).desired_width(120.0));
+                    apply = ui.button("Apply").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                }
+                if apply {
+                    self.apply_rename();
+                } else if cancel {
+                    self.renaming = None;
+                }
+            } else if writable && file_selected {
+                ui.separator();
+                if ui.button("Rename").clicked() {
+                    let base = self
+                        .selected
+                        .as_deref()
+                        .and_then(|p| p.rsplit('/').next())
+                        .unwrap_or("")
+                        .to_string();
+                    self.renaming = Some(base);
+                }
+                if ui.button("Delete").clicked() {
+                    self.confirm_delete = self.selected.clone();
                 }
             }
         });
@@ -288,6 +335,111 @@ impl DskExplorerApp {
         }
     }
 
+    fn disk_writable(&self) -> bool {
+        self.disk
+            .as_ref()
+            .map(LoadedDisk::writable)
+            .unwrap_or(false)
+    }
+
+    /// Update state after a write operation completes.
+    fn after_mutation(&mut self, result: msx_disk::Result<()>, ok_msg: String) {
+        match result {
+            Ok(()) => {
+                self.status = ok_msg;
+                self.selected = None;
+                self.content = None;
+                self.search_matches.clear();
+            }
+            Err(e) => self.status = format!("Write failed: {e}"),
+        }
+    }
+
+    fn add_files_dialog(&mut self) {
+        if !self.disk_writable() {
+            self.status = "This image is read-only (.xsa or no source file).".to_string();
+            return;
+        }
+        let Some(paths) = rfd::FileDialog::new().pick_files() else {
+            return;
+        };
+        let mut files = Vec::new();
+        for path in paths {
+            match std::fs::read(&path) {
+                Ok(bytes) => {
+                    let raw = path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    files.push((sanitize_msx_name(&raw), bytes));
+                }
+                Err(e) => {
+                    self.status = format!("Could not read {}: {e}", path.display());
+                    return;
+                }
+            }
+        }
+        let count = files.len();
+        let result = self.disk.as_mut().unwrap().add_files(&files);
+        self.after_mutation(result, format!("Added {count} file(s)"));
+    }
+
+    fn apply_rename(&mut self) {
+        let (Some(old_path), Some(new_name)) = (self.selected.clone(), self.renaming.take()) else {
+            return;
+        };
+        let new_base = sanitize_msx_name(&new_name);
+        let new_path = match old_path.rsplit_once('/') {
+            Some((parent, _)) => format!("{parent}/{new_base}"),
+            None => new_base.clone(),
+        };
+        let result = self.disk.as_mut().unwrap().rename(&old_path, &new_path);
+        self.after_mutation(result, format!("Renamed to {new_base}"));
+    }
+
+    fn confirm_delete_now(&mut self) {
+        let Some(path) = self.confirm_delete.take() else {
+            return;
+        };
+        let result = self
+            .disk
+            .as_mut()
+            .unwrap()
+            .delete(std::slice::from_ref(&path));
+        self.after_mutation(result, format!("Deleted {path}"));
+    }
+
+    /// Render the delete-confirmation modal if a deletion is pending.
+    fn delete_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.confirm_delete.clone() else {
+            return;
+        };
+        let mut do_delete = false;
+        let mut cancel = false;
+        egui::Window::new("Confirm delete")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("Delete \"{path}\" from the disk?"));
+                ui.label("This rewrites the image file on disk.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Delete").clicked() {
+                        do_delete = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if do_delete {
+            self.confirm_delete_now();
+        } else if cancel {
+            self.confirm_delete = None;
+        }
+    }
+
     fn extract_selected(&mut self) {
         let Some(content) = &self.content else { return };
         let default_name = content
@@ -376,6 +528,31 @@ fn render_hex(
             }
         }
     });
+}
+
+/// Coerce a host filename into an MSX-DOS 8.3 uppercase name.
+fn sanitize_msx_name(name: &str) -> String {
+    let upper = name.to_uppercase();
+    let (stem, ext) = match upper.rsplit_once('.') {
+        Some((s, e)) => (s, e),
+        None => (upper.as_str(), ""),
+    };
+    let keep = |s: &str, max: usize| -> String {
+        s.chars()
+            .filter(|c| c.is_ascii_alphanumeric() || "_-!#$%&@^{}()~'".contains(*c))
+            .take(max)
+            .collect()
+    };
+    let mut stem = keep(stem, 8);
+    if stem.is_empty() {
+        stem = "FILE".to_string();
+    }
+    let ext = keep(ext, 3);
+    if ext.is_empty() {
+        stem
+    } else {
+        format!("{stem}.{ext}")
+    }
 }
 
 /// Pick a sensible default view mode for a file based on its extension.
@@ -478,5 +655,7 @@ impl eframe::App for DskExplorerApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             self.viewer_panel(ui);
         });
+
+        self.delete_confirmation(ui.ctx());
     }
 }

@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+use msx_disk::fs::write;
 use msx_disk::image::geometry::Geometry;
-use msx_disk::{DirEntry, DiskFs, DiskImage, ImageFormat};
+use msx_disk::{DirEntry, DiskFs, DiskImage, Error, ImageFormat};
 
 /// Everything the UI needs about the open disk, computed once on load.
 pub struct LoadedDisk {
@@ -12,6 +13,7 @@ pub struct LoadedDisk {
     pub geometry: Geometry,
     pub label: Option<String>,
     pub tree: Vec<DirEntry>,
+    image: DiskImage,
     fs: DiskFs,
 }
 
@@ -33,6 +35,7 @@ impl LoadedDisk {
             geometry: image.geometry(),
             label,
             tree,
+            image,
             fs,
         })
     }
@@ -40,6 +43,48 @@ impl LoadedDisk {
     /// Read a file's bytes by its slash-separated path.
     pub fn read_file(&self, path: &str) -> msx_disk::Result<Vec<u8>> {
         self.fs.read_file(path)
+    }
+
+    /// Whether this disk can be modified in place (has a path and a writable
+    /// container format).
+    pub fn writable(&self) -> bool {
+        self.path.is_some() && self.image.is_writable()
+    }
+
+    /// Add (or overwrite) files at the root of the disk.
+    pub fn add_files(&mut self, files: &[(String, Vec<u8>)]) -> msx_disk::Result<()> {
+        let refs: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+            .collect();
+        let updated = write::add_files(self.image.data(), &refs)?;
+        self.write_back(updated)
+    }
+
+    /// Delete files by their slash-separated paths.
+    pub fn delete(&mut self, paths: &[String]) -> msx_disk::Result<()> {
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let updated = write::delete(self.image.data(), &refs)?;
+        self.write_back(updated)
+    }
+
+    /// Rename a file from `old_path` to `new_path` (both relative to the root).
+    pub fn rename(&mut self, old_path: &str, new_path: &str) -> msx_disk::Result<()> {
+        let updated = write::rename(self.image.data(), old_path, new_path)?;
+        self.write_back(updated)
+    }
+
+    /// Re-encode modified sector data into the original container, write it to
+    /// the source file, and reload so all derived state is refreshed.
+    fn write_back(&mut self, updated: Vec<u8>) -> msx_disk::Result<()> {
+        let bytes = self.image.reencode(&updated)?;
+        let path = self
+            .path
+            .clone()
+            .ok_or_else(|| Error::Unsupported("disk has no file to save to".into()))?;
+        std::fs::write(&path, bytes)?;
+        *self = LoadedDisk::open(&path)?;
+        Ok(())
     }
 
     /// Short human-readable name for the open image.
@@ -55,15 +100,18 @@ impl LoadedDisk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+
+    fn fixture() -> Option<PathBuf> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/MSX-DOS2 TOOLS.dsk");
+        path.exists().then_some(path)
+    }
 
     #[test]
     fn loads_fixture_disk_when_present() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/MSX-DOS2 TOOLS.dsk");
-        if !path.exists() {
+        let Some(path) = fixture() else {
             eprintln!("skipping: fixture not present");
             return;
-        }
+        };
         let disk = LoadedDisk::open(&path).expect("load");
         assert_eq!(disk.title(), "MSX-DOS2 TOOLS.dsk");
         assert!(!disk.tree.is_empty());
@@ -77,5 +125,32 @@ mod tests {
             disk.read_file(&first_file.path).unwrap().len() as u64,
             first_file.size
         );
+    }
+
+    #[test]
+    fn full_save_path_roundtrip_on_temp_copy() {
+        let Some(src) = fixture() else {
+            eprintln!("skipping: fixture not present");
+            return;
+        };
+        // Work on a temp copy so the real fixture is never modified.
+        let tmp = std::env::temp_dir().join("dskexplorer_phase2_test.dsk");
+        std::fs::copy(&src, &tmp).expect("copy fixture");
+
+        let mut disk = LoadedDisk::open(&tmp).expect("open");
+        assert!(disk.writable());
+        disk.add_files(&[("PHASE2.TXT".to_string(), b"hi".to_vec())])
+            .expect("add");
+
+        // Reopen from disk to prove it persisted.
+        let reopened = LoadedDisk::open(&tmp).expect("reopen");
+        assert_eq!(reopened.read_file("PHASE2.TXT").unwrap(), b"hi");
+
+        let mut disk = reopened;
+        disk.delete(&["PHASE2.TXT".to_string()]).expect("delete");
+        let reopened = LoadedDisk::open(&tmp).expect("reopen2");
+        assert!(reopened.read_file("PHASE2.TXT").is_err());
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }
