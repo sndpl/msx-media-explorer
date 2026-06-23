@@ -307,6 +307,8 @@ pub fn is_supported(filename: &str) -> bool {
             | "mag"
             | "mki"
             | "max"
+            | "pi"
+            | "pic"
     )
 }
 
@@ -342,6 +344,8 @@ pub fn decode(filename: &str, content: &[u8], companions: &dyn CompanionFiles) -
         "mif" => r.decode_mif(content),
         "mig" => r.decode_mig(content),
         "mag" | "mki" | "max" => r.decode_mag(content),
+        "pi" => r.decode_pi(content),
+        "pic" => r.decode_sc8(content),
         _ => false,
     };
     ok.then(|| r.into_image())

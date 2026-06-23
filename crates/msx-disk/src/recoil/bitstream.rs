@@ -192,6 +192,152 @@ pub(super) fn unpack_mif(
     Some(unpacked)
 }
 
+/// `.PI` move-to-front + LZ decompressor (the MSX subset).
+pub(super) struct PiStream<'a> {
+    bs: BitStream<'a>,
+    pub(super) indexes: Vec<u8>,
+    recent: Vec<u8>,
+}
+
+impl<'a> PiStream<'a> {
+    pub(super) fn new(content: &'a [u8], offset: usize) -> PiStream<'a> {
+        PiStream {
+            bs: BitStream::new(content, offset),
+            indexes: Vec::new(),
+            recent: vec![0u8; 256 * 256],
+        }
+    }
+
+    fn read_int(&mut self, mut bits: i32, max_bits: i32) -> i32 {
+        while bits < max_bits {
+            let b = self.bs.read_bit();
+            if b == 0 {
+                break;
+            }
+            if b < 0 {
+                return -1;
+            }
+            bits += 1;
+        }
+        (1 << bits) | self.bs.read_bits(bits)
+    }
+
+    fn unpack_literal(&mut self, indexes_offset: usize, depth: i32) -> bool {
+        let offset = match self.bs.read_bit() {
+            1 => self.bs.read_bit(),
+            0 => self.read_int(1, depth - 1),
+            _ => return false,
+        };
+        if offset < 0 {
+            return false;
+        }
+        let recent_offset = if indexes_offset == 0 {
+            0
+        } else {
+            (self.indexes[indexes_offset - 1] as i32) << 8
+        };
+        let mut offset = offset + recent_offset;
+        let c = self.recent[offset as usize];
+        while offset > recent_offset {
+            self.recent[offset as usize] = self.recent[offset as usize - 1];
+            offset -= 1;
+        }
+        self.recent[offset as usize] = c;
+        self.indexes[indexes_offset] = c;
+        true
+    }
+
+    fn unpack_two_literals(
+        &mut self,
+        indexes_offset: usize,
+        indexes_length: usize,
+        depth: i32,
+    ) -> bool {
+        if !self.unpack_literal(indexes_offset, depth) {
+            return false;
+        }
+        indexes_offset + 1 >= indexes_length || self.unpack_literal(indexes_offset + 1, depth)
+    }
+
+    fn read_position(&mut self) -> i32 {
+        let position = self.bs.read_bits(2);
+        if position != 3 {
+            return position;
+        }
+        let position = self.bs.read_bit();
+        if position < 0 {
+            return -1;
+        }
+        3 + position
+    }
+
+    pub(super) fn unpack(&mut self, width: usize, height: usize, depth: i32) -> bool {
+        let colors = 1usize << depth;
+        for i in 0..colors {
+            for j in 0..colors {
+                self.recent[i << 8 | j] = ((i.wrapping_sub(j)) & (colors - 1)) as u8;
+            }
+        }
+        let indexes_length = width * height;
+        self.indexes = vec![0u8; indexes_length];
+        if !self.unpack_two_literals(0, indexes_length, depth) {
+            return false;
+        }
+
+        let mut last_position = -1i32;
+        let mut off = 0usize;
+        while off < indexes_length {
+            let position = self.read_position();
+            if position < 0 {
+                return false;
+            }
+            if position == last_position {
+                loop {
+                    if !self.unpack_two_literals(off, indexes_length, depth) {
+                        return false;
+                    }
+                    off += 2;
+                    if !(off < indexes_length && self.bs.read_bit() == 1) {
+                        break;
+                    }
+                }
+                last_position = -1;
+            } else {
+                let length = self.read_int(0, 23);
+                if length < 0 {
+                    return false;
+                }
+                last_position = position;
+                let step = match position {
+                    0 => {
+                        let p = if off == 0 { 0 } else { off - 2 };
+                        if self.indexes[p] == self.indexes[p + 1] {
+                            2
+                        } else {
+                            4
+                        }
+                    }
+                    1 => width as i32,
+                    2 => (width << 1) as i32,
+                    3 => width as i32 - 1,
+                    4 => width as i32 + 1,
+                    _ => return false,
+                };
+                let copy_end = (off + ((length as usize) << 1)).min(indexes_length);
+                while off < copy_end {
+                    let mut src = off as i32 - step;
+                    if src < 0 {
+                        src &= 1;
+                    }
+                    self.indexes[off] = self.indexes[src as usize];
+                    off += 1;
+                }
+            }
+        }
+        true
+    }
+}
+
 /// Maki-chan Graphics (`.MAG`) delta + flag decompressor. Fills `unpacked`
 /// (`bytes_per_line * height`). Returns false on error.
 pub(super) fn unpack_mag(

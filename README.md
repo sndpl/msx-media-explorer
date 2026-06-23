@@ -7,9 +7,14 @@ successor to the classic Windows-only DskExplorer.
 ## Status
 
 Working: open every common MSX image format, browse files and MSX-DOS 2
-subdirectories, view file contents as HEX / TEXT / tokenized BASIC /
-SCREEN 2,5,7,8,12 bitmaps, search within a file (text or hex), and extract
-files.
+subdirectories, view file contents as HEX / TEXT / tokenized BASIC, search
+within a file (text or hex), and extract files.
+
+Graphics viewer: the full RECOIL-derived MSX/MSX2/MSX2+/V9990 format set —
+SCREEN 2-12, Graph Saurus (SR*), GL/SH + .PLx palettes, .Sxx interlace,
+YJK/YAE, V9990 .G9B, Dynamic Publisher (PCT/FNT/STP), DD-Graph (CMP),
+MSX Interchange (MIF/MIG), Maki-chan (MAG/MKI/MAX), and PI/PIC. Companion
+palette/interlace files are read from the same disk.
 
 Editing (write-back to the source image): add, rename, and delete files, and
 edit a file's bytes in hex. The original boot sector is always preserved, so

@@ -1,11 +1,26 @@
 //! MSX paint-tool formats, ported from RECOIL: Dynamic Publisher (`.PCT`/`.FNT`),
 //! DD-Graph (`.CMP`), and MSX Interchange (`.MIF`/`.MIG`).
 
-use super::bitstream::{unpack_mag, unpack_mif, CciStream, MigStream, ZimStream};
+use super::bitstream::{unpack_mag, unpack_mif, CciStream, MigStream, PiStream, ZimStream};
 use super::{get32_le, is_string_at, Recoil, Resolution};
 
 fn get_mig_mode(reg0: i32, reg1: i32, reg19: i32, length: i32) -> i32 {
     (reg0 & 0x0e) | (reg1 & 0x18) << 1 | (reg19 & 0x18) << 3 | length << 8
+}
+
+/// `.PI` platform tag -> MSX resolution, or `None` for non-MSX platforms.
+fn get_pi_platform(content: &[u8], offset: usize, high_pixel: bool) -> Option<Resolution> {
+    if offset + 4 > content.len() {
+        return None;
+    }
+    match &content[offset..offset + 4] {
+        b"MSX1" | b"MSX2" | b"MSXP" | b"MSXR" => Some(if high_pixel {
+            Resolution::Msx21x2
+        } else {
+            Resolution::Msx21x1
+        }),
+        _ => None,
+    }
 }
 
 impl Recoil<'_> {
@@ -25,6 +40,65 @@ impl Recoil<'_> {
                 | content[o + 2] as i32;
             self.content_palette[c] = self.restrict_platform_color(rgb);
         }
+    }
+
+    /// `.PI` (move-to-front + LZ) — MSX platform only.
+    pub(super) fn decode_pi(&mut self, content: &[u8]) -> bool {
+        if content.len() < 18 || content[0] != b'P' || content[1] != b'i' {
+            return false;
+        }
+        // Skip the comment block: past the 0x1a, then past the following NUL.
+        let mut p = 2usize;
+        loop {
+            if p >= content.len() {
+                return false;
+            }
+            let b = content[p];
+            p += 1;
+            if b == 0x1a {
+                break;
+            }
+        }
+        loop {
+            if p >= content.len() {
+                return false;
+            }
+            let b = content[p];
+            p += 1;
+            if b == 0 {
+                break;
+            }
+        }
+        let header = p;
+        if header + 14 > content.len() || content[header] != 0 {
+            return false;
+        }
+        let depth = content[header + 3] as i32;
+        if depth != 4 && depth != 8 {
+            return false;
+        }
+        let high_pixel = content[header + 1] == 2 && content[header + 2] == 1;
+        let resolution = match get_pi_platform(content, header + 4, high_pixel) {
+            Some(r) => r,
+            None => return false,
+        };
+        let dim = header + 8 + ((content[header + 8] as usize) << 8) + content[header + 9] as usize;
+        if dim + 6 >= content.len() {
+            return false;
+        }
+        let width = ((content[dim + 2] as usize) << 8) | content[dim + 3] as usize;
+        let height = ((content[dim + 4] as usize) << 8) | content[dim + 5] as usize;
+        if !self.set_scaled_size(width, height, resolution) {
+            return false;
+        }
+        let mut s = PiStream::new(content, dim + 6 + (3 << depth));
+        if !s.unpack(width, height, depth) {
+            return false;
+        }
+        self.set_pi_palette(content, dim + 6, 1 << depth, 0);
+        let indexes = std::mem::take(&mut s.indexes);
+        self.decode_bytes(&indexes, 0);
+        true
     }
 
     /// Maki-chan Graphics (`.MAG`/`.MKI`/`.MAX`) — MSX modes only.
