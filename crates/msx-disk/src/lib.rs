@@ -7,6 +7,7 @@
 
 pub mod cas;
 pub mod error;
+pub mod fileinfo;
 pub mod fs;
 pub mod image;
 pub mod recoil;

@@ -19,6 +19,7 @@ use crate::state::{LoadedDisk, LoadedTape};
 /// How the selected file's contents are shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ViewMode {
+    Info,
     Hex,
     Text,
     Basic,
@@ -468,9 +469,21 @@ impl DskExplorerApp {
         let _ = &events.drag_started;
     }
 
+    /// The directory entry for the currently selected file, when it lives on a
+    /// disk (tape files have no `DirEntry`, so this returns `None`).
+    fn selected_entry(&self) -> Option<&DirEntry> {
+        let sel = self.selected.as_deref()?;
+        let disk = self.disk.as_ref()?;
+        disk.tree
+            .iter()
+            .flat_map(DirEntry::walk)
+            .find(|e| e.path == sel)
+    }
+
     fn viewer_panel(&mut self, ui: &mut egui::Ui) {
         let writable = self.disk_writable();
         ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.view_mode, ViewMode::Info, "Info");
             ui.selectable_value(&mut self.view_mode, ViewMode::Hex, "Hex");
             ui.selectable_value(&mut self.view_mode, ViewMode::Text, "Text");
             ui.selectable_value(&mut self.view_mode, ViewMode::Basic, "BASIC");
@@ -504,7 +517,7 @@ impl DskExplorerApp {
                 ViewMode::Text => {
                     ui.checkbox(&mut self.text_show_all, "Show all characters");
                 }
-                ViewMode::Basic | ViewMode::Screen => {}
+                ViewMode::Basic | ViewMode::Screen | ViewMode::Info => {}
             }
             if self.content.is_some() {
                 ui.separator();
@@ -593,6 +606,9 @@ impl DskExplorerApp {
                 ui.weak("Select a file to view its contents.");
             }
             Some(content) => match self.view_mode {
+                ViewMode::Info => {
+                    render_info(ui, &content.path, &content.bytes, self.selected_entry())
+                }
                 ViewMode::Hex => {
                     render_hex(ui, &content.bytes, self.bytes_per_row, scroll_to, highlight)
                 }
@@ -1036,6 +1052,7 @@ impl DskExplorerApp {
             return;
         };
         let text = match self.view_mode {
+            ViewMode::Info => format_fileinfo_text(&content.path, &content.bytes, self.selected_entry()),
             ViewMode::Hex => dump_to_string(
                 &content.bytes,
                 HexConfig {
@@ -1868,6 +1885,8 @@ fn default_view_mode(path: &str) -> ViewMode {
         ViewMode::Screen
     } else if ext == "bas" {
         ViewMode::Basic
+    } else if msx_disk::fileinfo::music::is_music_ext(&ext) {
+        ViewMode::Info
     } else if TEXT_EXTENSIONS.contains(&ext.as_str()) {
         ViewMode::Text
     } else {
@@ -1915,6 +1934,178 @@ fn render_basic(ui: &mut egui::Ui, bytes: &[u8]) {
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.add(egui::Label::new(egui::RichText::new(listing).monospace()).wrap());
+        });
+}
+
+/// Plain-text rendering of the File Info view, for the Copy button.
+fn format_fileinfo_text(path: &str, bytes: &[u8], entry: Option<&DirEntry>) -> String {
+    use std::fmt::Write;
+    let info = msx_disk::fileinfo::describe(path, bytes);
+    let mut out = String::new();
+    let _ = writeln!(out, "Name: {}", base_name(path));
+    let size = entry.map(|e| e.size).unwrap_or(bytes.len() as u64);
+    let _ = writeln!(out, "Size: {size} bytes");
+    if let Some(e) = entry {
+        let ts = format_timestamp(e.modified);
+        if !ts.is_empty() {
+            let _ = writeln!(out, "Modified: {ts}");
+        }
+        let _ = writeln!(out, "Attributes: {}", format_attributes(e.attributes));
+    }
+    if let Some(desc) = info.description {
+        let _ = writeln!(out, "Description: {desc}");
+    }
+    if let Some(b) = info.bload {
+        let _ = writeln!(
+            out,
+            "BSAVE header: start=0x{:04X} end=0x{:04X} exec=0x{:04X} ({} bytes)",
+            b.start,
+            b.end,
+            b.exec,
+            b.data_len()
+        );
+    }
+    if let Some(g) = &info.graphics {
+        let _ = writeln!(out, "Graphics: {}", g.label);
+    }
+    if let Some(m) = &info.music {
+        let _ = writeln!(out, "Music format: {}", m.format);
+        if let Some(t) = &m.title {
+            let _ = writeln!(out, "Title: {t}");
+        }
+        if let Some(a) = &m.author {
+            let _ = writeln!(out, "Author: {a}");
+        }
+        if let Some(p) = m.positions {
+            let _ = writeln!(out, "Positions: {p}");
+        }
+        if let Some(c) = m.channels {
+            let _ = writeln!(out, "Channels: {c}");
+        }
+        if let Some(s) = m.subsongs {
+            if s > 0 {
+                let _ = writeln!(out, "Subsongs: {s}");
+            }
+        }
+        for (k, v) in &m.extra {
+            let _ = writeln!(out, "{k}: {v}");
+        }
+    }
+    out
+}
+
+/// File Info view: filesystem facts plus content-derived format details.
+fn render_info(ui: &mut egui::Ui, path: &str, bytes: &[u8], entry: Option<&DirEntry>) {
+    let info = msx_disk::fileinfo::describe(path, bytes);
+    let yes_no = |b: bool| if b { "yes" } else { "no" };
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.heading("File");
+            egui::Grid::new("info_file").num_columns(2).show(ui, |ui| {
+                ui.label("Name:");
+                ui.monospace(base_name(path));
+                ui.end_row();
+                let size = entry.map(|e| e.size).unwrap_or(bytes.len() as u64);
+                ui.label("Size:");
+                ui.monospace(format!("{size} bytes"));
+                ui.end_row();
+                if let Some(ts) = entry.map(|e| format_timestamp(e.modified)) {
+                    if !ts.is_empty() {
+                        ui.label("Modified:");
+                        ui.monospace(ts);
+                        ui.end_row();
+                    }
+                }
+            });
+
+            if let Some(e) = entry {
+                let a = e.attributes;
+                ui.add_space(4.0);
+                ui.label("Attributes");
+                egui::Grid::new("info_attrs").num_columns(2).show(ui, |ui| {
+                    for (name, set) in [
+                        ("Read-only", a.read_only),
+                        ("Hidden", a.hidden),
+                        ("System", a.system),
+                        ("Archive", a.archive),
+                    ] {
+                        ui.label(format!("{name}:"));
+                        ui.monospace(yes_no(set));
+                        ui.end_row();
+                    }
+                });
+            }
+
+            if let Some(desc) = info.description {
+                ui.add_space(8.0);
+                ui.heading("Description");
+                ui.label(desc);
+            }
+
+            if let Some(b) = info.bload {
+                ui.add_space(8.0);
+                ui.heading("Binary (BSAVE) header");
+                egui::Grid::new("info_bload").num_columns(2).show(ui, |ui| {
+                    for (name, addr) in [("Start", b.start), ("End", b.end), ("Exec", b.exec)] {
+                        ui.label(format!("{name}:"));
+                        ui.monospace(format!("0x{addr:04X}"));
+                        ui.end_row();
+                    }
+                    ui.label("Length:");
+                    ui.monospace(format!("{} bytes", b.data_len()));
+                    ui.end_row();
+                });
+            }
+
+            if let Some(g) = &info.graphics {
+                ui.add_space(8.0);
+                ui.heading("Graphics");
+                ui.label(g.label.as_str());
+            }
+
+            if let Some(m) = &info.music {
+                ui.add_space(8.0);
+                ui.heading("Music");
+                egui::Grid::new("info_music").num_columns(2).show(ui, |ui| {
+                    ui.label("Format:");
+                    ui.monospace(m.format);
+                    ui.end_row();
+                    if let Some(t) = &m.title {
+                        ui.label("Title:");
+                        ui.monospace(t.as_str());
+                        ui.end_row();
+                    }
+                    if let Some(a) = &m.author {
+                        ui.label("Author:");
+                        ui.monospace(a.as_str());
+                        ui.end_row();
+                    }
+                    if let Some(p) = m.positions {
+                        ui.label("Positions:");
+                        ui.monospace(p.to_string());
+                        ui.end_row();
+                    }
+                    if let Some(c) = m.channels {
+                        ui.label("Channels:");
+                        ui.monospace(c.to_string());
+                        ui.end_row();
+                    }
+                    if let Some(s) = m.subsongs {
+                        if s > 0 {
+                            ui.label("Subsongs:");
+                            ui.monospace(s.to_string());
+                            ui.end_row();
+                        }
+                    }
+                    for (k, v) in &m.extra {
+                        ui.label(format!("{k}:"));
+                        ui.monospace(v.as_str());
+                        ui.end_row();
+                    }
+                });
+            }
         });
 }
 
@@ -2035,6 +2226,9 @@ mod tests {
         assert_eq!(default_view_mode("README.TXT"), ViewMode::Text);
         assert_eq!(default_view_mode("AUTOEXEC.BAT"), ViewMode::Text);
         assert_eq!(default_view_mode("notes.txt"), ViewMode::Text);
+        assert_eq!(default_view_mode("SONG.MBM"), ViewMode::Info);
+        assert_eq!(default_view_mode("TUNE.mod"), ViewMode::Info);
+        assert_eq!(default_view_mode("track.pt3"), ViewMode::Info);
     }
 
     fn file_entry(
