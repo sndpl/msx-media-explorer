@@ -10,6 +10,15 @@ Working: open every common MSX image format, browse files and MSX-DOS 2
 subdirectories, view file contents as HEX / TEXT / tokenized BASIC, search
 within a file (text or hex), and extract files.
 
+Hard disks: openMSX-style multi-partition hard-disk images (`MSX_IDE`, up to
+four FAT12/FAT16 partitions) open with each partition as a top-level tree node
+("Partition n — FAT12/FAT16, size, label"); expand one to browse its files and
+subdirectories, view, search, extract, and drag them out exactly like a floppy.
+Partitions are read-only, and the disk-usage Map view is hidden for them. The
+FAT width is read from each partition's own boot sector with an MSX-correct
+rule (not the cluster-count-only heuristic), so FAT12 partitions that sit just
+above the FAT16 cluster threshold are read without corruption.
+
 Graphics viewer: the full RECOIL-derived MSX/MSX2/MSX2+/V9990 format set —
 SCREEN 2-12, Graph Saurus (SR*), GL/SH + .PLx palettes, .Sxx interlace,
 YJK/YAE, V9990 .G9B, Dynamic Publisher (PCT/FNT/STP), DD-Graph (CMP),
@@ -58,6 +67,7 @@ viewed MSX image as a PNG.
 | `.ddi` | DiskDupe image (header + raw) |
 | `.xsa` | Compressed disk image (decompressed on open) |
 | `.dmk` | David Keil raw-track image (read-only; normalized + analyzed) |
+| `.dsk` (hard disk) | openMSX `MSX_IDE` multi-partition image (read-only; FAT12/FAT16) |
 | `.cas` | MSX cassette tape image (files + block overview) |
 | `.tsx` | MSX tape image (TZX 1.21 with `#4B` Kansas City blocks) |
 
@@ -65,8 +75,9 @@ viewed MSX image as a PNG.
 
 A Cargo workspace with two crates:
 
-- **`msx-disk`** — headless core library: image-format parsing, FAT12
-  filesystem, file viewers (hex/text/BASIC/screen), and search. No UI
+- **`msx-disk`** — headless core library: image-format parsing, FAT12/FAT16
+  filesystem (floppies via `fatfs`, hard-disk partitions via an MSX-aware
+  reader), file viewers (hex/text/BASIC/screen), and search. No UI
   dependencies, fully unit-tested.
 - **`dskexplorer-gui`** — the [egui](https://github.com/emilk/egui) /
   `eframe` desktop application that renders the models produced by `msx-disk`.
