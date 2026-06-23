@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use msx_disk::search;
 use msx_disk::view::basic;
 use msx_disk::view::hex::ascii_char;
 use msx_disk::view::screen::{self, ScreenMode};
@@ -39,6 +40,13 @@ pub struct DskExplorerApp {
     text_show_all: bool,
     /// Cached screen texture, keyed by the file path it was rendered from.
     screen_tex: Option<(String, egui::TextureHandle)>,
+    search_query: String,
+    search_is_hex: bool,
+    /// Byte offsets of matches in the current file, with the active index.
+    search_matches: Vec<usize>,
+    search_pos: usize,
+    /// One-shot request to scroll the hex view to a row.
+    pending_scroll_row: Option<usize>,
 }
 
 impl Default for DskExplorerApp {
@@ -52,6 +60,11 @@ impl Default for DskExplorerApp {
             bytes_per_row: 16,
             text_show_all: false,
             screen_tex: None,
+            search_query: String::new(),
+            search_is_hex: false,
+            search_matches: Vec::new(),
+            search_pos: 0,
+            pending_scroll_row: None,
         }
     }
 }
@@ -80,6 +93,8 @@ impl DskExplorerApp {
             Ok(bytes) => {
                 self.status = format!("{path} — {} bytes", bytes.len());
                 self.view_mode = default_view_mode(&path);
+                self.search_matches.clear();
+                self.search_pos = 0;
                 self.content = Some(FileContent {
                     path: path.clone(),
                     bytes,
@@ -165,6 +180,32 @@ impl DskExplorerApp {
                 }
             }
         });
+
+        if self.content.is_some() {
+            ui.horizontal(|ui| {
+                ui.label("Find:");
+                let resp =
+                    ui.add(egui::TextEdit::singleline(&mut self.search_query).desired_width(180.0));
+                ui.checkbox(&mut self.search_is_hex, "Hex");
+                let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.button("Find").clicked() || submit {
+                    self.run_search();
+                }
+                if !self.search_matches.is_empty() {
+                    if ui.button("◀").clicked() {
+                        self.step_search(false);
+                    }
+                    if ui.button("▶").clicked() {
+                        self.step_search(true);
+                    }
+                    ui.label(format!(
+                        "{}/{}",
+                        self.search_pos + 1,
+                        self.search_matches.len()
+                    ));
+                }
+            });
+        }
         ui.separator();
 
         if self.view_mode == ViewMode::Screen {
@@ -181,16 +222,69 @@ impl DskExplorerApp {
             return;
         }
 
+        let scroll_to = self.pending_scroll_row.take();
+        let highlight = self
+            .search_matches
+            .get(self.search_pos)
+            .map(|&o| o / self.bytes_per_row.max(1));
+
         match &self.content {
             None => {
                 ui.weak("Select a file to view its contents.");
             }
             Some(content) => match self.view_mode {
-                ViewMode::Hex => render_hex(ui, &content.bytes, self.bytes_per_row),
+                ViewMode::Hex => {
+                    render_hex(ui, &content.bytes, self.bytes_per_row, scroll_to, highlight)
+                }
                 ViewMode::Text => render_text(ui, &content.bytes, self.text_show_all),
                 ViewMode::Basic => render_basic(ui, &content.bytes),
                 ViewMode::Screen => unreachable!("handled above"),
             },
+        }
+    }
+
+    fn run_search(&mut self) {
+        let Some(content) = &self.content else { return };
+        let matches = if self.search_is_hex {
+            match search::parse_hex(&self.search_query) {
+                Some(needle) => search::find_bytes(&content.bytes, &needle),
+                None => {
+                    self.status = "Invalid hex pattern".to_string();
+                    return;
+                }
+            }
+        } else {
+            search::find_text(&content.bytes, &self.search_query, true)
+        };
+
+        if matches.is_empty() {
+            self.status = format!("No matches for \"{}\"", self.search_query);
+            self.search_matches.clear();
+            return;
+        }
+        self.status = format!("{} match(es)", matches.len());
+        self.search_matches = matches;
+        self.search_pos = 0;
+        self.view_mode = ViewMode::Hex;
+        self.jump_to_current_match();
+    }
+
+    fn step_search(&mut self, forward: bool) {
+        if self.search_matches.is_empty() {
+            return;
+        }
+        let n = self.search_matches.len();
+        self.search_pos = if forward {
+            (self.search_pos + 1) % n
+        } else {
+            (self.search_pos + n - 1) % n
+        };
+        self.jump_to_current_match();
+    }
+
+    fn jump_to_current_match(&mut self) {
+        if let Some(&offset) = self.search_matches.get(self.search_pos) {
+            self.pending_scroll_row = Some(offset / self.bytes_per_row.max(1));
         }
     }
 
@@ -243,28 +337,45 @@ fn render_entries(
 }
 
 /// Virtualized hex view: only the visible rows are formatted each frame.
-fn render_hex(ui: &mut egui::Ui, bytes: &[u8], bytes_per_row: usize) {
+///
+/// `scroll_to_row` requests a one-shot scroll (e.g. to a search hit), and
+/// `highlight_row` tints the current match row.
+fn render_hex(
+    ui: &mut egui::Ui,
+    bytes: &[u8],
+    bytes_per_row: usize,
+    scroll_to_row: Option<usize>,
+    highlight_row: Option<usize>,
+) {
     let bpr = bytes_per_row.max(1);
     let total_rows = bytes.len().div_ceil(bpr);
     let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show_rows(ui, row_height, total_rows, |ui, range| {
-            for row in range {
-                let offset = row * bpr;
-                let chunk = &bytes[offset..(offset + bpr).min(bytes.len())];
-                let mut line = format!("{offset:06X}  ");
-                for col in 0..bpr {
-                    match chunk.get(col) {
-                        Some(b) => line.push_str(&format!("{b:02X} ")),
-                        None => line.push_str("   "),
-                    }
+    let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
+    if let Some(row) = scroll_to_row {
+        // Center the target row in the viewport where possible.
+        let offset = (row as f32 * row_height - 80.0).max(0.0);
+        area = area.vertical_scroll_offset(offset);
+    }
+    area.show_rows(ui, row_height, total_rows, |ui, range| {
+        for row in range {
+            let offset = row * bpr;
+            let chunk = &bytes[offset..(offset + bpr).min(bytes.len())];
+            let mut line = format!("{offset:06X}  ");
+            for col in 0..bpr {
+                match chunk.get(col) {
+                    Some(b) => line.push_str(&format!("{b:02X} ")),
+                    None => line.push_str("   "),
                 }
-                line.push(' ');
-                line.extend(chunk.iter().map(|&b| ascii_char(b)));
+            }
+            line.push(' ');
+            line.extend(chunk.iter().map(|&b| ascii_char(b)));
+            if highlight_row == Some(row) {
+                ui.monospace(egui::RichText::new(line).background_color(egui::Color32::DARK_BLUE));
+            } else {
                 ui.monospace(line);
             }
-        });
+        }
+    });
 }
 
 /// Pick a sensible default view mode for a file based on its extension.

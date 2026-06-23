@@ -6,10 +6,11 @@ successor to the classic Windows-only DskExplorer.
 
 ## Status
 
-Early development. v1 targets a **read-only explorer**: open every common MSX
-image format, browse files and MSX-DOS 2 subdirectories, view file contents as
-HEX / TEXT / tokenized BASIC / SCREEN 2,5,7,8,12 bitmaps, search, and extract
-files. Writing, editing, and format conversion follow in later phases.
+Read-only explorer is working. You can open every common MSX image format,
+browse files and MSX-DOS 2 subdirectories, view file contents as
+HEX / TEXT / tokenized BASIC / SCREEN 2,5,7,8,12 bitmaps, search within a file
+(text or hex), and extract files. Writing, editing, format conversion, and the
+graphical disk-usage / sector views follow in later phases.
 
 ## Supported image formats (read)
 
