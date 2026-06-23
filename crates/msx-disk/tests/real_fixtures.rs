@@ -89,7 +89,7 @@ fn detokenizes_real_basic_program() {
     let path = skip_if_absent!("TWINSAU2.XSA");
     let fs = DiskFs::from_image(&DiskImage::open(&path).expect("open")).expect("mount");
     let bytes = fs.read_file("AUTOEXEC.BAS").expect("read AUTOEXEC.BAS");
-    let listing = basic::detokenize(&bytes);
+    let listing = basic::detokenize(&bytes, msx_disk::MsxCharset::International);
 
     assert!(listing.starts_with("10 "), "should start with line 10");
     assert!(listing.contains("DEFINT"), "expected DEFINT keyword");

@@ -20,6 +20,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "MSX Disk Explorer",
         options,
-        Box::new(|_cc| Ok(Box::<DskExplorerApp>::default())),
+        Box::new(|cc| {
+            app::install_fonts(&cc.egui_ctx);
+            Ok(Box::<DskExplorerApp>::default())
+        }),
     )
 }

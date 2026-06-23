@@ -6,6 +6,7 @@
 //! logic can be tested without a GUI and reused from a CLI.
 
 pub mod cas;
+pub mod charset;
 pub mod error;
 pub mod fileinfo;
 pub mod fs;
@@ -16,6 +17,7 @@ pub mod tape;
 pub mod tsx;
 pub mod view;
 
+pub use charset::MsxCharset;
 pub use error::{Error, Result};
 pub use fs::{DirEntry, DiskFs};
 pub use image::{DiskImage, ImageFormat};
