@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use msx_disk::{cas, DiskFs, DiskImage, ImageFormat};
+use msx_disk::{cas, view::basic, DiskFs, DiskImage, ImageFormat};
 
 /// Resolve a fixture path under the workspace-root `tests/` directory, or
 /// `None` if it does not exist.
@@ -65,6 +65,19 @@ fn msxdos2_disk_lists_subdirectory_and_label() {
         .expect("TOOLS subdirectory");
     assert!(tools.is_dir);
     assert!(!tools.children.is_empty(), "TOOLS should contain tools");
+}
+
+#[test]
+fn detokenizes_real_basic_program() {
+    let path = skip_if_absent!("TWINSAU2.XSA");
+    let fs = DiskFs::from_image(&DiskImage::open(&path).expect("open")).expect("mount");
+    let bytes = fs.read_file("AUTOEXEC.BAS").expect("read AUTOEXEC.BAS");
+    let listing = basic::detokenize(&bytes);
+
+    assert!(listing.starts_with("10 "), "should start with line 10");
+    assert!(listing.contains("DEFINT"), "expected DEFINT keyword");
+    assert!(listing.contains("&H"), "expected hex literal");
+    assert!(listing.trim_end().ends_with("END"), "should end with END");
 }
 
 #[test]

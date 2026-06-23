@@ -2,6 +2,7 @@
 
 use std::path::Path;
 
+use msx_disk::view::basic;
 use msx_disk::view::hex::ascii_char;
 use msx_disk::view::text::{self, ControlMode};
 use msx_disk::DirEntry;
@@ -13,6 +14,7 @@ use crate::state::LoadedDisk;
 enum ViewMode {
     Hex,
     Text,
+    Basic,
 }
 
 /// The largest amount of a file rendered in the text view at once.
@@ -135,6 +137,7 @@ impl DskExplorerApp {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.view_mode, ViewMode::Hex, "Hex");
             ui.selectable_value(&mut self.view_mode, ViewMode::Text, "Text");
+            ui.selectable_value(&mut self.view_mode, ViewMode::Basic, "BASIC");
             ui.separator();
             match self.view_mode {
                 ViewMode::Hex => {
@@ -146,6 +149,7 @@ impl DskExplorerApp {
                 ViewMode::Text => {
                     ui.checkbox(&mut self.text_show_all, "Show all characters");
                 }
+                ViewMode::Basic => {}
             }
             if self.content.is_some() {
                 ui.separator();
@@ -163,6 +167,7 @@ impl DskExplorerApp {
             Some(content) => match self.view_mode {
                 ViewMode::Hex => render_hex(ui, &content.bytes, self.bytes_per_row),
                 ViewMode::Text => render_text(ui, &content.bytes, self.text_show_all),
+                ViewMode::Basic => render_basic(ui, &content.bytes),
             },
         }
     }
@@ -237,6 +242,16 @@ fn render_hex(ui: &mut egui::Ui, bytes: &[u8], bytes_per_row: usize) {
                 line.extend(chunk.iter().map(|&b| ascii_char(b)));
                 ui.monospace(line);
             }
+        });
+}
+
+/// Detokenized MSX-BASIC listing.
+fn render_basic(ui: &mut egui::Ui, bytes: &[u8]) {
+    let listing = basic::detokenize(bytes);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(listing).monospace()).wrap());
         });
 }
 

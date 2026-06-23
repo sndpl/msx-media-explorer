@@ -4,5 +4,6 @@
 //! GUI can render directly: a hex dump, decoded text, (later) detokenized BASIC
 //! and decoded MSX screen bitmaps.
 
+pub mod basic;
 pub mod hex;
 pub mod text;
