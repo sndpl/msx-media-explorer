@@ -7,6 +7,7 @@
 
 mod boot;
 pub mod entry;
+pub mod map;
 pub mod write;
 
 pub use entry::{Attributes, DirEntry, Timestamp};

@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use msx_disk::fs::map::{self, SectorKind};
 use msx_disk::{cas, fs::write, view::basic, DiskFs, DiskImage, ImageFormat};
 
 /// Resolve a fixture path under the workspace-root `tests/` directory, or
@@ -118,6 +119,24 @@ fn compress_real_disk_to_xsa_and_reopen() {
 
     let fs = DiskFs::from_image(&reopened).expect("mount");
     assert!(fs.tree().unwrap().iter().any(|e| e.name == "MSXDOS2.SYS"));
+}
+
+#[test]
+fn sector_map_on_real_disk() {
+    let path = skip_if_absent!("MSX-DOS2 TOOLS.dsk");
+    let data = DiskImage::open(&path).expect("open").data().to_vec();
+
+    let disk_map = map::disk_usage(&data).expect("disk usage");
+    assert_eq!(disk_map.sector_count, 1440);
+    assert_eq!(disk_map.kinds[0], SectorKind::Reserved);
+    assert!(disk_map.kinds.contains(&SectorKind::DataUsed));
+
+    // MSXDOS2.SYS occupies several used data sectors.
+    let sectors = map::file_sectors(&data, "MSXDOS2.SYS");
+    assert!(!sectors.is_empty());
+    for s in &sectors {
+        assert_eq!(disk_map.kinds[*s], SectorKind::DataUsed);
+    }
 }
 
 #[test]
