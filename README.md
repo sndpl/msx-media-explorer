@@ -31,6 +31,15 @@ disk-wide search (text or hex, jump between matches), and a graphical disk-usage
 map (reserved / FAT / root / used / free) that outlines the selected file's
 sectors; clicking a cell opens that sector.
 
+Raw-track disks (`.dmk`): opened by decoding the per-track sector data into a
+normal disk, plus an Analyze view listing every track's sectors, density, and
+CRC status so non-standard or copy-protected tracks are visible.
+
+Tapes (`.cas`, `.tsx`): opened as a list of files (each viewable in the same
+HEX/TEXT/BASIC/SCREEN viewer and extractable), plus a Blocks view showing every
+tape block — TSX `#35` custom-info, `#32` archive-info, and `#4B` MSX blocks
+with their detected ASCII/BINARY/BASIC headers.
+
 Status bar: with a disk open, shows the physical disk type (e.g. 3.5" Double
 Sided, Double Density 2DD) and the BPB-derived filesystem facts (size, clusters,
 sectors per cluster, bytes per sector, total sectors, volume label).
@@ -48,7 +57,9 @@ viewed MSX image as a PNG.
 | `.msx` | 720KB, cylinder-interleaved sides |
 | `.ddi` | DiskDupe image (header + raw) |
 | `.xsa` | Compressed disk image (decompressed on open) |
-| `.cas` | MSX cassette tape image (list / extract) |
+| `.dmk` | David Keil raw-track image (read-only; normalized + analyzed) |
+| `.cas` | MSX cassette tape image (files + block overview) |
+| `.tsx` | MSX tape image (TZX 1.21 with `#4B` Kansas City blocks) |
 
 ## Architecture
 

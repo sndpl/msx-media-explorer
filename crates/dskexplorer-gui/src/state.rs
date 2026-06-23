@@ -2,9 +2,13 @@
 
 use std::path::{Path, PathBuf};
 
+use std::collections::HashMap;
+
+use msx_disk::cas::CasFile;
 use msx_disk::fs::write;
 use msx_disk::fs::{detect_dos_version, DosVersion};
 use msx_disk::image::geometry::Geometry;
+use msx_disk::tape::{self, Tape, TapeFormat};
 use msx_disk::{DirEntry, DiskFs, DiskImage, Error, ImageFormat};
 
 /// Everything the UI needs about the open disk, computed once on load.
@@ -176,6 +180,81 @@ impl LoadedDisk {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "(in-memory image)".to_string())
+    }
+}
+
+/// A currently-open tape image (`.cas` / `.tsx`): its blocks for the overview
+/// and the logical files derived from them, with unique selection keys.
+pub struct LoadedTape {
+    pub path: PathBuf,
+    pub format: TapeFormat,
+    pub tape: Tape,
+    files: Vec<CasFile>,
+    /// One stable, unique key per file (the name, de-duplicated on collision).
+    keys: Vec<String>,
+}
+
+impl LoadedTape {
+    /// Open and parse a tape image from a filesystem path.
+    pub fn open(path: &Path) -> msx_disk::Result<LoadedTape> {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let format = TapeFormat::from_extension(ext)
+            .ok_or_else(|| Error::Unsupported("not a tape image".into()))?;
+        let bytes = std::fs::read(path)?;
+        let tape = tape::open(&bytes, format);
+        let files = tape.files();
+
+        let mut keys = Vec::with_capacity(files.len());
+        let mut seen: HashMap<String, usize> = HashMap::new();
+        for file in &files {
+            let base = if file.name.is_empty() {
+                "FILE".to_string()
+            } else {
+                file.name.clone()
+            };
+            let count = seen.entry(base.clone()).or_insert(0);
+            keys.push(if *count == 0 {
+                base.clone()
+            } else {
+                format!("{base}.{count}")
+            });
+            *count += 1;
+        }
+
+        Ok(LoadedTape {
+            path: path.to_path_buf(),
+            format,
+            tape,
+            files,
+            keys,
+        })
+    }
+
+    /// `(key, file)` pairs in tape order, for the file list.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &CasFile)> {
+        self.keys.iter().map(String::as_str).zip(&self.files)
+    }
+
+    /// The payload bytes of the file identified by `key`.
+    pub fn read_file(&self, key: &str) -> Option<Vec<u8>> {
+        let idx = self.keys.iter().position(|k| k == key)?;
+        Some(self.files[idx].data.clone())
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.files.len()
+    }
+
+    pub fn total_bytes(&self) -> usize {
+        self.tape.total_file_bytes()
+    }
+
+    /// Short human-readable name for the open tape.
+    pub fn title(&self) -> String {
+        self.path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "(tape)".to_string())
     }
 }
 

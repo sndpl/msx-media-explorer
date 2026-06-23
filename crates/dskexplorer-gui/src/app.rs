@@ -4,15 +4,17 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use msx_disk::fs::map::SectorKind;
+use msx_disk::image::dmk::{self, Density, DmkAnalysis, DmkTrackInfo};
 use msx_disk::image::geometry::{Geometry, SECTOR_SIZE};
 use msx_disk::recoil::{self, FnCompanions};
 use msx_disk::search;
+use msx_disk::tape::TapeBlock;
 use msx_disk::view::basic;
 use msx_disk::view::hex::{ascii_char, dump_to_string, HexConfig};
 use msx_disk::view::text::{self, ControlMode};
-use msx_disk::DirEntry;
+use msx_disk::{DirEntry, ImageFormat};
 
-use crate::state::LoadedDisk;
+use crate::state::{LoadedDisk, LoadedTape};
 
 /// How the selected file's contents are shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,12 +25,16 @@ enum ViewMode {
     Screen,
 }
 
-/// Top-level view: browse files, view raw sectors, or the disk map.
+/// Top-level view. Which tabs are offered depends on the open document:
+/// `Files` always; `Sectors`/`Map` for disks; `Analyze` for `.dmk`; `Blocks`
+/// for tapes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AppView {
     Files,
     Sectors,
     Map,
+    Analyze,
+    Blocks,
 }
 
 /// The largest amount of a file rendered in the text view at once.
@@ -37,8 +43,11 @@ const MAX_TEXT_BYTES: usize = 128 * 1024;
 /// Extensions recognized as openable disk images (for the Open dialog filter
 /// and to decide whether a dropped file should open vs. be added to the disk).
 const DISK_IMAGE_EXTS: &[&str] = &[
-    "dsk", "di1", "ds1", "di2", "ds2", "img", "msx", "ddi", "xsa",
+    "dsk", "di1", "ds1", "di2", "ds2", "img", "msx", "ddi", "xsa", "dmk",
 ];
+
+/// Extensions recognized as openable tape images.
+const TAPE_EXTS: &[&str] = &["cas", "tsx"];
 
 /// Cached contents of the selected file (full bytes; views render lazily).
 struct FileContent {
@@ -49,6 +58,10 @@ struct FileContent {
 /// Root application state.
 pub struct DskExplorerApp {
     disk: Option<LoadedDisk>,
+    /// Open tape image, when a `.cas`/`.tsx` is loaded instead of a disk.
+    tape: Option<LoadedTape>,
+    /// Per-track analysis for an open `.dmk` disk.
+    dmk_analysis: Option<DmkAnalysis>,
     status: String,
     /// The file currently shown in the viewer (the last one clicked).
     selected: Option<String>,
@@ -109,6 +122,8 @@ impl Default for DskExplorerApp {
     fn default() -> Self {
         DskExplorerApp {
             disk: None,
+            tape: None,
+            dmk_analysis: None,
             status: "Open a disk image (or drag one in) to get started.".to_string(),
             selected: None,
             selection: BTreeSet::new(),
@@ -145,20 +160,44 @@ impl Default for DskExplorerApp {
 
 impl DskExplorerApp {
     fn open_path(&mut self, path: &Path) {
+        if is_tape(path) {
+            self.open_tape(path);
+        } else {
+            self.open_disk(path);
+        }
+    }
+
+    /// Reset the per-document state shared by disk and tape opens.
+    fn reset_document(&mut self) {
+        self.disk = None;
+        self.tape = None;
+        self.dmk_analysis = None;
+        self.disk_map = None;
+        self.disk_fs_geometry = None;
+        self.selected = None;
+        self.selection.clear();
+        self.content = None;
+        self.current_sector = 0;
+        self.sector_edit = None;
+        self.app_view = AppView::Files;
+    }
+
+    fn open_disk(&mut self, path: &Path) {
         match LoadedDisk::open(path) {
             Ok(disk) => {
+                self.reset_document();
                 self.status = format!(
                     "Opened {} ({:?}, {} sectors)",
                     disk.title(),
                     disk.format,
                     disk.geometry.total_sectors()
                 );
+                // A .dmk gets a per-track analysis from the raw container bytes.
+                if disk.format == ImageFormat::Dmk {
+                    self.dmk_analysis =
+                        std::fs::read(path).ok().and_then(|b| dmk::analyze(&b).ok());
+                }
                 self.disk = Some(disk);
-                self.selected = None;
-                self.selection.clear();
-                self.content = None;
-                self.current_sector = 0;
-                self.sector_edit = None;
                 self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
                 self.disk_fs_geometry = self.disk.as_ref().and_then(LoadedDisk::fs_geometry);
             }
@@ -166,16 +205,39 @@ impl DskExplorerApp {
         }
     }
 
+    fn open_tape(&mut self, path: &Path) {
+        match LoadedTape::open(path) {
+            Ok(tape) => {
+                self.reset_document();
+                self.status = format!(
+                    "Opened {} ({} — {} file(s))",
+                    tape.title(),
+                    tape.format.label(),
+                    tape.file_count()
+                );
+                self.tape = Some(tape);
+            }
+            Err(e) => self.status = format!("Failed to open {}: {e}", path.display()),
+        }
+    }
+
+    /// Read a file's bytes from whichever document is open (disk or tape).
+    fn read_doc_file(&self, path: &str) -> Option<Vec<u8>> {
+        if let Some(disk) = &self.disk {
+            return disk.read_file(path).ok();
+        }
+        if let Some(tape) = &self.tape {
+            return tape.read_file(path);
+        }
+        None
+    }
+
     /// Open a file in the viewer. With `toggle` (Cmd/Ctrl-click), add or remove
     /// it from the multi-selection; otherwise it becomes the sole selection.
     fn select_file(&mut self, path: String, toggle: bool) {
-        let bytes = match self.disk.as_ref().map(|d| d.read_file(&path)) {
-            Some(Ok(bytes)) => bytes,
-            Some(Err(e)) => {
-                self.status = format!("Cannot read {path}: {e}");
-                return;
-            }
-            None => return,
+        let Some(bytes) = self.read_doc_file(&path) else {
+            self.status = format!("Cannot read {path}");
+            return;
         };
         self.status = format!("{path} — {} bytes", bytes.len());
         self.view_mode = default_view_mode(&path);
@@ -218,11 +280,11 @@ impl DskExplorerApp {
         if paths.is_empty() {
             return;
         }
-        // A single disk image opens (and replaces the current disk); anything
-        // dropped onto an open, writable disk is added to it; otherwise fall
-        // back to trying to open the first dropped path.
+        // A single disk/tape image opens (replacing the current document);
+        // anything dropped onto an open, writable disk is added to it;
+        // otherwise fall back to trying to open the first dropped path.
         if let [only] = paths.as_slice() {
-            if is_disk_image(only) {
+            if is_openable(only) {
                 self.open_path(only);
                 return;
             }
@@ -239,6 +301,7 @@ impl DskExplorerApp {
             if ui.button("Open…").clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("MSX disk images", DISK_IMAGE_EXTS)
+                    .add_filter("MSX tape images", TAPE_EXTS)
                     .pick_file()
                 {
                     self.open_path(&path);
@@ -277,13 +340,26 @@ impl DskExplorerApp {
                     ui.separator();
                     ui.weak("read-only");
                 }
+            } else if let Some(tape) = &self.tape {
+                ui.separator();
+                ui.label(tape.title());
+                ui.separator();
+                ui.weak("read-only");
             }
         });
-        if self.disk.is_some() {
+        if self.disk.is_some() || self.tape.is_some() {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.app_view, AppView::Files, "Files");
-                ui.selectable_value(&mut self.app_view, AppView::Sectors, "Sectors");
-                ui.selectable_value(&mut self.app_view, AppView::Map, "Map");
+                if self.disk.is_some() {
+                    ui.selectable_value(&mut self.app_view, AppView::Sectors, "Sectors");
+                    ui.selectable_value(&mut self.app_view, AppView::Map, "Map");
+                }
+                if self.dmk_analysis.is_some() {
+                    ui.selectable_value(&mut self.app_view, AppView::Analyze, "Analyze");
+                }
+                if self.tape.is_some() {
+                    ui.selectable_value(&mut self.app_view, AppView::Blocks, "Blocks");
+                }
             });
         }
     }
@@ -313,6 +389,12 @@ impl DskExplorerApp {
                         &mut clicked,
                         &mut drag_started,
                     );
+                });
+        } else if let Some(tape) = &self.tape {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    render_tape_files(ui, tape, &self.selection, &mut clicked, &mut drag_started);
                 });
         } else {
             ui.weak("No disk open.");
@@ -771,13 +853,9 @@ impl DskExplorerApp {
 
     /// Extract a single file via a save-as dialog (lets the user rename it).
     fn extract_one(&mut self, path: &str) {
-        let Some(disk) = &self.disk else { return };
-        let bytes = match disk.read_file(path) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                self.status = format!("Cannot read {path}: {e}");
-                return;
-            }
+        let Some(bytes) = self.read_doc_file(path) else {
+            self.status = format!("Cannot read {path}");
+            return;
         };
         let default_name = base_name(path);
         if let Some(target) = rfd::FileDialog::new()
@@ -799,14 +877,9 @@ impl DskExplorerApp {
         let mut ok = 0usize;
         let mut failed = 0usize;
         for path in paths {
-            let read = self.disk.as_ref().map(|d| d.read_file(path));
-            match read {
-                Some(Ok(bytes)) => {
-                    if std::fs::write(dir.join(base_name(path)), &bytes).is_ok() {
-                        ok += 1;
-                    } else {
-                        failed += 1;
-                    }
+            match self.read_doc_file(path) {
+                Some(bytes) if std::fs::write(dir.join(base_name(path)), &bytes).is_ok() => {
+                    ok += 1;
                 }
                 _ => failed += 1,
             }
@@ -842,14 +915,13 @@ impl DskExplorerApp {
     /// not bytes) and return their absolute locations.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn stage_files_for_drag(&self, paths: &[String]) -> Result<Vec<PathBuf>, String> {
-        let disk = self.disk.as_ref().ok_or("No disk open")?;
         let dir = std::env::temp_dir().join("dskexplorer-dragout");
         std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
         let mut staged = Vec::with_capacity(paths.len());
         for path in paths {
-            let bytes = disk
-                .read_file(path)
-                .map_err(|e| format!("read {path}: {e}"))?;
+            let bytes = self
+                .read_doc_file(path)
+                .ok_or_else(|| format!("cannot read {path}"))?;
             let target = dir.join(base_name(path));
             std::fs::write(&target, &bytes)
                 .map_err(|e| format!("write {}: {e}", target.display()))?;
@@ -1231,36 +1303,167 @@ impl DskExplorerApp {
     }
 
     /// Bottom status bar. With a disk open it shows the physical disk type plus
-    /// BPB-derived filesystem facts; otherwise just the transient status text.
+    /// BPB-derived filesystem facts; with a tape open, tape facts; otherwise
+    /// just the transient status text.
     fn status_bar(&self, ui: &mut egui::Ui) {
-        let Some(disk) = &self.disk else {
+        if let Some(disk) = &self.disk {
+            let geo = disk.geometry;
+            ui.label(egui::RichText::new(describe_geometry(geo)).weak());
+            ui.horizontal(|ui| {
+                ui.label(format!("Size: {} KB", geo.total_bytes() / 1024));
+                if let Some(fs) = self.disk_fs_geometry {
+                    ui.separator();
+                    ui.label(format!("Clusters: {}", fs.cluster_count));
+                    ui.separator();
+                    ui.label(format!("Sectors/cluster: {}", fs.sectors_per_cluster));
+                    ui.separator();
+                    ui.label(format!("Bytes/sector: {}", fs.bytes_per_sector));
+                    ui.separator();
+                    ui.label(format!("Sectors: {}", fs.total_sectors));
+                } else {
+                    ui.separator();
+                    ui.label(format!("Sectors: {}", geo.total_sectors()));
+                }
+                if let Some(label) = &disk.label {
+                    ui.separator();
+                    ui.label(format!("Vol: {label}"));
+                }
+                ui.separator();
+                ui.label(&self.status);
+            });
+        } else if let Some(tape) = &self.tape {
+            ui.horizontal(|ui| {
+                ui.label(format!("Tape ({})", tape.format.label()));
+                ui.separator();
+                ui.label(format!("Files: {}", tape.file_count()));
+                ui.separator();
+                ui.label(format!("Data: {} bytes", tape.total_bytes()));
+                ui.separator();
+                ui.label(&self.status);
+            });
+        } else {
             ui.label(&self.status);
+        }
+    }
+
+    /// The DMK per-track analysis table (only shown for `.dmk` disks).
+    fn analyze_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(analysis) = &self.dmk_analysis else {
+            ui.weak("No DMK analysis available.");
             return;
         };
-        let geo = disk.geometry;
-        ui.label(egui::RichText::new(describe_geometry(geo)).weak());
-        ui.horizontal(|ui| {
-            ui.label(format!("Size: {} KB", geo.total_bytes() / 1024));
-            if let Some(fs) = self.disk_fs_geometry {
-                ui.separator();
-                ui.label(format!("Clusters: {}", fs.cluster_count));
-                ui.separator();
-                ui.label(format!("Sectors/cluster: {}", fs.sectors_per_cluster));
-                ui.separator();
-                ui.label(format!("Bytes/sector: {}", fs.bytes_per_sector));
-                ui.separator();
-                ui.label(format!("Sectors: {}", fs.total_sectors));
+        let standard = analysis
+            .track_infos
+            .iter()
+            .filter(|t| t.is_standard())
+            .count();
+        ui.label(format!(
+            "{} tracks x {} side(s){} — {}/{} tracks standard (9x512 MFM)",
+            analysis.tracks,
+            analysis.sides,
+            if analysis.write_protected {
+                ", write-protected"
             } else {
-                ui.separator();
-                ui.label(format!("Sectors: {}", geo.total_sectors()));
+                ""
+            },
+            standard,
+            analysis.track_infos.len(),
+        ));
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.monospace("Track Side Sectors Size Dens CRC   Notes");
+                for t in &analysis.track_infos {
+                    ui.monospace(format_dmk_track_row(t));
+                }
+            });
+    }
+
+    /// The tape block overview (only shown for tapes).
+    fn blocks_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(tape) = &self.tape else {
+            ui.weak("No tape open.");
+            return;
+        };
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (i, block) in tape.tape.blocks.iter().enumerate() {
+                    render_tape_block(ui, i + 1, block);
+                    ui.separator();
+                }
+            });
+    }
+}
+
+/// Format one DMK track as a fixed-width row for the analysis table.
+fn format_dmk_track_row(t: &DmkTrackInfo) -> String {
+    let count = t.sectors.len();
+    let size = t.sectors.first().map(|s| s.size).unwrap_or(0);
+    let dens = match t.sectors.first().map(|s| s.density) {
+        Some(Density::Mfm) => "MFM",
+        Some(Density::Fm) => "FM",
+        None => "-",
+    };
+    let bad = t
+        .sectors
+        .iter()
+        .filter(|s| !s.id_crc_ok || !s.data_crc_ok)
+        .count();
+    let crc = if count == 0 {
+        "-".to_string()
+    } else if bad == 0 {
+        "ok".to_string()
+    } else {
+        format!("{bad} bad")
+    };
+    let notes = if count == 0 {
+        "empty"
+    } else if t.is_standard() {
+        "standard"
+    } else {
+        "non-standard"
+    };
+    format!(
+        "{:<5} {:<4} {:<7} {:<4} {:<4} {:<5} {notes}",
+        t.track, t.side, count, size, dens, crc
+    )
+}
+
+/// Render one tape block in the block overview, in the style of TSX viewers.
+fn render_tape_block(ui: &mut egui::Ui, number: usize, block: &TapeBlock) {
+    match block {
+        TapeBlock::CustomInfo { id, text } => {
+            ui.monospace(format!("{number:>3}  #35 Custom info"));
+            ui.label(format!("       {id}: {text}"));
+        }
+        TapeBlock::ArchiveInfo(pairs) => {
+            ui.monospace(format!("{number:>3}  #32 Archive info"));
+            for (field, value) in pairs {
+                ui.label(format!("       {field}: {value}"));
             }
-            if let Some(label) = &disk.label {
-                ui.separator();
-                ui.label(format!("Vol: {label}"));
-            }
-            ui.separator();
-            ui.label(&self.status);
-        });
+        }
+        TapeBlock::Msx {
+            header: Some(h),
+            data,
+        } => {
+            ui.monospace(format!(
+                "{number:>3}  #4B MSX block   {} HEADER ({} bytes)",
+                h.kind.label(),
+                data.len()
+            ));
+            ui.label(format!("       Found: {}", h.name));
+        }
+        TapeBlock::Msx { header: None, data } => {
+            ui.monospace(format!(
+                "{number:>3}  #4B MSX block   ({} bytes)",
+                data.len()
+            ));
+        }
+        TapeBlock::Other { id, len } => {
+            ui.monospace(format!("{number:>3}  #{id:02X} block       ({len} bytes)"));
+        }
     }
 }
 
@@ -1368,6 +1571,40 @@ fn render_entries(
     }
 }
 
+/// Render the file list for an open tape: each derived file as a selectable,
+/// draggable row showing its name, kind, and size.
+fn render_tape_files(
+    ui: &mut egui::Ui,
+    tape: &LoadedTape,
+    selection: &BTreeSet<String>,
+    clicked: &mut Option<(String, bool)>,
+    drag_started: &mut Option<String>,
+) {
+    if tape.file_count() == 0 {
+        ui.weak("Tape has no recognizable files.");
+        return;
+    }
+    for (key, file) in tape.entries() {
+        let is_selected = selection.contains(key);
+        let label = format!(
+            "{:<14} {:<7} {:>8}",
+            key,
+            file.kind.label(),
+            file.data.len()
+        );
+        let resp = ui
+            .selectable_label(is_selected, egui::RichText::new(label).monospace())
+            .interact(egui::Sense::click_and_drag());
+        if resp.clicked() {
+            let toggle = ui.input(|i| i.modifiers.command);
+            *clicked = Some((key.to_string(), toggle));
+        }
+        if resp.drag_started() {
+            *drag_started = Some(key.to_string());
+        }
+    }
+}
+
 /// Virtualized hex view: only the visible rows are formatted each frame.
 ///
 /// `scroll_to_row` requests a one-shot scroll (e.g. to a search hit), and
@@ -1456,12 +1693,27 @@ fn describe_geometry(geo: Geometry) -> String {
     }
 }
 
-/// Whether `path`'s extension marks it as an openable disk image.
-fn is_disk_image(path: &Path) -> bool {
+/// Whether `path`'s lowercased extension is in `exts`.
+fn ext_in(path: &Path, exts: &[&str]) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
-        .is_some_and(|e| DISK_IMAGE_EXTS.contains(&e.as_str()))
+        .is_some_and(|e| exts.contains(&e.as_str()))
+}
+
+/// Whether `path`'s extension marks it as an openable disk image.
+fn is_disk_image(path: &Path) -> bool {
+    ext_in(path, DISK_IMAGE_EXTS)
+}
+
+/// Whether `path`'s extension marks it as a tape image.
+fn is_tape(path: &Path) -> bool {
+    ext_in(path, TAPE_EXTS)
+}
+
+/// Whether `path` can be opened as a document (disk or tape).
+fn is_openable(path: &Path) -> bool {
+    is_disk_image(path) || is_tape(path)
 }
 
 fn sanitize_msx_name(name: &str) -> String {
@@ -1597,6 +1849,8 @@ impl eframe::App for DskExplorerApp {
             AppView::Files => self.viewer_panel(ui),
             AppView::Sectors => self.sector_panel(ui),
             AppView::Map => self.map_panel(ui),
+            AppView::Analyze => self.analyze_panel(ui),
+            AppView::Blocks => self.blocks_panel(ui),
         });
 
         self.delete_confirmation(ui.ctx());
@@ -1811,11 +2065,23 @@ mod tests {
     fn is_disk_image_matches_known_extensions_case_insensitively() {
         assert!(is_disk_image(Path::new("GAME.DSK")));
         assert!(is_disk_image(Path::new("game.xsa")));
+        assert!(is_disk_image(Path::new("raw.DMK")));
         assert!(is_disk_image(Path::new("/tmp/disk.Di2")));
         assert!(!is_disk_image(Path::new("README.TXT")));
         assert!(!is_disk_image(Path::new("noext")));
-        // .cas is a tape, not a disk image, so it is added rather than opened.
+        // Tapes are not disk images, but are still openable documents.
         assert!(!is_disk_image(Path::new("tape.cas")));
+    }
+
+    #[test]
+    fn tape_and_openable_extensions() {
+        assert!(is_tape(Path::new("game.cas")));
+        assert!(is_tape(Path::new("GAME.TSX")));
+        assert!(!is_tape(Path::new("disk.dsk")));
+        // Openable covers both disks and tapes.
+        assert!(is_openable(Path::new("disk.dmk")));
+        assert!(is_openable(Path::new("tape.tsx")));
+        assert!(!is_openable(Path::new("notes.txt")));
     }
 
     #[test]
