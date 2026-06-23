@@ -855,14 +855,22 @@ impl DskExplorerApp {
                 ui.label(format!("Rename \"{old}\" to:"));
                 let resp =
                     ui.add(egui::TextEdit::singleline(&mut target.name).desired_width(160.0));
+                // Restrict to a valid 8.3 name as the user types.
+                if resp.changed() {
+                    target.name = normalize_msx_input(&target.name);
+                }
                 // Focus the field the first frame the modal appears.
                 if ui.memory(|m| m.focused().is_none()) {
                     resp.request_focus();
                 }
-                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.small("8-character name, optional 3-character extension.");
+                let valid = !msx_name_stem(&target.name).is_empty();
+                let enter = valid
+                    && resp.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    apply = ui.button("Rename").clicked();
+                    apply = ui.add_enabled(valid, egui::Button::new("Rename")).clicked();
                     cancel = ui.button("Cancel").clicked();
                 });
                 apply |= enter;
@@ -1764,6 +1772,15 @@ fn is_openable(path: &Path) -> bool {
     is_disk_image(path) || is_tape(path)
 }
 
+/// Punctuation allowed in an MSX (FAT 8.3) filename, besides ASCII
+/// alphanumerics. Shared by [`sanitize_msx_name`] and [`normalize_msx_input`].
+const MSX_NAME_PUNCT: &str = "_-!#$%&@^{}()~'";
+
+/// True if `c` is allowed in an MSX 8.3 filename.
+fn is_msx_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || MSX_NAME_PUNCT.contains(c)
+}
+
 fn sanitize_msx_name(name: &str) -> String {
     let upper = name.to_uppercase();
     let (stem, ext) = match upper.rsplit_once('.') {
@@ -1771,10 +1788,7 @@ fn sanitize_msx_name(name: &str) -> String {
         None => (upper.as_str(), ""),
     };
     let keep = |s: &str, max: usize| -> String {
-        s.chars()
-            .filter(|c| c.is_ascii_alphanumeric() || "_-!#$%&@^{}()~'".contains(*c))
-            .take(max)
-            .collect()
+        s.chars().filter(|c| is_msx_name_char(*c)).take(max).collect()
     };
     let mut stem = keep(stem, 8);
     if stem.is_empty() {
@@ -1786,6 +1800,42 @@ fn sanitize_msx_name(name: &str) -> String {
     } else {
         format!("{stem}.{ext}")
     }
+}
+
+/// Restrict free-form rename input to a valid 8.3 shape *as it is typed*:
+/// uppercase, only allowed characters, at most one `.` separator, an 8-char
+/// stem and a 3-char extension. Unlike [`sanitize_msx_name`] it leaves an empty
+/// stem empty (so the field can be cleared) and keeps a trailing `.` so the
+/// extension can still be typed.
+fn normalize_msx_input(raw: &str) -> String {
+    let mut stem = String::new();
+    let mut ext = String::new();
+    let mut in_ext = false;
+    for c in raw.to_uppercase().chars() {
+        if c == '.' {
+            // The first dot starts the extension; later dots are ignored.
+            in_ext = true;
+        } else if is_msx_name_char(c) {
+            if in_ext {
+                if ext.len() < 3 {
+                    ext.push(c);
+                }
+            } else if stem.len() < 8 {
+                stem.push(c);
+            }
+        }
+    }
+    if in_ext {
+        format!("{stem}.{ext}")
+    } else {
+        stem
+    }
+}
+
+/// The stem (pre-extension) part of a normalized 8.3 name; empty means the name
+/// has no usable base and cannot be applied.
+fn msx_name_stem(name: &str) -> &str {
+    name.split('.').next().unwrap_or("")
 }
 
 /// Extensions that default to the Text view.
@@ -1929,6 +1979,34 @@ mod tests {
         assert_eq!(sanitize_msx_name("a.b"), "A.B");
         assert_eq!(sanitize_msx_name(""), "FILE");
         assert_eq!(sanitize_msx_name("game.com"), "GAME.COM");
+    }
+
+    #[test]
+    fn normalize_input_enforces_83_shape() {
+        // Uppercases, drops disallowed characters, caps stem and extension.
+        assert_eq!(normalize_msx_input("my long file.text"), "MYLONGFI.TEX");
+        assert_eq!(normalize_msx_input("game.com"), "GAME.COM");
+        // Only the first dot separates; later dots are dropped.
+        assert_eq!(normalize_msx_input("a.b.c"), "A.BC");
+        // Spaces and other illegal characters are filtered out.
+        assert_eq!(normalize_msx_input("a b/c?"), "ABC");
+    }
+
+    #[test]
+    fn normalize_input_allows_in_progress_typing() {
+        // Empty stays empty (the field can be cleared) instead of "FILE".
+        assert_eq!(normalize_msx_input(""), "");
+        // A trailing dot is kept so the extension can still be typed.
+        assert_eq!(normalize_msx_input("GAME."), "GAME.");
+    }
+
+    #[test]
+    fn msx_name_stem_detects_applicable_names() {
+        assert_eq!(msx_name_stem("GAME.COM"), "GAME");
+        assert_eq!(msx_name_stem("GAME"), "GAME");
+        // No stem means nothing to apply.
+        assert!(msx_name_stem("").is_empty());
+        assert!(msx_name_stem(".COM").is_empty());
     }
 
     #[test]
