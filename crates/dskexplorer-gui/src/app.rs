@@ -151,8 +151,13 @@ impl DskExplorerApp {
                     ui.close();
                 }
             });
-            if self.disk.is_some() && ui.button("Save as .dsk…").clicked() {
-                self.save_as_dsk();
+            if self.disk.is_some() {
+                if ui.button("Save as .dsk…").clicked() {
+                    self.save_as_dsk();
+                }
+                if ui.button("Save as .xsa…").clicked() {
+                    self.save_as_xsa();
+                }
             }
             let writable = self.disk_writable();
             if writable && ui.button("Add files…").clicked() {
@@ -432,10 +437,20 @@ impl DskExplorerApp {
     }
 
     fn save_as_dsk(&mut self) {
+        self.save_converted("dsk", LoadedDisk::to_dsk_bytes);
+    }
+
+    fn save_as_xsa(&mut self) {
+        self.save_converted("xsa", LoadedDisk::to_xsa_bytes);
+    }
+
+    /// Shared helper for "Save as <ext>": derive a default name, run `encode`,
+    /// and write to a chosen path.
+    fn save_converted(&mut self, ext: &str, encode: fn(&LoadedDisk) -> Vec<u8>) {
         let Some((bytes, default)) = self.disk.as_ref().map(|d| {
             let title = d.title();
             let stem = title.rsplit_once('.').map(|(s, _)| s).unwrap_or(&title);
-            (d.to_dsk_bytes(), format!("{stem}.dsk"))
+            (encode(d), format!("{stem}.{ext}"))
         }) else {
             return;
         };

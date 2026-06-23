@@ -104,6 +104,23 @@ fn write_back_to_real_disk_roundtrip() {
 }
 
 #[test]
+fn compress_real_disk_to_xsa_and_reopen() {
+    let path = skip_if_absent!("MSX-DOS2 TOOLS.dsk");
+    let original = DiskImage::open(&path).expect("open").data().to_vec();
+
+    let xsa = msx_disk::image::xsa::compress(&original);
+    assert!(xsa.starts_with(b"PCK\x08"));
+    assert!(xsa.len() < original.len(), "should compress");
+
+    // Reopen through the public container path and confirm an exact match.
+    let reopened = DiskImage::open_bytes(ImageFormat::Xsa, xsa).expect("reopen xsa");
+    assert_eq!(reopened.data(), &original[..]);
+
+    let fs = DiskFs::from_image(&reopened).expect("mount");
+    assert!(fs.tree().unwrap().iter().any(|e| e.name == "MSXDOS2.SYS"));
+}
+
+#[test]
 fn cas_tape_lists_files() {
     let path = skip_if_absent!("Cannon Ball (1983)(Hudson Soft).cas");
     let bytes = std::fs::read(&path).expect("read cas");

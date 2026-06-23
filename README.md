@@ -13,12 +13,13 @@ files.
 
 Editing (write-back to the source image): add, rename, and delete files, and
 edit a file's bytes in hex. The original boot sector is always preserved, so
-MSX-DOS 1 boot code is never clobbered. `.xsa` is read-only (re-compression is
-a later phase).
+MSX-DOS 1 boot code is never clobbered.
+
+Conversions: create a new blank disk (360/720 KB), and Save As to convert any
+open image to `.dsk` or `.xsa` (full XSA compressor + decompressor).
 
 Still to come: graphical disk-usage / per-file sector maps, a view-and-edit
-sector view, format conversions (`xsa<->dsk`, `img/msx/ddi->dsk`), and
-drag-and-drop in/out of the OS file manager.
+sector view, and drag-and-drop in/out of the OS file manager.
 
 ## Supported image formats (read)
 

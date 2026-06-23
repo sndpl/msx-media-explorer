@@ -50,6 +50,11 @@ impl LoadedDisk {
         self.image.data().to_vec()
     }
 
+    /// Compress the disk's sectors into an `.xsa` image.
+    pub fn to_xsa_bytes(&self) -> Vec<u8> {
+        msx_disk::image::xsa::compress(self.image.data())
+    }
+
     /// Whether this disk can be modified in place (has a path and a writable
     /// container format).
     pub fn writable(&self) -> bool {
