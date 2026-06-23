@@ -31,6 +31,7 @@ pub struct DiskMap {
 
 /// Parsed BIOS Parameter Block fields needed for sector mapping.
 struct Bpb {
+    bytes_per_sector: usize,
     sectors_per_cluster: usize,
     reserved: usize,
     num_fats: usize,
@@ -57,6 +58,7 @@ impl Bpb {
             return None;
         }
         Some(Bpb {
+            bytes_per_sector,
             sectors_per_cluster,
             reserved,
             num_fats,
@@ -142,6 +144,38 @@ pub fn disk_usage(data: &[u8]) -> Option<DiskMap> {
     Some(DiskMap {
         sector_count,
         kinds,
+    })
+}
+
+/// Filesystem geometry derived from the (repaired) BPB: the figures shown in
+/// the status bar. Distinct from physical [`crate::image::geometry::Geometry`],
+/// which describes sides/tracks rather than the FAT layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FsGeometry {
+    pub bytes_per_sector: usize,
+    pub sectors_per_cluster: usize,
+    pub total_sectors: usize,
+    /// Number of data clusters (excluding the two reserved FAT entries).
+    pub cluster_count: usize,
+}
+
+/// Parse BPB-derived filesystem geometry from a normalized disk buffer, or
+/// `None` if it has no recognizable FAT BPB even after boot-sector repair.
+pub fn fs_geometry(data: &[u8]) -> Option<FsGeometry> {
+    let buf = repaired(data)?;
+    let bpb = Bpb::parse(&buf)?;
+    let total_sectors = buf.len() / SECTOR_SIZE;
+    let data_start = bpb.data_start();
+    let cluster_count = if total_sectors > data_start {
+        (total_sectors - data_start) / bpb.sectors_per_cluster
+    } else {
+        0
+    };
+    Some(FsGeometry {
+        bytes_per_sector: bpb.bytes_per_sector,
+        sectors_per_cluster: bpb.sectors_per_cluster,
+        total_sectors,
+        cluster_count,
     })
 }
 
@@ -332,5 +366,28 @@ mod tests {
     #[test]
     fn missing_file_has_no_sectors() {
         assert!(file_sectors(&make_disk(), "NOPE.XXX").is_empty());
+    }
+
+    #[test]
+    fn fs_geometry_uses_canonical_msx_layout_when_no_bpb() {
+        // A zeroed 720KB image has no valid BPB, so boot repair synthesizes the
+        // canonical MSX layout (2 sectors/cluster) that real MSX-DOS 1 disks use.
+        let geo = fs_geometry(&vec![0u8; SIZE_720K]).expect("geometry");
+        assert_eq!(geo.bytes_per_sector, 512);
+        assert_eq!(geo.sectors_per_cluster, 2);
+        assert_eq!(geo.total_sectors, 1440);
+        // 1440 sectors - 14 system (1 boot + 2*3 FAT + 7 root) = 1426 data
+        // sectors / 2 per cluster = 713 clusters.
+        assert_eq!(geo.cluster_count, 713);
+    }
+
+    #[test]
+    fn fs_geometry_reads_actual_bpb_values() {
+        // A real (here fatfs-formatted) disk reports its own BPB faithfully.
+        let geo = fs_geometry(&make_disk()).expect("geometry");
+        assert_eq!(geo.bytes_per_sector, 512);
+        assert_eq!(geo.total_sectors, 1440);
+        assert!(geo.sectors_per_cluster.is_power_of_two());
+        assert!(geo.cluster_count > 0);
     }
 }

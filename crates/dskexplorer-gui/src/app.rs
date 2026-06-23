@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use msx_disk::fs::map::SectorKind;
+use msx_disk::image::geometry::{Geometry, SECTOR_SIZE};
 use msx_disk::recoil::{self, FnCompanions};
 use msx_disk::search;
 use msx_disk::view::basic;
@@ -80,6 +81,8 @@ pub struct DskExplorerApp {
     sector_edit: Option<String>,
     /// Cached sector-usage map for the open disk.
     disk_map: Option<msx_disk::fs::map::DiskMap>,
+    /// Cached filesystem geometry (clusters/sectors) for the status bar.
+    disk_fs_geometry: Option<msx_disk::fs::map::FsGeometry>,
     /// OS clipboard handle (kept alive so copied data persists on Linux).
     clipboard: Option<arboard::Clipboard>,
     /// Disk-wide search (Sectors view).
@@ -126,6 +129,7 @@ impl Default for DskExplorerApp {
             current_sector: 0,
             sector_edit: None,
             disk_map: None,
+            disk_fs_geometry: None,
             clipboard: None,
             disk_search_query: String::new(),
             disk_search_is_hex: false,
@@ -156,6 +160,7 @@ impl DskExplorerApp {
                 self.current_sector = 0;
                 self.sector_edit = None;
                 self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
+                self.disk_fs_geometry = self.disk.as_ref().and_then(LoadedDisk::fs_geometry);
             }
             Err(e) => self.status = format!("Failed to open {}: {e}", path.display()),
         }
@@ -572,6 +577,7 @@ impl DskExplorerApp {
                 self.search_matches.clear();
                 self.hex_edit = None;
                 self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
+                self.disk_fs_geometry = self.disk.as_ref().and_then(LoadedDisk::fs_geometry);
             }
             Err(e) => self.status = format!("Write failed: {e}"),
         }
@@ -1223,6 +1229,39 @@ impl DskExplorerApp {
             self.app_view = AppView::Sectors;
         }
     }
+
+    /// Bottom status bar. With a disk open it shows the physical disk type plus
+    /// BPB-derived filesystem facts; otherwise just the transient status text.
+    fn status_bar(&self, ui: &mut egui::Ui) {
+        let Some(disk) = &self.disk else {
+            ui.label(&self.status);
+            return;
+        };
+        let geo = disk.geometry;
+        ui.label(egui::RichText::new(describe_geometry(geo)).weak());
+        ui.horizontal(|ui| {
+            ui.label(format!("Size: {} KB", geo.total_bytes() / 1024));
+            if let Some(fs) = self.disk_fs_geometry {
+                ui.separator();
+                ui.label(format!("Clusters: {}", fs.cluster_count));
+                ui.separator();
+                ui.label(format!("Sectors/cluster: {}", fs.sectors_per_cluster));
+                ui.separator();
+                ui.label(format!("Bytes/sector: {}", fs.bytes_per_sector));
+                ui.separator();
+                ui.label(format!("Sectors: {}", fs.total_sectors));
+            } else {
+                ui.separator();
+                ui.label(format!("Sectors: {}", geo.total_sectors()));
+            }
+            if let Some(label) = &disk.label {
+                ui.separator();
+                ui.label(format!("Vol: {label}"));
+            }
+            ui.separator();
+            ui.label(&self.status);
+        });
+    }
 }
 
 /// Colour for a sector-usage category in the disk map.
@@ -1390,6 +1429,33 @@ fn base_name(path: &str) -> String {
     path.rsplit('/').next().unwrap_or("file").to_string()
 }
 
+/// A human-readable description of the physical disk format, e.g.
+/// `3.5" Double Sided, Double Density (2DD): 2 sides × 80 tracks × 9
+/// sectors/track × 512 bytes/sector = 737280 bytes (720 KB)`.
+fn describe_geometry(geo: Geometry) -> String {
+    let bytes = geo.total_bytes();
+    let name = match (geo.sides, geo.tracks, geo.sectors_per_track) {
+        (1, 80, 9) => Some("3.5\" Single Sided, Double Density (1DD)"),
+        (2, 80, 9) => Some("3.5\" Double Sided, Double Density (2DD)"),
+        (1, 40, 9) => Some("5.25\" Single Sided, Double Density (SS,DD)"),
+        (2, 40, 9) => Some("5.25\" Double Sided, Double Density (DS,DD)"),
+        _ => None,
+    };
+    let arithmetic = format!(
+        "{} side{} \u{00D7} {} tracks \u{00D7} {} sectors/track \u{00D7} {} bytes/sector = {bytes} bytes ({} KB)",
+        geo.sides,
+        if geo.sides == 1 { "" } else { "s" },
+        geo.tracks,
+        geo.sectors_per_track,
+        SECTOR_SIZE,
+        bytes / 1024,
+    );
+    match name {
+        Some(n) => format!("{n}: {arithmetic}"),
+        None => arithmetic,
+    }
+}
+
 /// Whether `path`'s extension marks it as an openable disk image.
 fn is_disk_image(path: &Path) -> bool {
     path.extension()
@@ -1518,7 +1584,7 @@ impl eframe::App for DskExplorerApp {
         });
         egui::Panel::bottom("status").show_inside(ui, |ui| {
             ui.add_space(2.0);
-            ui.label(&self.status);
+            self.status_bar(ui);
             ui.add_space(2.0);
         });
         egui::Panel::left("tree")
@@ -1703,6 +1769,42 @@ mod tests {
         assert_eq!(base_name("A/B/C.BIN"), "C.BIN");
         assert_eq!(base_name("ROOT.COM"), "ROOT.COM");
         assert_eq!(base_name("DIR/SUB/"), "");
+    }
+
+    #[test]
+    fn describe_geometry_names_standard_formats() {
+        let desc = describe_geometry(Geometry::DS_720K);
+        assert!(
+            desc.starts_with("3.5\" Double Sided, Double Density (2DD)"),
+            "{desc}"
+        );
+        assert!(desc.contains("2 sides"), "{desc}");
+        assert!(desc.contains("80 tracks"), "{desc}");
+        assert!(desc.contains("= 737280 bytes (720 KB)"), "{desc}");
+
+        let desc360 = describe_geometry(Geometry::SS_360K);
+        assert!(
+            desc360.starts_with("3.5\" Single Sided, Double Density (1DD)"),
+            "{desc360}"
+        );
+        assert!(desc360.contains("1 side "), "singular: {desc360}");
+        assert!(desc360.contains("(360 KB)"), "{desc360}");
+    }
+
+    #[test]
+    fn describe_geometry_falls_back_to_arithmetic_for_unknown() {
+        let odd = Geometry {
+            sides: 2,
+            tracks: 35,
+            sectors_per_track: 8,
+        };
+        let desc = describe_geometry(odd);
+        // No named form factor, just the arithmetic.
+        assert!(!desc.contains('"'), "{desc}");
+        assert!(
+            desc.starts_with("2 sides × 35 tracks × 8 sectors/track"),
+            "{desc}"
+        );
     }
 
     #[test]

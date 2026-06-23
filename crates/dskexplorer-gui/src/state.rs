@@ -95,6 +95,12 @@ impl LoadedDisk {
         msx_disk::fs::map::disk_usage(self.image.data())
     }
 
+    /// BPB-derived filesystem geometry (clusters, sectors, etc.) for the status
+    /// bar, or `None` if the disk has no recognizable FAT BPB.
+    pub fn fs_geometry(&self) -> Option<msx_disk::fs::map::FsGeometry> {
+        msx_disk::fs::map::fs_geometry(self.image.data())
+    }
+
     /// The sectors occupied by a file (its cluster chain).
     pub fn file_sectors(&self, path: &str) -> Vec<usize> {
         msx_disk::fs::map::file_sectors(self.image.data(), path)

@@ -31,6 +31,10 @@ disk-wide search (text or hex, jump between matches), and a graphical disk-usage
 map (reserved / FAT / root / used / free) that outlines the selected file's
 sectors; clicking a cell opens that sector.
 
+Status bar: with a disk open, shows the physical disk type (e.g. 3.5" Double
+Sided, Double Density 2DD) and the BPB-derived filesystem facts (size, clusters,
+sectors per cluster, bytes per sector, total sectors, volume label).
+
 Clipboard & export: copy the current view to the OS clipboard (hex dump / text /
 BASIC listing as text, or the decoded screen image as a bitmap), and save the
 viewed MSX image as a PNG.
