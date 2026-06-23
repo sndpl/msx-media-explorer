@@ -275,6 +275,7 @@ pub fn is_supported(filename: &str) -> bool {
             | "scb"
             | "sra"
             | "scc"
+            | "s12"
             | "srs"
             | "yjk"
             | "shc"
@@ -325,7 +326,7 @@ pub fn decode(filename: &str, content: &[u8], companions: &dyn CompanionFiles) -
         "sc7" | "ge7" => r.decode_sc7(content),
         "sc8" | "ge8" | "sr8" => r.decode_sc8(content),
         "sca" | "scb" | "sra" => r.decode_sca(content),
-        "scc" | "srs" | "yjk" => r.decode_scc(content),
+        "scc" | "s12" | "srs" | "yjk" => r.decode_scc(content),
         "shc" => r.decode_glyjk(content, false),
         "sr5" => r.decode_sr5(content),
         "sr6" => r.decode_sr6(content),
@@ -361,8 +362,29 @@ mod tests {
         assert!(is_supported("a.sc8"));
         assert!(is_supported("photo.G9B"));
         assert!(is_supported("img.gl5"));
+        assert!(is_supported("photo.s12"));
+        assert!(is_supported("PHOTO.S12"));
         assert!(!is_supported("readme.txt"));
         assert!(!is_supported("noext"));
+    }
+
+    #[test]
+    fn s12_is_scc_alias() {
+        // Minimal valid SCREEN 12 (SCC) BSAVE buffer: marker 0xfe, start = 0,
+        // end-address header = 0xbfff (192-line image), exec = 0. The size is
+        // exactly 7 + (192 << 8) so the YJK pixel data fills the buffer.
+        let mut buf = vec![0u8; 49159];
+        buf[0] = 0xfe;
+        buf[3] = 0xff;
+        buf[4] = 0xbf;
+
+        let via_scc = decode("img.scc", &buf, &NoCompanions).expect("scc decodes");
+        let via_s12 = decode("img.s12", &buf, &NoCompanions).expect("s12 decodes");
+        assert_eq!(
+            (via_scc.width, via_scc.height),
+            (via_s12.width, via_s12.height)
+        );
+        assert_eq!(via_scc.pixels, via_s12.pixels);
     }
 
     #[test]
