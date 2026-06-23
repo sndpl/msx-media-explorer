@@ -14,7 +14,7 @@ use msx_disk::view::hex::{ascii_char, dump_to_string, HexConfig};
 use msx_disk::view::text::{self, ControlMode};
 use msx_disk::{DirEntry, ImageFormat};
 
-use crate::state::{LoadedDisk, LoadedTape};
+use crate::state::{humanize_bytes, LoadedDisk, LoadedTape};
 
 /// How the selected file's contents are shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +24,8 @@ enum ViewMode {
     Text,
     Basic,
     Screen,
+    /// Contents of a selected `.lzh`/`.lzs`/`.pma` archive file.
+    Archive,
 }
 
 /// Top-level view. Which tabs are offered depends on the open document:
@@ -54,6 +56,22 @@ const TAPE_EXTS: &[&str] = &["cas", "tsx"];
 struct FileContent {
     path: String,
     bytes: Vec<u8>,
+}
+
+/// Cached member listing for the selected archive file, computed once when the
+/// file is selected (not per frame). `result` holds the members or a message
+/// explaining why the archive could not be read.
+struct ArchiveListing {
+    result: Result<Vec<msx_disk::ArchiveEntry>, String>,
+    /// The member row the user has highlighted, for the right-click menu.
+    selected_member: Option<usize>,
+}
+
+/// A deferred action chosen in the archive pane, applied after the render
+/// borrow of `self.archive` is released.
+enum ArchiveAction {
+    ExtractOne(usize),
+    ExtractAll,
 }
 
 /// A file action chosen from a tree row's right-click context menu. Carries the
@@ -96,6 +114,8 @@ pub struct DskExplorerApp {
     /// All files marked for batch extract/delete (Cmd/Ctrl-click to toggle).
     selection: BTreeSet<String>,
     content: Option<FileContent>,
+    /// Parsed member list for the selected archive file, when one is selected.
+    archive: Option<ArchiveListing>,
     view_mode: ViewMode,
     bytes_per_row: usize,
     text_show_all: bool,
@@ -156,6 +176,7 @@ impl Default for DskExplorerApp {
             selected: None,
             selection: BTreeSet::new(),
             content: None,
+            archive: None,
             view_mode: ViewMode::Hex,
             bytes_per_row: 16,
             text_show_all: false,
@@ -205,6 +226,7 @@ impl DskExplorerApp {
         self.selected = None;
         self.selection.clear();
         self.content = None;
+        self.archive = None;
         self.current_sector = 0;
         self.sector_edit = None;
         self.app_view = AppView::Files;
@@ -280,6 +302,16 @@ impl DskExplorerApp {
             self.selection.clear();
             self.selection.insert(path.clone());
         }
+        // Parse an archive's member list once, here, so the pane never re-parses
+        // per frame. Non-archive files clear any previous listing.
+        self.archive = if msx_disk::archive::is_archive(&path) {
+            Some(ArchiveListing {
+                result: msx_disk::archive::list(&bytes).map_err(|e| e.to_string()),
+                selected_member: None,
+            })
+        } else {
+            None
+        };
         self.content = Some(FileContent {
             path: path.clone(),
             bytes,
@@ -347,11 +379,11 @@ impl DskExplorerApp {
                 }
             }
             ui.menu_button("New…", |ui| {
-                if ui.button("720 KB (double-sided)").clicked() {
+                if ui.button("720 kB (double-sided)").clicked() {
                     self.new_disk(true);
                     ui.close();
                 }
-                if ui.button("360 KB (single-sided)").clicked() {
+                if ui.button("360 kB (single-sided)").clicked() {
                     self.new_disk(false);
                     ui.close();
                 }
@@ -488,6 +520,9 @@ impl DskExplorerApp {
             ui.selectable_value(&mut self.view_mode, ViewMode::Text, "Text");
             ui.selectable_value(&mut self.view_mode, ViewMode::Basic, "BASIC");
             ui.selectable_value(&mut self.view_mode, ViewMode::Screen, "Screen");
+            if self.archive.is_some() {
+                ui.selectable_value(&mut self.view_mode, ViewMode::Archive, "Archive");
+            }
             ui.separator();
             match self.view_mode {
                 ViewMode::Hex => {
@@ -517,9 +552,9 @@ impl DskExplorerApp {
                 ViewMode::Text => {
                     ui.checkbox(&mut self.text_show_all, "Show all characters");
                 }
-                ViewMode::Basic | ViewMode::Screen | ViewMode::Info => {}
+                ViewMode::Basic | ViewMode::Screen | ViewMode::Info | ViewMode::Archive => {}
             }
-            if self.content.is_some() {
+            if self.content.is_some() && self.view_mode != ViewMode::Archive {
                 ui.separator();
                 let copy_label = if self.view_mode == ViewMode::Screen {
                     "Copy image"
@@ -535,7 +570,7 @@ impl DskExplorerApp {
             }
         });
 
-        if self.content.is_some() {
+        if self.content.is_some() && self.view_mode != ViewMode::Archive {
             ui.horizontal(|ui| {
                 ui.label("Find:");
                 let resp =
@@ -577,6 +612,14 @@ impl DskExplorerApp {
             return;
         }
 
+        if self.view_mode == ViewMode::Archive {
+            // The archive pane needs `&mut self` (to update the highlighted
+            // member and to trigger extraction), so handle it outside the
+            // shared `self.content` borrow below.
+            self.archive_panel(ui);
+            return;
+        }
+
         if self.view_mode == ViewMode::Screen {
             // The screen view needs the mutable texture cache, so handle it
             // outside the shared borrow of `self.content`.
@@ -614,8 +657,101 @@ impl DskExplorerApp {
                 }
                 ViewMode::Text => render_text(ui, &content.bytes, self.text_show_all),
                 ViewMode::Basic => render_basic(ui, &content.bytes),
-                ViewMode::Screen => unreachable!("handled above"),
+                ViewMode::Screen | ViewMode::Archive => unreachable!("handled above"),
             },
+        }
+    }
+
+    /// Render the contents of the selected archive: a member list with a
+    /// right-click "Extract…" per row and an "Extract all…" button. Reads from
+    /// the cached `self.archive` listing; never re-parses here.
+    fn archive_panel(&mut self, ui: &mut egui::Ui) {
+        let mut action: Option<ArchiveAction> = None;
+        let mut new_selection: Option<usize> = None;
+
+        match self.archive.as_ref() {
+            None => {
+                ui.weak("Not an archive.");
+            }
+            Some(listing) => match &listing.result {
+                Err(msg) => {
+                    ui.colored_label(
+                        egui::Color32::LIGHT_RED,
+                        format!("Cannot read archive: {msg}"),
+                    );
+                }
+                Ok(members) if members.is_empty() => {
+                    ui.weak("Archive is empty.");
+                }
+                Ok(members) => {
+                    ui.horizontal(|ui| {
+                        let any = members.iter().any(|m| m.decodable && !m.is_directory);
+                        if ui
+                            .add_enabled(any, egui::Button::new("Extract all…"))
+                            .clicked()
+                        {
+                            action = Some(ArchiveAction::ExtractAll);
+                        }
+                        ui.weak(format!("{} member(s)", members.len()));
+                    });
+                    ui.separator();
+                    ui.monospace(format!(
+                        "{:<28} {:>9} {:>8} {:<5} {}",
+                        "Name", "Size", "Packed", "Meth", "Modified"
+                    ));
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for (i, m) in members.iter().enumerate() {
+                                let is_sel = listing.selected_member == Some(i);
+                                let marker = if m.is_directory {
+                                    "  <dir>"
+                                } else if !m.decodable {
+                                    "  <unsupported>"
+                                } else {
+                                    ""
+                                };
+                                let label = format!(
+                                    "{:<28} {:>9} {:>8} {:<5} {:<16}{}",
+                                    truncate(&m.path, 28),
+                                    m.original_size,
+                                    m.compressed_size,
+                                    m.method.label(),
+                                    format_timestamp(m.modified),
+                                    marker
+                                );
+                                let resp = ui.selectable_label(
+                                    is_sel,
+                                    egui::RichText::new(label).monospace(),
+                                );
+                                if resp.clicked() {
+                                    new_selection = Some(i);
+                                }
+                                let extractable = m.decodable && !m.is_directory;
+                                resp.context_menu(|ui| {
+                                    if ui
+                                        .add_enabled(extractable, egui::Button::new("Extract…"))
+                                        .clicked()
+                                    {
+                                        action = Some(ArchiveAction::ExtractOne(i));
+                                        ui.close();
+                                    }
+                                });
+                            }
+                        });
+                }
+            },
+        }
+
+        if let Some(i) = new_selection {
+            if let Some(listing) = self.archive.as_mut() {
+                listing.selected_member = Some(i);
+            }
+        }
+        match action {
+            Some(ArchiveAction::ExtractOne(i)) => self.extract_archive_member(i),
+            Some(ArchiveAction::ExtractAll) => self.extract_archive_all(),
+            None => {}
         }
     }
 
@@ -961,6 +1097,102 @@ impl DskExplorerApp {
         };
     }
 
+    /// Extract one archive member (decompressed) via a save-as dialog.
+    fn extract_archive_member(&mut self, index: usize) {
+        let (default_name, extracted) = {
+            let Some(content) = self.content.as_ref() else {
+                return;
+            };
+            let Some(listing) = self.archive.as_ref() else {
+                return;
+            };
+            let Ok(members) = &listing.result else {
+                return;
+            };
+            let Some(member) = members.get(index) else {
+                return;
+            };
+            (
+                base_name(&member.path),
+                msx_disk::archive::extract(&content.bytes, index),
+            )
+        };
+        match extracted {
+            Ok(data) => {
+                if let Some(target) = rfd::FileDialog::new()
+                    .set_file_name(&default_name)
+                    .save_file()
+                {
+                    let crc_warn = if self
+                        .content
+                        .as_ref()
+                        .and_then(|c| msx_disk::archive::crc_ok(&c.bytes, index))
+                        == Some(false)
+                    {
+                        " (warning: CRC mismatch)"
+                    } else {
+                        ""
+                    };
+                    self.status = match std::fs::write(&target, &data) {
+                        Ok(()) => format!(
+                            "Extracted {} ({} bytes){} to {}",
+                            default_name,
+                            data.len(),
+                            crc_warn,
+                            target.display()
+                        ),
+                        Err(e) => format!("Failed to extract: {e}"),
+                    };
+                }
+            }
+            Err(e) => self.status = format!("Cannot decompress {default_name}: {e}"),
+        }
+    }
+
+    /// Extract every decodable member into a chosen folder, preserving each
+    /// member's subdirectory path under it.
+    fn extract_archive_all(&mut self) {
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        let (mut ok, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+        {
+            let Some(content) = self.content.as_ref() else {
+                return;
+            };
+            let Some(listing) = self.archive.as_ref() else {
+                return;
+            };
+            let Ok(members) = &listing.result else {
+                return;
+            };
+            for (i, m) in members.iter().enumerate() {
+                if m.is_directory || !m.decodable {
+                    skipped += 1;
+                    continue;
+                }
+                match msx_disk::archive::extract(&content.bytes, i) {
+                    Ok(data) => {
+                        let target = dir.join(sanitize_member_path(&m.path));
+                        if let Some(parent) = target.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        if std::fs::write(&target, &data).is_ok() {
+                            ok += 1;
+                        } else {
+                            failed += 1;
+                        }
+                    }
+                    Err(_) => failed += 1,
+                }
+            }
+        }
+        self.status = format!(
+            "Extracted {ok} member(s) to {} ({skipped} skipped, {failed} failed)",
+            dir.display()
+        );
+    }
+
     /// If a row was dragged this frame, write the file(s) to a temp directory
     /// and hand them to the OS drag, using the window handle from `frame`.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -1069,7 +1301,8 @@ impl DskExplorerApp {
                 },
             ),
             ViewMode::Basic => basic::detokenize(&content.bytes),
-            ViewMode::Screen => unreachable!("handled above"),
+            // Screen is handled above; the Copy button is hidden in Archive mode.
+            ViewMode::Screen | ViewMode::Archive => return,
         };
         self.copy_text_to_clipboard(text);
     }
@@ -1378,7 +1611,7 @@ impl DskExplorerApp {
             let geo = disk.geometry;
             ui.label(egui::RichText::new(describe_geometry(geo)).weak());
             ui.horizontal(|ui| {
-                ui.label(format!("Size: {} KB", geo.total_bytes() / 1024));
+                ui.label(format!("Size: {}", humanize_bytes(geo.total_bytes() as u64)));
                 if disk.is_partitioned() {
                     ui.separator();
                     ui.label(format!("Sectors: {}", geo.total_sectors()));
@@ -1751,12 +1984,41 @@ fn format_hex_for_edit(bytes: &[u8]) -> String {
 /// Coerce a host filename into an MSX-DOS 8.3 uppercase name.
 /// The final path component (file name) of a slash-separated disk path.
 fn base_name(path: &str) -> String {
-    path.rsplit('/').next().unwrap_or("file").to_string()
+    path.rsplit(['/', '\\']).next().unwrap_or("file").to_string()
+}
+
+/// Truncate `s` to at most `max` characters, marking elision with a trailing
+/// ellipsis so the monospace member table stays aligned.
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+        out.push('\u{2026}');
+        out
+    }
+}
+
+/// Turn a stored archive member path into a safe relative host path: split on
+/// both separators and drop empty, `.`, and `..` components. This preserves
+/// subdirectories while preventing path traversal outside the chosen folder.
+fn sanitize_member_path(path: &str) -> PathBuf {
+    let mut out = PathBuf::new();
+    for part in path.split(['/', '\\']) {
+        if part.is_empty() || part == "." || part == ".." {
+            continue;
+        }
+        out.push(part);
+    }
+    if out.as_os_str().is_empty() {
+        out.push("extracted");
+    }
+    out
 }
 
 /// A human-readable description of the physical disk format, e.g.
 /// `3.5" Double Sided, Double Density (2DD): 2 sides × 80 tracks × 9
-/// sectors/track × 512 bytes/sector = 737280 bytes (720 KB)`.
+/// sectors/track × 512 bytes/sector = 737280 bytes (720 kB)`.
 fn describe_geometry(geo: Geometry) -> String {
     let bytes = geo.total_bytes();
     let name = match (geo.sides, geo.tracks, geo.sectors_per_track) {
@@ -1767,7 +2029,7 @@ fn describe_geometry(geo: Geometry) -> String {
         _ => None,
     };
     let arithmetic = format!(
-        "{} side{} \u{00D7} {} tracks \u{00D7} {} sectors/track \u{00D7} {} bytes/sector = {bytes} bytes ({} KB)",
+        "{} side{} \u{00D7} {} tracks \u{00D7} {} sectors/track \u{00D7} {} bytes/sector = {bytes} bytes ({} kB)",
         geo.sides,
         if geo.sides == 1 { "" } else { "s" },
         geo.tracks,
@@ -1881,7 +2143,9 @@ const TEXT_EXTENSIONS: &[&str] = &[
 /// Pick a sensible default view mode for a file based on its extension.
 fn default_view_mode(path: &str) -> ViewMode {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    if recoil::is_supported(path) {
+    if msx_disk::archive::is_archive(path) {
+        ViewMode::Archive
+    } else if recoil::is_supported(path) {
         ViewMode::Screen
     } else if ext == "bas" {
         ViewMode::Basic
@@ -2123,7 +2387,7 @@ fn render_text(ui: &mut egui::Ui, bytes: &[u8], show_all: bool) {
         .show(ui, |ui| {
             if bytes.len() > MAX_TEXT_BYTES {
                 ui.weak(format!(
-                    "Showing first {} KB of {} KB.",
+                    "Showing first {} kB of {} kB.",
                     MAX_TEXT_BYTES / 1024,
                     bytes.len() / 1024
                 ));
@@ -2229,6 +2493,31 @@ mod tests {
         assert_eq!(default_view_mode("SONG.MBM"), ViewMode::Info);
         assert_eq!(default_view_mode("TUNE.mod"), ViewMode::Info);
         assert_eq!(default_view_mode("track.pt3"), ViewMode::Info);
+        assert_eq!(default_view_mode("GAME.LZH"), ViewMode::Archive);
+        assert_eq!(default_view_mode("util.lha"), ViewMode::Archive);
+        assert_eq!(default_view_mode("DEMO.LZS"), ViewMode::Archive);
+        assert_eq!(default_view_mode("SNOOPY.pma"), ViewMode::Archive);
+    }
+
+    #[test]
+    fn sanitize_member_path_preserves_subdirs_and_blocks_traversal() {
+        assert_eq!(sanitize_member_path("FILE.BIN"), PathBuf::from("FILE.BIN"));
+        assert_eq!(
+            sanitize_member_path("SUB/DIR/FILE.BIN"),
+            PathBuf::from("SUB/DIR/FILE.BIN")
+        );
+        // Backslash separators (MS-DOS) are normalized.
+        assert_eq!(
+            sanitize_member_path("SUB\\FILE.BIN"),
+            PathBuf::from("SUB/FILE.BIN")
+        );
+        // `..` and leading separators cannot escape the chosen folder.
+        assert_eq!(
+            sanitize_member_path("../../etc/passwd"),
+            PathBuf::from("etc/passwd")
+        );
+        assert_eq!(sanitize_member_path("/abs/path"), PathBuf::from("abs/path"));
+        assert_eq!(sanitize_member_path("../.."), PathBuf::from("extracted"));
     }
 
     fn file_entry(
@@ -2373,7 +2662,7 @@ mod tests {
         );
         assert!(desc.contains("2 sides"), "{desc}");
         assert!(desc.contains("80 tracks"), "{desc}");
-        assert!(desc.contains("= 737280 bytes (720 KB)"), "{desc}");
+        assert!(desc.contains("= 737280 bytes (720 kB)"), "{desc}");
 
         let desc360 = describe_geometry(Geometry::SS_360K);
         assert!(
@@ -2381,7 +2670,7 @@ mod tests {
             "{desc360}"
         );
         assert!(desc360.contains("1 side "), "singular: {desc360}");
-        assert!(desc360.contains("(360 KB)"), "{desc360}");
+        assert!(desc360.contains("(360 kB)"), "{desc360}");
     }
 
     #[test]

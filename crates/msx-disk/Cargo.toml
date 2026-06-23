@@ -12,6 +12,10 @@ workspace = true
 
 [dependencies]
 fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
+# LHA/LZH/LArc decoding. Default features (std, lh1, lz) cover every method we
+# need: lh0/lh1/lh4/lh5/lh6/lh7 (.lzh), lzs/lz4/lz5 (.lzs), and pm0 (.pma).
+# PMA pm1/pm2 are not supported by delharc and are handled by `archive::pma`.
+delharc = "0.6"
 
 [dev-dependencies]
 image = { version = "0.25.10", default-features = false, features = ["png"] }

@@ -192,6 +192,64 @@ fn dmk_analyze_reports_real_track_layout() {
     );
 }
 
+/// Decode every decodable member of an archive and confirm each one's length
+/// and CRC-16 match the values recorded in its header. A CRC match is strong
+/// evidence the decompressor is byte-for-byte correct.
+fn assert_archive_members_decode(bytes: &[u8]) {
+    let members = msx_disk::archive::list(bytes).expect("list archive");
+    assert!(!members.is_empty(), "archive should contain members");
+    let mut decoded_any = false;
+    for (i, m) in members.iter().enumerate() {
+        if m.is_directory || !m.decodable {
+            continue;
+        }
+        let data = msx_disk::archive::extract(bytes, i).expect("extract member");
+        assert_eq!(
+            data.len() as u64,
+            m.original_size,
+            "size mismatch for member {}",
+            m.path
+        );
+        assert_eq!(
+            msx_disk::archive::crc_ok(bytes, i),
+            Some(true),
+            "crc mismatch for member {} ({})",
+            m.path,
+            m.method.tag()
+        );
+        decoded_any = true;
+    }
+    assert!(decoded_any, "expected at least one decodable member");
+}
+
+// PMarc fixtures from Simon Howard's lhasa test suite (ISC), committed in-crate
+// so the hand-ported pm1/pm2 decoders are validated on every run.
+#[test]
+fn pma_pm0_stored_decodes() {
+    assert_archive_members_decode(include_bytes!("data/pm0.pma"));
+}
+
+// pm1.pma (25 KB output) exceeds every pm1 position threshold, and pm2.pma
+// (18 KB output) crosses all pm2 tree-rebuild boundaries (1K/2K/4K/8K), so
+// these two cover the full decoder code paths.
+#[test]
+fn pma_pm1_decodes() {
+    assert_archive_members_decode(include_bytes!("data/pm1.pma"));
+}
+
+#[test]
+fn pma_pm2_decodes() {
+    assert_archive_members_decode(include_bytes!("data/pm2.pma"));
+}
+
+/// A real-world MSX `.pma` (not from the lhasa suite); skipped when absent.
+#[test]
+fn real_world_pma_decodes() {
+    let path = skip_if_absent!("1250-232.pma");
+    let bytes = std::fs::read(&path).expect("read pma");
+    assert_archive_members_decode(&bytes);
+}
+
 #[test]
 fn cas_tape_lists_files() {
     let path = skip_if_absent!("Cannon Ball (1983)(Hudson Soft).cas");

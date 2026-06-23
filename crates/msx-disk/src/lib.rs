@@ -5,6 +5,7 @@
 //! structures (sector buffers, directory trees, decoded view models) so the
 //! logic can be tested without a GUI and reused from a CLI.
 
+pub mod archive;
 pub mod cas;
 pub mod error;
 pub mod fileinfo;
@@ -16,6 +17,7 @@ pub mod tape;
 pub mod tsx;
 pub mod view;
 
+pub use archive::{ArchiveEntry, Method};
 pub use error::{Error, Result};
 pub use fs::{DirEntry, DiskFs};
 pub use image::{DiskImage, ImageFormat};

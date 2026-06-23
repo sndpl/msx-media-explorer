@@ -343,18 +343,18 @@ fn partition_node_name(n: usize, volume: &Volume, entry: &PartitionEntry) -> Str
     }
 }
 
-/// Format a byte count as a compact human-readable size (KB / MB / GB).
-fn humanize_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    if bytes >= GB {
-        format!("{:.1} GB", bytes as f64 / GB as f64)
-    } else if bytes >= MB {
-        format!("{} MB", bytes / MB)
+/// Format a byte count as a human-readable size using SI (decimal, 1000-based)
+/// prefixes with two decimals, e.g. `134.22 MB`. Ported from Kohana's
+/// `Num::bytes()`, picking the largest unit that keeps the value at least 1.
+pub(crate) fn humanize_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["B", "kB", "MB", "GB", "TB", "PB"];
+    const MOD: f64 = 1000.0;
+    let power = if bytes > 0 {
+        ((bytes as f64).log(MOD).floor() as usize).min(UNITS.len() - 1)
     } else {
-        format!("{} KB", bytes / KB)
-    }
+        0
+    };
+    format!("{:.2} {}", bytes as f64 / MOD.powi(power as i32), UNITS[power])
 }
 
 /// A currently-open tape image (`.cas` / `.tsx`): its blocks for the overview
@@ -448,10 +448,13 @@ mod tests {
 
     #[test]
     fn humanize_bytes_picks_units() {
-        assert_eq!(humanize_bytes(512), "0 KB");
-        assert_eq!(humanize_bytes(2048), "2 KB");
-        assert_eq!(humanize_bytes(32 * 1024 * 1024), "32 MB");
-        assert_eq!(humanize_bytes(2 * 1024 * 1024 * 1024), "2.0 GB");
+        assert_eq!(humanize_bytes(0), "0.00 B");
+        assert_eq!(humanize_bytes(512), "512.00 B");
+        assert_eq!(humanize_bytes(2048), "2.05 kB");
+        assert_eq!(humanize_bytes(32 * 1024 * 1024), "33.55 MB");
+        // The 128 MiB hard-disk size that previously read "131076 KB".
+        assert_eq!(humanize_bytes(131_076 * 1024), "134.22 MB");
+        assert_eq!(humanize_bytes(2 * 1000 * 1000 * 1000), "2.00 GB");
     }
 
     #[test]
