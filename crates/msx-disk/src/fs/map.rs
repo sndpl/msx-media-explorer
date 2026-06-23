@@ -29,18 +29,34 @@ pub struct DiskMap {
     pub kinds: Vec<SectorKind>,
 }
 
+/// Which FAT width a volume uses.
+///
+/// MSX volumes can be either FAT12 (floppies, small hard-disk partitions) or
+/// FAT16 (larger partitions). The two encode FAT entries differently — 12 vs
+/// 16 bits — so the width must be known before walking any cluster chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FatType {
+    Fat12,
+    Fat16,
+}
+
 /// Parsed BIOS Parameter Block fields needed for sector mapping.
-struct Bpb {
-    bytes_per_sector: usize,
-    sectors_per_cluster: usize,
-    reserved: usize,
-    num_fats: usize,
-    root_entries: usize,
-    sectors_per_fat: usize,
+///
+/// Every field is read straight from the volume's own boot sector; nothing is
+/// assumed about layout (e.g. `root_entries` is whatever the disk declares).
+pub struct Bpb {
+    pub bytes_per_sector: usize,
+    pub sectors_per_cluster: usize,
+    pub reserved: usize,
+    pub num_fats: usize,
+    pub root_entries: usize,
+    pub sectors_per_fat: usize,
 }
 
 impl Bpb {
-    fn parse(buf: &[u8]) -> Option<Bpb> {
+    /// Parse the BPB from the boot sector at the start of `buf`, or `None` if
+    /// the fields are not a self-consistent FAT BPB.
+    pub fn parse(buf: &[u8]) -> Option<Bpb> {
         if buf.len() < SECTOR_SIZE {
             return None;
         }
@@ -67,29 +83,56 @@ impl Bpb {
         })
     }
 
-    fn fat_start(&self) -> usize {
+    pub fn fat_start(&self) -> usize {
         self.reserved
     }
 
-    fn root_start(&self) -> usize {
+    pub fn root_start(&self) -> usize {
         self.reserved + self.num_fats * self.sectors_per_fat
     }
 
-    fn root_sectors(&self) -> usize {
+    pub fn root_sectors(&self) -> usize {
         (self.root_entries * 32).div_ceil(SECTOR_SIZE)
     }
 
-    fn data_start(&self) -> usize {
+    pub fn data_start(&self) -> usize {
         self.root_start() + self.root_sectors()
     }
 
     /// First sector index of cluster `c` (c >= 2).
-    fn cluster_first_sector(&self, c: usize) -> usize {
+    pub fn cluster_first_sector(&self, c: usize) -> usize {
         self.data_start() + (c - 2) * self.sectors_per_cluster
+    }
+
+    /// Number of data clusters in a `total_sectors`-sector volume.
+    pub fn cluster_count(&self, total_sectors: usize) -> usize {
+        let data_start = self.data_start();
+        if total_sectors > data_start {
+            (total_sectors - data_start) / self.sectors_per_cluster
+        } else {
+            0
+        }
+    }
+
+    /// Decide the FAT width for a volume of `total_sectors` sectors.
+    ///
+    /// `fatfs` 0.3.6 picks the type from the cluster count alone (`< 4085 ->
+    /// FAT12`), which mis-detects MSX FAT12 partitions that have just over 4085
+    /// clusters but a `sectors_per_fat` only large enough for 12-bit entries.
+    /// The extra `(clusters + 2) * 2 > sectors_per_fat * 512` term catches
+    /// exactly that: if a 16-bit table would not fit in the declared FAT
+    /// region, the volume must be FAT12.
+    pub fn fat_type(&self, total_sectors: usize) -> FatType {
+        let clusters = self.cluster_count(total_sectors);
+        if clusters < 4085 || (clusters + 2) * 2 > self.sectors_per_fat * SECTOR_SIZE {
+            FatType::Fat12
+        } else {
+            FatType::Fat16
+        }
     }
 }
 
-/// Read FAT12 entry for `cluster`.
+/// Read the FAT12 entry for `cluster`.
 fn fat12_entry(buf: &[u8], fat_start_byte: usize, cluster: usize) -> u16 {
     let off = fat_start_byte + cluster * 3 / 2;
     if off + 1 >= buf.len() {
@@ -100,6 +143,38 @@ fn fat12_entry(buf: &[u8], fat_start_byte: usize, cluster: usize) -> u16 {
         pair & 0x0FFF
     } else {
         pair >> 4
+    }
+}
+
+/// Read the FAT16 entry for `cluster` (little-endian 16-bit word).
+fn fat16_entry(buf: &[u8], fat_start_byte: usize, cluster: usize) -> u16 {
+    let off = fat_start_byte + cluster * 2;
+    match buf.get(off..off + 2) {
+        Some(b) => u16::from_le_bytes([b[0], b[1]]),
+        None => 0xFFFF,
+    }
+}
+
+/// Read the FAT entry for `cluster`, dispatching on the volume's FAT width.
+pub(crate) fn fat_entry(
+    buf: &[u8],
+    fat_start_byte: usize,
+    fat_type: FatType,
+    cluster: usize,
+) -> u16 {
+    match fat_type {
+        FatType::Fat12 => fat12_entry(buf, fat_start_byte, cluster),
+        FatType::Fat16 => fat16_entry(buf, fat_start_byte, cluster),
+    }
+}
+
+/// Whether `entry` is a continuation cluster (points at more data) for the
+/// given FAT width. Bad-cluster and end-of-chain markers terminate the chain
+/// (FAT12 bad `0xFF7`, EOC `0xFF8..`; FAT16 bad `0xFFF7`, EOC `0xFFF8..`).
+fn is_data_cluster(fat_type: FatType, entry: u16) -> bool {
+    match fat_type {
+        FatType::Fat12 => (0x002..=0xFEF).contains(&entry),
+        FatType::Fat16 => (0x0002..=0xFFEF).contains(&entry),
     }
 }
 
@@ -115,13 +190,10 @@ pub fn disk_usage(data: &[u8]) -> Option<DiskMap> {
     let buf = repaired(data)?;
     let bpb = Bpb::parse(&buf)?;
     let sector_count = buf.len() / SECTOR_SIZE;
+    let fat_type = bpb.fat_type(sector_count);
     let fat_start_byte = bpb.fat_start() * SECTOR_SIZE;
     let data_start = bpb.data_start();
-    let total_clusters = if sector_count > data_start {
-        (sector_count - data_start) / bpb.sectors_per_cluster
-    } else {
-        0
-    };
+    let total_clusters = bpb.cluster_count(sector_count);
 
     let mut kinds = Vec::with_capacity(sector_count);
     for sector in 0..sector_count {
@@ -133,7 +205,9 @@ pub fn disk_usage(data: &[u8]) -> Option<DiskMap> {
             SectorKind::RootDir
         } else {
             let cluster = 2 + (sector - data_start) / bpb.sectors_per_cluster;
-            if cluster - 2 < total_clusters && fat12_entry(&buf, fat_start_byte, cluster) != 0 {
+            if cluster - 2 < total_clusters
+                && fat_entry(&buf, fat_start_byte, fat_type, cluster) != 0
+            {
                 SectorKind::DataUsed
             } else {
                 SectorKind::DataFree
@@ -165,12 +239,7 @@ pub fn fs_geometry(data: &[u8]) -> Option<FsGeometry> {
     let buf = repaired(data)?;
     let bpb = Bpb::parse(&buf)?;
     let total_sectors = buf.len() / SECTOR_SIZE;
-    let data_start = bpb.data_start();
-    let cluster_count = if total_sectors > data_start {
-        (total_sectors - data_start) / bpb.sectors_per_cluster
-    } else {
-        0
-    };
+    let cluster_count = bpb.cluster_count(total_sectors);
     Some(FsGeometry {
         bytes_per_sector: bpb.bytes_per_sector,
         sectors_per_cluster: bpb.sectors_per_cluster,
@@ -187,35 +256,41 @@ pub fn file_sectors(data: &[u8], path: &str) -> Vec<usize> {
     let Some(bpb) = Bpb::parse(&buf) else {
         return Vec::new();
     };
-    let Some(first) = find_first_cluster(&buf, &bpb, path) else {
+    let fat_type = bpb.fat_type(buf.len() / SECTOR_SIZE);
+    let Some(first) = find_first_cluster(&buf, &bpb, fat_type, path) else {
         return Vec::new();
     };
-    cluster_chain_sectors(&buf, &bpb, first)
+    cluster_chain_sectors(&buf, &bpb, fat_type, first)
 }
 
 /// Walk a cluster chain and return all of its sectors.
-fn cluster_chain_sectors(buf: &[u8], bpb: &Bpb, first: u16) -> Vec<usize> {
+pub(crate) fn cluster_chain_sectors(
+    buf: &[u8],
+    bpb: &Bpb,
+    fat_type: FatType,
+    first: u16,
+) -> Vec<usize> {
     let fat_start_byte = bpb.fat_start() * SECTOR_SIZE;
     let sector_count = buf.len() / SECTOR_SIZE;
     let max_clusters = sector_count / bpb.sectors_per_cluster + 2;
     let mut sectors = Vec::new();
     let mut cluster = first as usize;
     let mut guard = 0;
-    while (2..0xFF8).contains(&cluster) && guard < max_clusters {
+    while is_data_cluster(fat_type, cluster as u16) && guard < max_clusters {
         let base = bpb.cluster_first_sector(cluster);
         for s in base..base + bpb.sectors_per_cluster {
             if s < sector_count {
                 sectors.push(s);
             }
         }
-        cluster = fat12_entry(buf, fat_start_byte, cluster) as usize;
+        cluster = fat_entry(buf, fat_start_byte, fat_type, cluster) as usize;
         guard += 1;
     }
     sectors
 }
 
 /// Build the 8.3 name from a 32-byte directory entry.
-fn entry_name(entry: &[u8]) -> String {
+pub(crate) fn entry_name(entry: &[u8]) -> String {
     let base: String = entry[..8]
         .iter()
         .take_while(|&&b| b != b' ')
@@ -234,12 +309,17 @@ fn entry_name(entry: &[u8]) -> String {
 }
 
 /// Resolve a slash-separated path to its first cluster.
-fn find_first_cluster(buf: &[u8], bpb: &Bpb, path: &str) -> Option<u16> {
+pub(crate) fn find_first_cluster(
+    buf: &[u8],
+    bpb: &Bpb,
+    fat_type: FatType,
+    path: &str,
+) -> Option<u16> {
     let mut dir = DirLocation::Root;
     let mut components = path.split('/').peekable();
     while let Some(component) = components.next() {
         let is_last = components.peek().is_none();
-        let entry = find_entry(buf, bpb, &dir, component)?;
+        let entry = find_entry(buf, bpb, fat_type, &dir, component)?;
         let first = u16::from_le_bytes([entry[26], entry[27]]);
         let is_dir = entry[11] & 0x10 != 0;
         if is_last {
@@ -253,16 +333,22 @@ fn find_first_cluster(buf: &[u8], bpb: &Bpb, path: &str) -> Option<u16> {
     None
 }
 
-enum DirLocation {
+pub(crate) enum DirLocation {
     Root,
     Cluster(u16),
 }
 
 /// Find a directory entry by name within a directory.
-fn find_entry(buf: &[u8], bpb: &Bpb, dir: &DirLocation, name: &str) -> Option<[u8; 32]> {
+fn find_entry(
+    buf: &[u8],
+    bpb: &Bpb,
+    fat_type: FatType,
+    dir: &DirLocation,
+    name: &str,
+) -> Option<[u8; 32]> {
     let target = name.to_ascii_uppercase();
     let mut result = None;
-    for_each_entry(buf, bpb, dir, |entry| {
+    for_each_entry(buf, bpb, fat_type, dir, |entry| {
         if entry_name(entry).eq_ignore_ascii_case(&target) {
             let mut owned = [0u8; 32];
             owned.copy_from_slice(entry);
@@ -277,10 +363,16 @@ fn find_entry(buf: &[u8], bpb: &Bpb, dir: &DirLocation, name: &str) -> Option<[u
 
 /// Visit directory entries, stopping when `visit` returns true or the directory
 /// ends. Skips deleted, volume-label, and long-file-name entries.
-fn for_each_entry(buf: &[u8], bpb: &Bpb, dir: &DirLocation, mut visit: impl FnMut(&[u8]) -> bool) {
+pub(crate) fn for_each_entry(
+    buf: &[u8],
+    bpb: &Bpb,
+    fat_type: FatType,
+    dir: &DirLocation,
+    mut visit: impl FnMut(&[u8]) -> bool,
+) {
     let sectors: Vec<usize> = match dir {
         DirLocation::Root => (bpb.root_start()..bpb.data_start()).collect(),
-        DirLocation::Cluster(first) => cluster_chain_sectors(buf, bpb, *first),
+        DirLocation::Cluster(first) => cluster_chain_sectors(buf, bpb, fat_type, *first),
     };
     for sector in sectors {
         let base = sector * SECTOR_SIZE;
@@ -389,5 +481,87 @@ mod tests {
         assert_eq!(geo.total_sectors, 1440);
         assert!(geo.sectors_per_cluster.is_power_of_two());
         assert!(geo.cluster_count > 0);
+    }
+
+    /// Build a `Bpb` directly from field values for fat-type tests.
+    fn bpb(
+        sectors_per_cluster: usize,
+        reserved: usize,
+        num_fats: usize,
+        root_entries: usize,
+        sectors_per_fat: usize,
+    ) -> Bpb {
+        Bpb {
+            bytes_per_sector: SECTOR_SIZE,
+            sectors_per_cluster,
+            reserved,
+            num_fats,
+            root_entries,
+            sectors_per_fat,
+        }
+    }
+
+    #[test]
+    fn fat_type_is_fat12_when_a_fat16_table_would_not_fit() {
+        // The exact hd.dsk partition shape: spc=16, res=1, 2 FATs, root=256,
+        // spf=12, total=65535 sectors. data_start = 1 + 24 + 16 = 41; clusters
+        // = (65535-41)/16 = 4093 (>= 4085, so fatfs would call this FAT16), but
+        // a 16-bit table needs (4093+2)*2 = 8190 B > 12*512 = 6144 B, so it must
+        // be FAT12.
+        let b = bpb(16, 1, 2, 256, 12);
+        assert_eq!(b.cluster_count(65535), 4093);
+        assert_eq!(b.fat_type(65535), FatType::Fat12);
+    }
+
+    #[test]
+    fn fat_type_is_fat16_when_clusters_exceed_4085_and_table_fits() {
+        // spc=16, res=1, 2 FATs, root=512, spf=64. data_start = 1 + 128 + 32 =
+        // 161. With 80000 sectors: clusters = (80000-161)/16 = 4989 (>= 4085),
+        // and a 16-bit table needs (4989+2)*2 = 9982 B <= 64*512 = 32768 B.
+        let b = bpb(16, 1, 2, 512, 64);
+        assert_eq!(b.cluster_count(80000), 4989);
+        assert_eq!(b.fat_type(80000), FatType::Fat16);
+    }
+
+    #[test]
+    fn fat_type_is_fat12_below_4085_clusters() {
+        // A standard 720KB floppy resolves to FAT12, as before.
+        let geo = make_disk();
+        let buf = repaired(&geo).unwrap();
+        let parsed = Bpb::parse(&buf).unwrap();
+        assert_eq!(parsed.fat_type(buf.len() / SECTOR_SIZE), FatType::Fat12);
+    }
+
+    #[test]
+    fn fat16_entry_decodes_little_endian() {
+        // Two 16-bit words: cluster 0 -> 0x1234, cluster 1 -> 0xFFFF.
+        let buf = [0x34, 0x12, 0xFF, 0xFF];
+        assert_eq!(fat16_entry(&buf, 0, 0), 0x1234);
+        assert_eq!(fat16_entry(&buf, 0, 1), 0xFFFF);
+        // Out-of-range reads return an end-of-chain marker, not a panic.
+        assert_eq!(fat16_entry(&buf, 0, 99), 0xFFFF);
+    }
+
+    #[test]
+    fn chain_terminators_for_fat12() {
+        // Data clusters continue; bad (0xFF7) and EOC (0xFF8..) terminate.
+        assert!(is_data_cluster(FatType::Fat12, 0x002));
+        assert!(is_data_cluster(FatType::Fat12, 0xFEF));
+        assert!(!is_data_cluster(FatType::Fat12, 0x000));
+        assert!(!is_data_cluster(FatType::Fat12, 0x001));
+        assert!(!is_data_cluster(FatType::Fat12, 0xFF7)); // bad cluster
+        assert!(!is_data_cluster(FatType::Fat12, 0xFF8)); // end of chain
+        assert!(!is_data_cluster(FatType::Fat12, 0xFFF));
+    }
+
+    #[test]
+    fn chain_terminators_for_fat16() {
+        assert!(is_data_cluster(FatType::Fat16, 0x0002));
+        assert!(is_data_cluster(FatType::Fat16, 0xFFEF));
+        assert!(!is_data_cluster(FatType::Fat16, 0x0000));
+        assert!(!is_data_cluster(FatType::Fat16, 0x0001));
+        assert!(!is_data_cluster(FatType::Fat16, 0xFFF7)); // bad cluster
+        assert!(!is_data_cluster(FatType::Fat16, 0xFFF8)); // end of chain
+        assert!(!is_data_cluster(FatType::Fat16, 0xFFFF));
     }
 }
