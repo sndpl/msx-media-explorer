@@ -1780,6 +1780,7 @@ name = "msx-disk"
 version = "0.1.0"
 dependencies = [
  "fatfs",
+ "image",
 ]
 
 [[package]]

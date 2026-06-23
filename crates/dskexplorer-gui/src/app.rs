@@ -4,6 +4,7 @@ use std::path::Path;
 
 use msx_disk::view::basic;
 use msx_disk::view::hex::ascii_char;
+use msx_disk::view::screen::{self, ScreenMode};
 use msx_disk::view::text::{self, ControlMode};
 use msx_disk::DirEntry;
 
@@ -15,6 +16,7 @@ enum ViewMode {
     Hex,
     Text,
     Basic,
+    Screen,
 }
 
 /// The largest amount of a file rendered in the text view at once.
@@ -35,6 +37,8 @@ pub struct DskExplorerApp {
     view_mode: ViewMode,
     bytes_per_row: usize,
     text_show_all: bool,
+    /// Cached screen texture, keyed by the file path it was rendered from.
+    screen_tex: Option<(String, egui::TextureHandle)>,
 }
 
 impl Default for DskExplorerApp {
@@ -47,6 +51,7 @@ impl Default for DskExplorerApp {
             view_mode: ViewMode::Hex,
             bytes_per_row: 16,
             text_show_all: false,
+            screen_tex: None,
         }
     }
 }
@@ -74,6 +79,7 @@ impl DskExplorerApp {
         match disk.read_file(&path) {
             Ok(bytes) => {
                 self.status = format!("{path} — {} bytes", bytes.len());
+                self.view_mode = default_view_mode(&path);
                 self.content = Some(FileContent {
                     path: path.clone(),
                     bytes,
@@ -138,6 +144,7 @@ impl DskExplorerApp {
             ui.selectable_value(&mut self.view_mode, ViewMode::Hex, "Hex");
             ui.selectable_value(&mut self.view_mode, ViewMode::Text, "Text");
             ui.selectable_value(&mut self.view_mode, ViewMode::Basic, "BASIC");
+            ui.selectable_value(&mut self.view_mode, ViewMode::Screen, "Screen");
             ui.separator();
             match self.view_mode {
                 ViewMode::Hex => {
@@ -149,7 +156,7 @@ impl DskExplorerApp {
                 ViewMode::Text => {
                     ui.checkbox(&mut self.text_show_all, "Show all characters");
                 }
-                ViewMode::Basic => {}
+                ViewMode::Basic | ViewMode::Screen => {}
             }
             if self.content.is_some() {
                 ui.separator();
@@ -160,6 +167,20 @@ impl DskExplorerApp {
         });
         ui.separator();
 
+        if self.view_mode == ViewMode::Screen {
+            // The screen view needs the mutable texture cache, so handle it
+            // outside the shared borrow of `self.content`.
+            let mut cache = self.screen_tex.take();
+            match &self.content {
+                Some(content) => render_screen(ui, &mut cache, &content.path, &content.bytes),
+                None => {
+                    ui.weak("Select a file to view its contents.");
+                }
+            }
+            self.screen_tex = cache;
+            return;
+        }
+
         match &self.content {
             None => {
                 ui.weak("Select a file to view its contents.");
@@ -168,6 +189,7 @@ impl DskExplorerApp {
                 ViewMode::Hex => render_hex(ui, &content.bytes, self.bytes_per_row),
                 ViewMode::Text => render_text(ui, &content.bytes, self.text_show_all),
                 ViewMode::Basic => render_basic(ui, &content.bytes),
+                ViewMode::Screen => unreachable!("handled above"),
             },
         }
     }
@@ -243,6 +265,50 @@ fn render_hex(ui: &mut egui::Ui, bytes: &[u8], bytes_per_row: usize) {
                 ui.monospace(line);
             }
         });
+}
+
+/// Pick a sensible default view mode for a file based on its extension.
+fn default_view_mode(path: &str) -> ViewMode {
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    if ScreenMode::from_extension(&ext).is_some() {
+        ViewMode::Screen
+    } else if ext == "bas" {
+        ViewMode::Basic
+    } else {
+        ViewMode::Hex
+    }
+}
+
+/// Render a decoded MSX screen image, caching the GPU texture by file path.
+fn render_screen(
+    ui: &mut egui::Ui,
+    cache: &mut Option<(String, egui::TextureHandle)>,
+    path: &str,
+    bytes: &[u8],
+) {
+    let Some(mode) = ScreenMode::from_filename(path) else {
+        ui.weak("Not a recognized MSX screen file (.SC2/.SC5/.SC7/.SC8/.SCC).");
+        return;
+    };
+
+    let stale = cache.as_ref().map(|(p, _)| p != path).unwrap_or(true);
+    if stale {
+        let bmp = screen::render(mode, bytes);
+        let image = egui::ColorImage::from_rgba_unmultiplied([bmp.width, bmp.height], &bmp.rgba);
+        let texture = ui.ctx().load_texture(
+            format!("screen:{path}"),
+            image,
+            egui::TextureOptions::NEAREST,
+        );
+        *cache = Some((path.to_string(), texture));
+    }
+
+    if let Some((_, texture)) = cache {
+        egui::ScrollArea::both().show(ui, |ui| {
+            let size = texture.size_vec2() * 2.0; // 2x nearest-neighbour zoom
+            ui.image(egui::load::SizedTexture::new(texture.id(), size));
+        });
+    }
 }
 
 /// Detokenized MSX-BASIC listing.

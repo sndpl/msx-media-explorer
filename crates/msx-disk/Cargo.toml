@@ -14,3 +14,4 @@ workspace = true
 fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
 
 [dev-dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
