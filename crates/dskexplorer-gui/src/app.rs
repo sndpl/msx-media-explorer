@@ -388,9 +388,13 @@ impl DskExplorerApp {
         if self.disk.is_some() || self.tape.is_some() {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.app_view, AppView::Files, "Files");
-                if self.disk.is_some() {
+                if let Some(disk) = &self.disk {
                     ui.selectable_value(&mut self.app_view, AppView::Sectors, "Sectors");
-                    ui.selectable_value(&mut self.app_view, AppView::Map, "Map");
+                    // The disk-usage Map is FAT12-only and whole-disk; it is
+                    // disabled for partitioned hard-disk images.
+                    if !disk.is_partitioned() {
+                        ui.selectable_value(&mut self.app_view, AppView::Map, "Map");
+                    }
                 }
                 if self.dmk_analysis.is_some() {
                     ui.selectable_value(&mut self.app_view, AppView::Analyze, "Analyze");
@@ -419,7 +423,14 @@ impl DskExplorerApp {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let show_meta = disk.dos == msx_disk::fs::DosVersion::Dos2;
-                    render_entries(ui, &disk.tree, &self.selection, show_meta, writable, &mut events);
+                    render_entries(
+                        ui,
+                        &disk.tree,
+                        &self.selection,
+                        show_meta,
+                        writable,
+                        &mut events,
+                    );
                 });
         } else if let Some(tape) = &self.tape {
             egui::ScrollArea::vertical()
@@ -865,9 +876,8 @@ impl DskExplorerApp {
                 }
                 ui.small("8-character name, optional 3-character extension.");
                 let valid = !msx_name_stem(&target.name).is_empty();
-                let enter = valid
-                    && resp.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let enter =
+                    valid && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     apply = ui.add_enabled(valid, egui::Button::new("Rename")).clicked();
@@ -1352,7 +1362,12 @@ impl DskExplorerApp {
             ui.label(egui::RichText::new(describe_geometry(geo)).weak());
             ui.horizontal(|ui| {
                 ui.label(format!("Size: {} KB", geo.total_bytes() / 1024));
-                if let Some(fs) = self.disk_fs_geometry {
+                if disk.is_partitioned() {
+                    ui.separator();
+                    ui.label(format!("Sectors: {}", geo.total_sectors()));
+                    ui.separator();
+                    ui.label(format!("{} partitions", disk.tree.len()));
+                } else if let Some(fs) = self.disk_fs_geometry {
                     ui.separator();
                     ui.label(format!("Clusters: {}", fs.cluster_count));
                     ui.separator();
@@ -1788,7 +1803,10 @@ fn sanitize_msx_name(name: &str) -> String {
         None => (upper.as_str(), ""),
     };
     let keep = |s: &str, max: usize| -> String {
-        s.chars().filter(|c| is_msx_name_char(*c)).take(max).collect()
+        s.chars()
+            .filter(|c| is_msx_name_char(*c))
+            .take(max)
+            .collect()
     };
     let mut stem = keep(stem, 8);
     if stem.is_empty() {

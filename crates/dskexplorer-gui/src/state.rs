@@ -5,11 +5,23 @@ use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 
 use msx_disk::cas::CasFile;
+use msx_disk::fs::partition::{self, PartitionEntry};
 use msx_disk::fs::write;
-use msx_disk::fs::{detect_dos_version, DosVersion};
+use msx_disk::fs::{detect_dos_version, DosVersion, FatType, Volume};
 use msx_disk::image::geometry::Geometry;
 use msx_disk::tape::{self, Tape, TapeFormat};
 use msx_disk::{DirEntry, DiskFs, DiskImage, Error, ImageFormat};
+
+/// The filesystem backing for an open disk: a single floppy volume (mounted via
+/// `fatfs`) or a hard-disk image holding several MSX FAT partitions.
+enum Backing {
+    /// A single FAT volume starting at sector 0 — the floppy/`.dsk` path. Fully
+    /// editable; behavior is unchanged from the single-volume design.
+    Floppy { fs: DiskFs },
+    /// A partitioned hard-disk image: one read-only [`Volume`] per partition,
+    /// surfaced as synthetic `P{n}` top-level directory nodes.
+    Partitioned { volumes: Vec<Volume> },
+}
 
 /// Everything the UI needs about the open disk, computed once on load.
 pub struct LoadedDisk {
@@ -22,7 +34,7 @@ pub struct LoadedDisk {
     pub dos: DosVersion,
     pub tree: Vec<DirEntry>,
     image: DiskImage,
-    fs: DiskFs,
+    backing: Backing,
 }
 
 impl LoadedDisk {
@@ -33,7 +45,14 @@ impl LoadedDisk {
     }
 
     /// Mount an already-decoded image, remembering its source path.
+    ///
+    /// Branches on whether the image is a partitioned hard disk: a single FAT
+    /// volume takes the floppy path (editable, via `fatfs`); a partitioned image
+    /// mounts each partition as a read-only [`Volume`] shown under a `P{n}` node.
     pub fn from_image(image: DiskImage, path: Option<PathBuf>) -> msx_disk::Result<LoadedDisk> {
+        if partition::is_partitioned(image.data()) {
+            return LoadedDisk::from_partitioned_image(image, path);
+        }
         let fs = DiskFs::from_image(&image)?;
         let label = fs.volume_label();
         let tree = fs.tree()?;
@@ -46,13 +65,91 @@ impl LoadedDisk {
             dos,
             tree,
             image,
-            fs,
+            backing: Backing::Floppy { fs },
         })
+    }
+
+    /// Mount a partitioned hard-disk image: one read-only volume per live
+    /// partition, exposed as synthetic `P{n}` top-level directory nodes whose
+    /// children are that volume's tree re-prefixed with `P{n}/`.
+    fn from_partitioned_image(
+        image: DiskImage,
+        path: Option<PathBuf>,
+    ) -> msx_disk::Result<LoadedDisk> {
+        let entries = partition::parse_partition_table(image.data()).unwrap_or_default();
+        let mut volumes = Vec::new();
+        let mut tree = Vec::new();
+        for entry in &entries {
+            let Some(volume) = Volume::from_partition(&image, entry) else {
+                continue;
+            };
+            let n = volumes.len() + 1;
+            let prefix = format!("P{n}");
+            let children = reprefix_tree(volume.tree(), &prefix);
+            tree.push(DirEntry {
+                name: partition_node_name(n, &volume, entry),
+                path: prefix,
+                is_dir: true,
+                size: 0,
+                attributes: Default::default(),
+                modified: None,
+                children,
+            });
+            volumes.push(volume);
+        }
+        if volumes.is_empty() {
+            return Err(Error::Unsupported(
+                "partitioned image has no readable FAT partitions".into(),
+            ));
+        }
+        Ok(LoadedDisk {
+            path,
+            format: image.format(),
+            geometry: image.geometry(),
+            // Labels live on the partition nodes for HD images.
+            label: None,
+            // HD partition listings show plain rows (no DOS2 metadata columns).
+            dos: DosVersion::Dos1,
+            tree,
+            image,
+            backing: Backing::Partitioned { volumes },
+        })
+    }
+
+    /// Whether this is a partitioned hard-disk image (vs. a single floppy
+    /// volume). Partitioned images are read-only and hide the Map view.
+    pub fn is_partitioned(&self) -> bool {
+        matches!(self.backing, Backing::Partitioned { .. })
+    }
+
+    /// Resolve a `P{n}/rel/path` into its volume and the volume-relative path.
+    /// Returns `None` for the floppy backing or an out-of-range partition.
+    fn resolve<'a>(&self, path: &'a str) -> Option<(&Volume, &'a str)> {
+        let Backing::Partitioned { volumes } = &self.backing else {
+            return None;
+        };
+        let (head, rest) = match path.split_once('/') {
+            Some((h, r)) => (h, r),
+            None => (path, ""),
+        };
+        let n: usize = head.strip_prefix('P')?.parse().ok()?;
+        let volume = volumes.get(n.checked_sub(1)?)?;
+        Some((volume, rest))
     }
 
     /// Read a file's bytes by its slash-separated path.
     pub fn read_file(&self, path: &str) -> msx_disk::Result<Vec<u8>> {
-        self.fs.read_file(path)
+        match &self.backing {
+            Backing::Floppy { fs } => fs.read_file(path),
+            Backing::Partitioned { .. } => {
+                let (volume, rel) = self
+                    .resolve(path)
+                    .ok_or_else(|| Error::Unsupported(format!("no such path '{path}'")))?;
+                volume
+                    .read_file(rel)
+                    .ok_or_else(|| Error::Unsupported(format!("cannot read '{path}'")))
+            }
+        }
     }
 
     /// The disk's normalized sector data — a ready-to-write `.dsk` image.
@@ -82,6 +179,11 @@ impl LoadedDisk {
 
     /// Overwrite a raw sector and persist the change to the source image.
     pub fn write_sector(&mut self, idx: usize, bytes: &[u8]) -> msx_disk::Result<()> {
+        if self.is_partitioned() {
+            return Err(Error::Unsupported(
+                "hard-disk partitions are read-only".into(),
+            ));
+        }
         if bytes.len() != 512 {
             return Err(Error::Unsupported("a sector is 512 bytes".into()));
         }
@@ -94,20 +196,36 @@ impl LoadedDisk {
         self.write_back(data)
     }
 
-    /// Classify every sector by usage.
+    /// Classify every sector by usage. `None` for partitioned hard disks, whose
+    /// Map view is disabled in this version.
     pub fn disk_map(&self) -> Option<msx_disk::fs::map::DiskMap> {
+        if self.is_partitioned() {
+            return None;
+        }
         msx_disk::fs::map::disk_usage(self.image.data())
     }
 
     /// BPB-derived filesystem geometry (clusters, sectors, etc.) for the status
-    /// bar, or `None` if the disk has no recognizable FAT BPB.
+    /// bar, or `None` if the disk has no recognizable FAT BPB (and always for
+    /// partitioned hard disks, which have no single whole-disk BPB).
     pub fn fs_geometry(&self) -> Option<msx_disk::fs::map::FsGeometry> {
+        if self.is_partitioned() {
+            return None;
+        }
         msx_disk::fs::map::fs_geometry(self.image.data())
     }
 
-    /// The sectors occupied by a file (its cluster chain).
+    /// The sectors occupied by a file (its cluster chain), in whole-image sector
+    /// indices. For partitions the chain is resolved within the volume and
+    /// offset by the partition's LBA.
     pub fn file_sectors(&self, path: &str) -> Vec<usize> {
-        msx_disk::fs::map::file_sectors(self.image.data(), path)
+        match &self.backing {
+            Backing::Floppy { .. } => msx_disk::fs::map::file_sectors(self.image.data(), path),
+            Backing::Partitioned { .. } => match self.resolve(path) {
+                Some((volume, rel)) => volume.file_sectors_absolute(rel),
+                None => Vec::new(),
+            },
+        }
     }
 
     /// Find a companion file: the sibling of `base_path` (same directory and
@@ -131,14 +249,19 @@ impl LoadedDisk {
         None
     }
 
-    /// Whether this disk can be modified in place (has a path and a writable
-    /// container format).
+    /// Whether this disk can be modified in place (a single-volume floppy with a
+    /// path and a writable container). Partitioned hard disks are read-only.
     pub fn writable(&self) -> bool {
-        self.path.is_some() && self.image.is_writable()
+        !self.is_partitioned() && self.path.is_some() && self.image.is_writable()
     }
 
     /// Add (or overwrite) files at the root of the disk.
     pub fn add_files(&mut self, files: &[(String, Vec<u8>)]) -> msx_disk::Result<()> {
+        if self.is_partitioned() {
+            return Err(Error::Unsupported(
+                "hard-disk partitions are read-only".into(),
+            ));
+        }
         let refs: Vec<(&str, &[u8])> = files
             .iter()
             .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
@@ -149,6 +272,11 @@ impl LoadedDisk {
 
     /// Delete files by their slash-separated paths.
     pub fn delete(&mut self, paths: &[String]) -> msx_disk::Result<()> {
+        if self.is_partitioned() {
+            return Err(Error::Unsupported(
+                "hard-disk partitions are read-only".into(),
+            ));
+        }
         let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
         let updated = write::delete(self.image.data(), &refs)?;
         self.write_back(updated)
@@ -156,6 +284,11 @@ impl LoadedDisk {
 
     /// Rename a file from `old_path` to `new_path` (both relative to the root).
     pub fn rename(&mut self, old_path: &str, new_path: &str) -> msx_disk::Result<()> {
+        if self.is_partitioned() {
+            return Err(Error::Unsupported(
+                "hard-disk partitions are read-only".into(),
+            ));
+        }
         let updated = write::rename(self.image.data(), old_path, new_path)?;
         self.write_back(updated)
     }
@@ -180,6 +313,47 @@ impl LoadedDisk {
             .and_then(|p| p.file_name())
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "(in-memory image)".to_string())
+    }
+}
+
+/// Re-prefix every path in `entries` (recursively) with `prefix/`, so a
+/// volume's `A/B.TXT` becomes `P1/A/B.TXT` once mounted under its partition node.
+fn reprefix_tree(entries: Vec<DirEntry>, prefix: &str) -> Vec<DirEntry> {
+    entries
+        .into_iter()
+        .map(|e| DirEntry {
+            path: format!("{prefix}/{}", e.path),
+            children: reprefix_tree(e.children, prefix),
+            ..e
+        })
+        .collect()
+}
+
+/// Label for a partition's synthetic top-level node, e.g.
+/// `Partition 1 — FAT12, 32 MB, VOL_ID`.
+fn partition_node_name(n: usize, volume: &Volume, entry: &PartitionEntry) -> String {
+    let fat = match volume.fat_type() {
+        FatType::Fat12 => "FAT12",
+        FatType::Fat16 => "FAT16",
+    };
+    let size = humanize_bytes(entry.sector_count as u64 * 512);
+    match volume.volume_label() {
+        Some(label) => format!("Partition {n} \u{2014} {fat}, {size}, {label}"),
+        None => format!("Partition {n} \u{2014} {fat}, {size}"),
+    }
+}
+
+/// Format a byte count as a compact human-readable size (KB / MB / GB).
+fn humanize_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{} MB", bytes / MB)
+    } else {
+        format!("{} KB", bytes / KB)
     }
 }
 
@@ -265,6 +439,91 @@ mod tests {
     fn fixture() -> Option<PathBuf> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/MSX-DOS2 TOOLS.dsk");
         path.exists().then_some(path)
+    }
+
+    fn hd_fixture() -> Option<PathBuf> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/hd.dsk");
+        path.exists().then_some(path)
+    }
+
+    #[test]
+    fn humanize_bytes_picks_units() {
+        assert_eq!(humanize_bytes(512), "0 KB");
+        assert_eq!(humanize_bytes(2048), "2 KB");
+        assert_eq!(humanize_bytes(32 * 1024 * 1024), "32 MB");
+        assert_eq!(humanize_bytes(2 * 1024 * 1024 * 1024), "2.0 GB");
+    }
+
+    #[test]
+    fn reprefix_tree_rewrites_nested_paths() {
+        let tree = vec![DirEntry {
+            name: "SUB".into(),
+            path: "SUB".into(),
+            is_dir: true,
+            size: 0,
+            attributes: Default::default(),
+            modified: None,
+            children: vec![DirEntry {
+                name: "A.TXT".into(),
+                path: "SUB/A.TXT".into(),
+                is_dir: false,
+                size: 3,
+                attributes: Default::default(),
+                modified: None,
+                children: Vec::new(),
+            }],
+        }];
+        let prefixed = reprefix_tree(tree, "P1");
+        assert_eq!(prefixed[0].path, "P1/SUB");
+        assert_eq!(prefixed[0].children[0].path, "P1/SUB/A.TXT");
+    }
+
+    #[test]
+    fn hd_image_opens_as_four_readonly_partition_nodes() {
+        let Some(path) = hd_fixture() else {
+            eprintln!("skipping: hd.dsk fixture not present");
+            return;
+        };
+        let disk = LoadedDisk::open(&path).expect("open hd.dsk");
+        assert!(disk.is_partitioned());
+        // Four synthetic P{n} top-level nodes.
+        assert_eq!(disk.tree.len(), 4);
+        for (i, node) in disk.tree.iter().enumerate() {
+            assert_eq!(node.path, format!("P{}", i + 1));
+            assert!(node.is_dir);
+            assert!(node.name.starts_with(&format!("Partition {}", i + 1)));
+            assert!(node.name.contains("FAT12"));
+        }
+        // Read-only: no editing, no whole-disk map, no single FS geometry.
+        assert!(!disk.writable());
+        assert!(disk.fs_geometry().is_none());
+        assert!(disk.disk_map().is_none());
+        assert!(disk.label.is_none());
+
+        // A file under P1 reads back with a length matching its dir-entry size.
+        let file = disk
+            .tree
+            .iter()
+            .flat_map(|e| e.walk())
+            .find(|e| !e.is_dir && e.path.starts_with("P1/"))
+            .expect("a file under P1");
+        let bytes = disk.read_file(&file.path).expect("read P1 file");
+        assert_eq!(bytes.len() as u64, file.size);
+    }
+
+    #[test]
+    fn hd_write_operations_are_rejected() {
+        let Some(path) = hd_fixture() else {
+            eprintln!("skipping: hd.dsk fixture not present");
+            return;
+        };
+        let mut disk = LoadedDisk::open(&path).expect("open hd.dsk");
+        assert!(disk
+            .add_files(&[("X.TXT".to_string(), b"x".to_vec())])
+            .is_err());
+        assert!(disk.delete(&["P1/ANY".to_string()]).is_err());
+        assert!(disk.rename("P1/A", "P1/B").is_err());
+        assert!(disk.write_sector(0, &[0u8; 512]).is_err());
     }
 
     #[test]
