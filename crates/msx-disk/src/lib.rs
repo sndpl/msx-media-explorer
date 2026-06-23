@@ -7,6 +7,7 @@
 
 pub mod archive;
 pub mod cas;
+pub mod charset;
 pub mod error;
 pub mod fileinfo;
 pub mod fs;
@@ -18,6 +19,7 @@ pub mod tsx;
 pub mod view;
 
 pub use archive::{ArchiveEntry, Method};
+pub use charset::MsxCharset;
 pub use error::{Error, Result};
 pub use fs::{DirEntry, DiskFs};
 pub use image::{DiskImage, ImageFormat};

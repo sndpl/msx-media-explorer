@@ -12,9 +12,33 @@ use msx_disk::tape::TapeBlock;
 use msx_disk::view::basic;
 use msx_disk::view::hex::{ascii_char, dump_to_string, HexConfig};
 use msx_disk::view::text::{self, ControlMode};
-use msx_disk::{DirEntry, ImageFormat};
+use msx_disk::{charset, DirEntry, ImageFormat, MsxCharset};
 
 use crate::state::{humanize_bytes, LoadedDisk, LoadedTape};
+
+/// Register GNU Unifont as a fallback font so decoded MSX glyphs (kana, accented
+/// Latin, box-drawing, ...) render instead of tofu. egui's built-in fonts cover
+/// only Latin; Unifont is appended *after* them in each family so ASCII keeps
+/// the crisp default and only otherwise-missing glyphs fall through to it.
+pub(crate) fn install_fonts(ctx: &egui::Context) {
+    use std::sync::Arc;
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "unifont".to_owned(),
+        Arc::new(egui::FontData::from_static(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/fonts/unifont-msx.otf"
+        )))),
+    );
+    for family in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("unifont".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
 
 /// How the selected file's contents are shown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +184,11 @@ pub struct DskExplorerApp {
     /// available at the end of the frame.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     pending_drag_out: Option<Vec<String>>,
+    /// MSX character set used to decode filenames and file text for display.
+    charset: MsxCharset,
+    /// When true, [`charset`] follows auto-detection on each disk load; a manual
+    /// dropdown choice pins it (sets this false).
+    charset_auto: bool,
 }
 
 /// Largest file (bytes) offered for in-app hex editing, to keep the editor
@@ -203,6 +232,8 @@ impl Default for DskExplorerApp {
             sector_highlight: None,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             pending_drag_out: None,
+            charset: MsxCharset::default(),
+            charset_auto: true,
         }
     }
 }
@@ -250,8 +281,27 @@ impl DskExplorerApp {
                 self.disk = Some(disk);
                 self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
                 self.disk_fs_geometry = self.disk.as_ref().and_then(LoadedDisk::fs_geometry);
+                self.autodetect_charset();
             }
             Err(e) => self.status = format!("Failed to open {}: {e}", path.display()),
+        }
+    }
+
+    /// Seed the display charset from the open disk's filenames, unless the user
+    /// has pinned it via the dropdown. Best-effort; the dropdown always wins.
+    fn autodetect_charset(&mut self) {
+        if !self.charset_auto {
+            return;
+        }
+        if let Some(disk) = self.disk.as_ref() {
+            let sample: Vec<u8> = disk
+                .tree
+                .iter()
+                .flat_map(DirEntry::walk)
+                .flat_map(|e| e.name.chars())
+                .filter_map(charset::fs_name_byte)
+                .collect();
+            self.charset = charset::detect(&sample);
         }
     }
 
@@ -435,6 +485,23 @@ impl DskExplorerApp {
                 if self.tape.is_some() {
                     ui.selectable_value(&mut self.app_view, AppView::Blocks, "Blocks");
                 }
+                // Character-set selector: seeded by auto-detect on load, but the
+                // user can pin a different MSX code page here (re-decodes live).
+                if self.disk.is_some() {
+                    ui.separator();
+                    ui.label("Charset:");
+                    let prev = self.charset;
+                    egui::ComboBox::from_id_salt("charset")
+                        .selected_text(self.charset.label())
+                        .show_ui(ui, |ui| {
+                            for &cs in MsxCharset::ALL {
+                                ui.selectable_value(&mut self.charset, cs, cs.label());
+                            }
+                        });
+                    if self.charset != prev {
+                        self.charset_auto = false; // a manual choice pins the charset
+                    }
+                }
             });
         }
     }
@@ -450,6 +517,7 @@ impl DskExplorerApp {
             ui.separator();
         }
         let writable = self.disk_writable();
+        let charset = self.charset;
         let mut events = RowEvents::default();
         if let Some(disk) = &self.disk {
             egui::ScrollArea::vertical()
@@ -462,6 +530,7 @@ impl DskExplorerApp {
                         &self.selection,
                         show_meta,
                         writable,
+                        charset,
                         &mut events,
                     );
                 });
@@ -652,11 +721,18 @@ impl DskExplorerApp {
                 ViewMode::Info => {
                     render_info(ui, &content.path, &content.bytes, self.selected_entry())
                 }
-                ViewMode::Hex => {
-                    render_hex(ui, &content.bytes, self.bytes_per_row, scroll_to, highlight)
+                ViewMode::Hex => render_hex(
+                    ui,
+                    &content.bytes,
+                    self.bytes_per_row,
+                    scroll_to,
+                    highlight,
+                    self.charset,
+                ),
+                ViewMode::Text => {
+                    render_text(ui, &content.bytes, self.text_show_all, self.charset)
                 }
-                ViewMode::Text => render_text(ui, &content.bytes, self.text_show_all),
-                ViewMode::Basic => render_basic(ui, &content.bytes),
+                ViewMode::Basic => render_basic(ui, &content.bytes, self.charset),
                 ViewMode::Screen | ViewMode::Archive => unreachable!("handled above"),
             },
         }
@@ -1291,6 +1367,7 @@ impl DskExplorerApp {
                     bytes_per_row: self.bytes_per_row,
                     base_address: 0,
                 },
+                self.charset,
             ),
             ViewMode::Text => text::to_text(
                 &content.bytes,
@@ -1299,8 +1376,9 @@ impl DskExplorerApp {
                 } else {
                     ControlMode::Dots
                 },
+                self.charset,
             ),
-            ViewMode::Basic => basic::detokenize(&content.bytes),
+            ViewMode::Basic => basic::detokenize(&content.bytes, self.charset),
             // Screen is handled above; the Copy button is hidden in Archive mode.
             ViewMode::Screen | ViewMode::Archive => return,
         };
@@ -1438,7 +1516,7 @@ impl DskExplorerApp {
                 .sector_highlight
                 .filter(|(s, _)| *s == self.current_sector)
                 .map(|(_, r)| r);
-            render_hex(ui, &bytes, 16, scroll, highlight);
+            render_hex(ui, &bytes, 16, scroll, highlight, self.charset);
         }
     }
 
@@ -1810,9 +1888,10 @@ fn format_timestamp(ts: Option<msx_disk::fs::Timestamp>) -> String {
 }
 
 /// Build the label for a file row: name + size, plus date/time and attribute
-/// columns when `show_meta` is set (MSX-DOS 2 disks).
-fn format_file_row(entry: &DirEntry, show_meta: bool) -> String {
-    let base = format!("{:<14} {:>8}", entry.name, entry.size);
+/// columns when `show_meta` is set (MSX-DOS 2 disks). The name is decoded for
+/// display under `charset`.
+fn format_file_row(entry: &DirEntry, show_meta: bool, charset: MsxCharset) -> String {
+    let base = format!("{:<14} {:>8}", entry.display_name(charset), entry.size);
     if show_meta {
         format!(
             "{base}  {:<16}  {}",
@@ -1831,6 +1910,7 @@ fn render_entries(
     selection: &BTreeSet<String>,
     show_meta: bool,
     writable: bool,
+    charset: MsxCharset,
     events: &mut RowEvents,
 ) {
     for entry in entries {
@@ -1839,23 +1919,31 @@ fn render_entries(
             let header: egui::WidgetText = if show_meta {
                 egui::RichText::new(format!(
                     "\u{1F4C1} {:<12}  {:<16}  {}",
-                    entry.name,
+                    entry.display_name(charset),
                     format_timestamp(entry.modified),
                     format_attributes(entry.attributes)
                 ))
                 .monospace()
                 .into()
             } else {
-                format!("\u{1F4C1} {}", entry.name).into()
+                format!("\u{1F4C1} {}", entry.display_name(charset)).into()
             };
             egui::CollapsingHeader::new(header)
                 .default_open(true)
                 .show(ui, |ui| {
-                    render_entries(ui, &entry.children, selection, show_meta, writable, events);
+                    render_entries(
+                        ui,
+                        &entry.children,
+                        selection,
+                        show_meta,
+                        writable,
+                        charset,
+                        events,
+                    );
                 });
         } else {
             let is_selected = selection.contains(&entry.path);
-            let label = format_file_row(entry, show_meta);
+            let label = format_file_row(entry, show_meta, charset);
             let resp = ui
                 .selectable_label(is_selected, egui::RichText::new(label).monospace())
                 .interact(egui::Sense::click_and_drag());
@@ -1936,6 +2024,7 @@ fn render_hex(
     bytes_per_row: usize,
     scroll_to_row: Option<usize>,
     highlight_row: Option<usize>,
+    charset: MsxCharset,
 ) {
     let bpr = bytes_per_row.max(1);
     let total_rows = bytes.len().div_ceil(bpr);
@@ -1958,7 +2047,7 @@ fn render_hex(
                 }
             }
             line.push(' ');
-            line.extend(chunk.iter().map(|&b| ascii_char(b)));
+            line.extend(chunk.iter().map(|&b| ascii_char(b, charset)));
             if highlight_row == Some(row) {
                 ui.monospace(egui::RichText::new(line).background_color(egui::Color32::DARK_BLUE));
             } else {
@@ -2192,8 +2281,8 @@ fn render_screen(
 }
 
 /// Detokenized MSX-BASIC listing.
-fn render_basic(ui: &mut egui::Ui, bytes: &[u8]) {
-    let listing = basic::detokenize(bytes);
+fn render_basic(ui: &mut egui::Ui, bytes: &[u8], charset: MsxCharset) {
+    let listing = basic::detokenize(bytes, charset);
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -2374,14 +2463,14 @@ fn render_info(ui: &mut egui::Ui, path: &str, bytes: &[u8], entry: Option<&DirEn
 }
 
 /// Text view, capped to a sane size for responsiveness.
-fn render_text(ui: &mut egui::Ui, bytes: &[u8], show_all: bool) {
+fn render_text(ui: &mut egui::Ui, bytes: &[u8], show_all: bool, charset: MsxCharset) {
     let shown = &bytes[..bytes.len().min(MAX_TEXT_BYTES)];
     let mode = if show_all {
         ControlMode::ShowAll
     } else {
         ControlMode::Dots
     };
-    let rendered = text::to_text(shown, mode);
+    let rendered = text::to_text(shown, mode, charset);
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
@@ -2580,7 +2669,7 @@ mod tests {
     fn file_row_omits_metadata_for_dos1() {
         let e = file_entry("GAME.COM", 1234, msx_disk::fs::Attributes::default(), None);
         assert_eq!(
-            format_file_row(&e, false),
+            format_file_row(&e, false, MsxCharset::International),
             format!("{:<14} {:>8}", "GAME.COM", 1234u64)
         );
     }
@@ -2603,7 +2692,7 @@ mod tests {
                 minute: 30,
             }),
         );
-        let row = format_file_row(&e, true);
+        let row = format_file_row(&e, true, MsxCharset::International);
         assert!(row.contains("1991-03-25 14:30"), "row: {row}");
         assert!(row.trim_end().ends_with("---A"), "row: {row}");
     }

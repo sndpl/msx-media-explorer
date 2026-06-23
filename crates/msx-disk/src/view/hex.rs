@@ -1,16 +1,21 @@
 //! Hex-dump view model.
 //!
 //! Produces the classic three-column layout: an address/offset column, the hex
-//! bytes, and an ASCII gutter where non-printable bytes render as `.`. The row
-//! width is configurable (8/16/24/32) and an optional `base_address` lets BSAVE
-//! files show their MSX RAM load address instead of a plain file offset.
+//! bytes, and a text gutter. Printable ASCII renders as-is, control bytes as
+//! `.`, and bytes `>= 0x80` decode to real glyphs through the selected MSX
+//! [`charset`](crate::charset). The row width is configurable (8/16/24/32) and
+//! an optional `base_address` lets BSAVE files show their MSX RAM load address
+//! instead of a plain file offset.
 
-/// ASCII rendering of a byte: printable ASCII as-is, everything else as `.`.
-pub fn ascii_char(b: u8) -> char {
-    if (0x20..=0x7E).contains(&b) {
-        b as char
-    } else {
-        '.'
+use crate::charset::{self, MsxCharset};
+
+/// Gutter rendering of a byte under `charset`: printable ASCII as-is, control
+/// bytes as `.`, and high bytes decoded to their MSX glyph.
+pub fn ascii_char(b: u8, charset: MsxCharset) -> char {
+    match b {
+        0x20..=0x7E => b as char,
+        0x80..=0xFF => charset::decode_byte(charset, b),
+        _ => '.',
     }
 }
 
@@ -45,8 +50,8 @@ pub struct HexRow {
     pub ascii: String,
 }
 
-/// Iterate the hex rows of `data`.
-pub fn rows(data: &[u8], cfg: HexConfig) -> impl Iterator<Item = HexRow> + '_ {
+/// Iterate the hex rows of `data`, decoding the gutter under `charset`.
+pub fn rows(data: &[u8], cfg: HexConfig, charset: MsxCharset) -> impl Iterator<Item = HexRow> + '_ {
     let bpr = cfg.bytes_per_row.max(1);
     data.chunks(bpr).enumerate().map(move |(i, chunk)| {
         let offset = i * bpr;
@@ -54,17 +59,17 @@ pub fn rows(data: &[u8], cfg: HexConfig) -> impl Iterator<Item = HexRow> + '_ {
             address: cfg.base_address + offset,
             offset,
             bytes: chunk.to_vec(),
-            ascii: chunk.iter().map(|&b| ascii_char(b)).collect(),
+            ascii: chunk.iter().map(|&b| ascii_char(b, charset)).collect(),
         }
     })
 }
 
 /// Render a full hex dump to a string (used for clipboard export).
-pub fn dump_to_string(data: &[u8], cfg: HexConfig) -> String {
+pub fn dump_to_string(data: &[u8], cfg: HexConfig, charset: MsxCharset) -> String {
     use std::fmt::Write;
     let bpr = cfg.bytes_per_row.max(1);
     let mut out = String::new();
-    for row in rows(data, cfg) {
+    for row in rows(data, cfg, charset) {
         let _ = write!(out, "{:06X}  ", row.address);
         for col in 0..bpr {
             match row.bytes.get(col) {
@@ -85,13 +90,21 @@ pub fn dump_to_string(data: &[u8], cfg: HexConfig) -> String {
 mod tests {
     use super::*;
 
+    const INTL: MsxCharset = MsxCharset::International;
+
     #[test]
-    fn ascii_char_replaces_non_printable() {
-        assert_eq!(ascii_char(b'A'), 'A');
-        assert_eq!(ascii_char(0x00), '.');
-        assert_eq!(ascii_char(0x1F), '.');
-        assert_eq!(ascii_char(0x7F), '.');
-        assert_eq!(ascii_char(0xFF), '.');
+    fn control_bytes_become_dots() {
+        assert_eq!(ascii_char(b'A', INTL), 'A');
+        assert_eq!(ascii_char(0x00, INTL), '.');
+        assert_eq!(ascii_char(0x1F, INTL), '.');
+        assert_eq!(ascii_char(0x7F, INTL), '.');
+    }
+
+    #[test]
+    fn high_bytes_decode_to_glyphs_in_gutter() {
+        // The gutter now shows real glyphs for high bytes instead of `.`.
+        assert_eq!(ascii_char(0xB1, MsxCharset::Japanese), '\u{FF71}');
+        assert_eq!(ascii_char(0x82, INTL), '\u{00E9}');
     }
 
     #[test]
@@ -101,7 +114,7 @@ mod tests {
             bytes_per_row: 8,
             base_address: 0x100,
         };
-        let rows: Vec<_> = rows(&data, cfg).collect();
+        let rows: Vec<_> = rows(&data, cfg, INTL).collect();
         assert_eq!(rows.len(), 3); // 8 + 8 + 4
         assert_eq!(rows[0].address, 0x100);
         assert_eq!(rows[1].offset, 8);
@@ -115,7 +128,7 @@ mod tests {
             bytes_per_row: 16,
             base_address: 0,
         };
-        let dump = dump_to_string(data, cfg);
+        let dump = dump_to_string(data, cfg, INTL);
         let first = dump.lines().next().unwrap();
         assert!(first.starts_with("000000  41 42 43 "));
         assert!(first.trim_end().ends_with("ABC"));

@@ -1,5 +1,7 @@
 //! Plain, UI-free data structures describing the contents of a disk.
 
+use crate::charset::{self, MsxCharset};
+
 /// A DOS-style file attribute set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Attributes {
@@ -25,9 +27,16 @@ pub struct Timestamp {
 /// the root is a full recursive tree — including MSX-DOS 2 subdirectories.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirEntry {
-    /// Bare 8.3 name, e.g. `GAME.COM`.
+    /// Bare 8.3 name and the fatfs access key, e.g. `GAME.COM`.
+    ///
+    /// ASCII for `< 0x80`; high bytes are carried losslessly in the Unicode
+    /// Private Use Area (`U+F080..=U+F0FF`) so file I/O round-trips. Use
+    /// [`DirEntry::display_name`] for anything user-facing.
     pub name: String,
     /// Full slash-separated path from the root, e.g. `UTILS/GAME.COM`.
+    ///
+    /// Same PUA encoding as [`DirEntry::name`]; this is the key passed to
+    /// [`crate::fs::DiskFs::read_file`].
     pub path: String,
     pub is_dir: bool,
     /// File size in bytes (0 for directories).
@@ -39,6 +48,14 @@ pub struct DirEntry {
 }
 
 impl DirEntry {
+    /// The human-readable file name, decoded for display under `charset`.
+    ///
+    /// Turns the PUA-encoded [`DirEntry::name`] back into real Unicode (kana,
+    /// accented Latin, ...). Pure-ASCII names are returned unchanged.
+    pub fn display_name(&self, charset: MsxCharset) -> String {
+        charset::decode_fs_name(charset, &self.name)
+    }
+
     /// Depth-first iterator over this entry and all of its descendants.
     pub fn walk(&self) -> impl Iterator<Item = &DirEntry> {
         let mut stack = vec![self];

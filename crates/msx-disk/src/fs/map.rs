@@ -290,16 +290,20 @@ pub(crate) fn cluster_chain_sectors(
 }
 
 /// Build the 8.3 name from a 32-byte directory entry.
+///
+/// High bytes are PUA-encoded via [`crate::charset::byte_to_pua`] so the names
+/// (and the paths built from them) match those from the fatfs floppy path and
+/// decode through [`crate::fs::DirEntry::display_name`] the same way.
 pub(crate) fn entry_name(entry: &[u8]) -> String {
     let base: String = entry[..8]
         .iter()
         .take_while(|&&b| b != b' ')
-        .map(|&b| b as char)
+        .map(|&b| crate::charset::byte_to_pua(b))
         .collect();
     let ext: String = entry[8..11]
         .iter()
         .take_while(|&&b| b != b' ')
-        .map(|&b| b as char)
+        .map(|&b| crate::charset::byte_to_pua(b))
         .collect();
     if ext.is_empty() {
         base
@@ -445,6 +449,17 @@ mod tests {
             g.write_all(b"hello").unwrap();
         }
         cursor.into_inner()
+    }
+
+    #[test]
+    fn entry_name_pua_encodes_high_bytes() {
+        // A raw 8.3 entry as a real MSX disk stores it: katakana bytes B1 B2 B3,
+        // ext "BAS", no LFN. entry_name must PUA-encode the high bytes so the
+        // path matches the fatfs floppy path and decodes to kana for display.
+        let mut entry = [b' '; 32];
+        entry[..3].copy_from_slice(&[0xB1, 0xB2, 0xB3]);
+        entry[8..11].copy_from_slice(b"BAS");
+        assert_eq!(entry_name(&entry), "\u{F0B1}\u{F0B2}\u{F0B3}.BAS");
     }
 
     #[test]

@@ -11,18 +11,21 @@
 //! int/float literal. Files without the `0xFF` marker are plain ASCII and are
 //! returned (lossily) as text.
 
+use crate::charset::{decode_byte, MsxCharset};
 use crate::view::text::{to_text, ControlMode};
 
-/// Detokenize a `.BAS` file into a listing.
-pub fn detokenize(data: &[u8]) -> String {
+/// Detokenize a `.BAS` file into a listing, decoding literal bytes (strings,
+/// REM/DATA text) through the selected MSX `charset`.
+pub fn detokenize(data: &[u8], charset: MsxCharset) -> String {
     if data.first() != Some(&0xFF) {
         // ASCII-saved BASIC: already text.
-        return to_text(data, ControlMode::Dots);
+        return to_text(data, ControlMode::Dots, charset);
     }
     let mut p = Parser {
         data,
         pos: 1, // skip the 0xFF marker
         out: String::new(),
+        charset,
     };
     p.parse_program();
     p.out
@@ -32,6 +35,7 @@ struct Parser<'a> {
     data: &'a [u8],
     pos: usize,
     out: String,
+    charset: MsxCharset,
 }
 
 impl Parser<'_> {
@@ -122,14 +126,14 @@ impl Parser<'_> {
                     let b2 = self.read_byte();
                     match ff_token(b2) {
                         Some(kw) => self.out.push_str(kw),
-                        None => self.out.push(char::from(b2)),
+                        None => self.out.push(decode_byte(self.charset, b2)),
                     }
                 }
                 0x81..=0xFC => {
                     self.pos += 1;
                     match single_token(b) {
                         Some(kw) => self.out.push_str(kw),
-                        None => self.out.push(char::from(b)),
+                        None => self.out.push(decode_byte(self.charset, b)),
                     }
                 }
                 0x20..=0x7E => {
@@ -137,9 +141,14 @@ impl Parser<'_> {
                     self.out.push(b as char);
                 }
                 _ => {
-                    // Lenient: pass any other byte through as Latin-1.
+                    // Lenient: high bytes decode through the charset; other
+                    // (control) bytes pass through as-is.
                     self.pos += 1;
-                    self.out.push(char::from(b));
+                    if b >= 0x80 {
+                        self.out.push(decode_byte(self.charset, b));
+                    } else {
+                        self.out.push(char::from(b));
+                    }
                 }
             }
         }
@@ -175,7 +184,7 @@ impl Parser<'_> {
                 break;
             }
             self.pos += 1;
-            self.out.push(char::from(b));
+            self.out.push(decode_byte(self.charset, b));
         }
     }
 
@@ -183,7 +192,7 @@ impl Parser<'_> {
     fn quoted(&mut self) {
         while let Some(b) = self.peek() {
             self.pos += 1;
-            self.out.push(char::from(b));
+            self.out.push(decode_byte(self.charset, b));
             if b == 0x22 {
                 return;
             }
@@ -205,7 +214,7 @@ impl Parser<'_> {
                 in_quote = !in_quote;
             }
             self.pos += 1;
-            self.out.push(char::from(b));
+            self.out.push(decode_byte(self.charset, b));
         }
     }
 
@@ -472,6 +481,8 @@ fn ff_token(b: u8) -> Option<&'static str> {
 mod tests {
     use super::*;
 
+    const INTL: MsxCharset = MsxCharset::International;
+
     /// Build a one-line tokenized program around `body`.
     fn program(line_no: u16, body: &[u8]) -> Vec<u8> {
         let mut v = vec![0xFF];
@@ -487,14 +498,14 @@ mod tests {
     fn detokenizes_print_string() {
         // 10 PRINT"HI"
         let prog = program(10, &[0x91, 0x22, b'H', b'I', 0x22]);
-        assert_eq!(detokenize(&prog), "10 PRINT\"HI\"\n");
+        assert_eq!(detokenize(&prog, INTL), "10 PRINT\"HI\"\n");
     }
 
     #[test]
     fn zero_byte_inside_int_is_not_a_terminator() {
         // 10 GOTO 256  (256 = 0x0100, contains a 0x00 byte inside the int16)
         let prog = program(10, &[0x89, 0x20, 0x0E, 0x00, 0x01]);
-        assert_eq!(detokenize(&prog), "10 GOTO 256\n");
+        assert_eq!(detokenize(&prog, INTL), "10 GOTO 256\n");
     }
 
     #[test]
@@ -507,7 +518,7 @@ mod tests {
                 0x8B, 0x20, b'A', 0x20, 0xDA, 0x20, b'B', 0x20, 0x3A, 0xA1, 0x20, b'C',
             ],
         );
-        assert_eq!(detokenize(&prog), "20 IF A THEN B ELSE C\n");
+        assert_eq!(detokenize(&prog, INTL), "20 IF A THEN B ELSE C\n");
     }
 
     #[test]
@@ -517,19 +528,19 @@ mod tests {
             30,
             &[0x91, 0xFF, 0x81, 0x28, 0x22, b'X', 0x22, 0x2C, 0x12, 0x29],
         );
-        assert_eq!(detokenize(&prog), "30 PRINTLEFT$(\"X\",1)\n");
+        assert_eq!(detokenize(&prog, INTL), "30 PRINTLEFT$(\"X\",1)\n");
     }
 
     #[test]
     fn single_precision_float() {
         // 1.5 single-precision: exponent 0x41, BCD 15 00 00
         let prog = program(40, &[0x1D, 0x41, 0x15, 0x00, 0x00]);
-        assert_eq!(detokenize(&prog), "40 1.5!\n");
+        assert_eq!(detokenize(&prog, INTL), "40 1.5!\n");
     }
 
     #[test]
     fn ascii_saved_basic_passes_through() {
-        let out = detokenize(b"10 PRINT\r\n20 END\r\n");
+        let out = detokenize(b"10 PRINT\r\n20 END\r\n", INTL);
         assert_eq!(out, "10 PRINT\n20 END\n");
     }
 
@@ -537,6 +548,26 @@ mod tests {
     fn rem_keeps_rest_of_line_literal() {
         // 10 REM hi:there  (colon inside REM stays literal)
         let prog = program(10, &[0x8F, b' ', b'h', b'i', 0x3A, b't']);
-        assert_eq!(detokenize(&prog), "10 REM hi:t\n");
+        assert_eq!(detokenize(&prog, INTL), "10 REM hi:t\n");
+    }
+
+    #[test]
+    fn data_args_decode_japanese_kana() {
+        // 10 DATA<kana>  with the user's reported high bytes in a DATA statement.
+        let prog = program(10, &[0x84, 0xE9, 0xCC, 0xA7, 0xB2, 0xD9]);
+        assert_eq!(
+            detokenize(&prog, MsxCharset::Japanese),
+            "10 DATA\u{306E}\u{FF8C}\u{FF67}\u{FF72}\u{FF99}\n"
+        );
+    }
+
+    #[test]
+    fn quoted_string_decodes_kana() {
+        // 10 PRINT"<kana>"  -> katakana inside a string literal.
+        let prog = program(10, &[0x91, 0x22, 0xB1, 0xB2, 0x22]);
+        assert_eq!(
+            detokenize(&prog, MsxCharset::Japanese),
+            "10 PRINT\"\u{FF71}\u{FF72}\"\n"
+        );
     }
 }

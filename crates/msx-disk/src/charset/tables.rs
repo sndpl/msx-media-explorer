@@ -1,0 +1,64 @@
+//! Byte->Unicode mapping tables for the MSX character sets.
+//!
+//! Each table covers the high half (`0x80..=0xFF`) of one MSX code page; index
+//! `i` corresponds to byte `0x80 + i`. Sourced from the MSX Technical Data Book
+//! and the Unicode L2/19-025 proposal (MSX.TXT). `U+FFFD` marks cells that are
+//! genuinely undefined on real hardware. `0xFF` is the hardware text cursor,
+//! rendered here as a full block (`U+2588`).
+
+/// MSX International (Western) high half, `0x80..=0xFF`.
+pub static INTERNATIONAL_HIGH: [char; 128] = [
+    // 0x8x
+    '\u{00C7}', '\u{00FC}', '\u{00E9}', '\u{00E2}', '\u{00E4}', '\u{00E0}', '\u{00E5}', '\u{00E7}',
+    '\u{00EA}', '\u{00EB}', '\u{00E8}', '\u{00EF}', '\u{00EE}', '\u{00EC}', '\u{00C4}', '\u{00C5}',
+    // 0x9x
+    '\u{00C9}', '\u{00E6}', '\u{00C6}', '\u{00F4}', '\u{00F6}', '\u{00F2}', '\u{00FB}', '\u{00F9}',
+    '\u{00FF}', '\u{00D6}', '\u{00DC}', '\u{00A2}', '\u{00A3}', '\u{00A5}', '\u{20A7}', '\u{0192}',
+    // 0xAx
+    '\u{00E1}', '\u{00ED}', '\u{00F3}', '\u{00FA}', '\u{00F1}', '\u{00D1}', '\u{00AA}', '\u{00BA}',
+    '\u{00BF}', '\u{2310}', '\u{00AC}', '\u{00BD}', '\u{00BC}', '\u{00A1}', '\u{00AB}', '\u{00BB}',
+    // 0xBx
+    '\u{00C3}', '\u{00E3}', '\u{0128}', '\u{0129}', '\u{00D5}', '\u{00F5}', '\u{0170}', '\u{0171}',
+    '\u{0132}', '\u{0133}', '\u{00BE}', '\u{223D}', '\u{25CA}', '\u{2030}', '\u{00B6}', '\u{00A7}',
+    // 0xCx (several are Symbols for Legacy Computing, U+1FBxx, outside the BMP)
+    '\u{2582}', '\u{259A}', '\u{2586}', '\u{1FB82}', '\u{25AC}', '\u{1FB85}', '\u{258E}', '\u{259E}',
+    '\u{258A}', '\u{1FB87}', '\u{1FB8A}', '\u{1FB99}', '\u{1FB98}', '\u{1FB6D}', '\u{1FB6F}', '\u{1FB6C}',
+    // 0xDx
+    '\u{1FB6E}', '\u{1FB9A}', '\u{1FB9B}', '\u{2598}', '\u{2597}', '\u{259D}', '\u{2596}', '\u{1FB96}',
+    '\u{0394}', '\u{2021}', '\u{03C9}', '\u{2588}', '\u{2584}', '\u{258C}', '\u{2590}', '\u{2580}',
+    // 0xEx
+    '\u{03B1}', '\u{00DF}', '\u{0393}', '\u{03C0}', '\u{03A3}', '\u{03C3}', '\u{00B5}', '\u{03C4}',
+    '\u{03A6}', '\u{0398}', '\u{03A9}', '\u{03B4}', '\u{221E}', '\u{2300}', '\u{2208}', '\u{2229}',
+    // 0xFx (0xFF is the cursor; rendered as a full block)
+    '\u{2261}', '\u{00B1}', '\u{2265}', '\u{2264}', '\u{2320}', '\u{2321}', '\u{00F7}', '\u{2248}',
+    '\u{00B0}', '\u{2219}', '\u{00B7}', '\u{221A}', '\u{207F}', '\u{00B2}', '\u{25A0}', '\u{2588}',
+];
+
+/// MSX Japanese high half, `0x80..=0xFF`: hiragana, JIS X 0201 half-width
+/// katakana, card suits and a couple of graphic glyphs.
+pub static JAPANESE_HIGH: [char; 128] = [
+    // 0x8x
+    '\u{2660}', '\u{2665}', '\u{2663}', '\u{2666}', '\u{25CB}', '\u{25CF}', '\u{3092}', '\u{3041}',
+    '\u{3043}', '\u{3045}', '\u{3047}', '\u{3049}', '\u{3083}', '\u{3085}', '\u{3087}', '\u{3063}',
+    // 0x9x (0x90 undefined)
+    '\u{FFFD}', '\u{3042}', '\u{3044}', '\u{3046}', '\u{3048}', '\u{304A}', '\u{304B}', '\u{304D}',
+    '\u{304F}', '\u{3051}', '\u{3053}', '\u{3055}', '\u{3057}', '\u{3059}', '\u{305B}', '\u{305D}',
+    // 0xAx (0xA0 undefined; 0xA1.. = JIS X 0201 katakana punctuation/letters)
+    '\u{FFFD}', '\u{FF61}', '\u{FF62}', '\u{FF63}', '\u{FF64}', '\u{FF65}', '\u{FF66}', '\u{FF67}',
+    '\u{FF68}', '\u{FF69}', '\u{FF6A}', '\u{FF6B}', '\u{FF6C}', '\u{FF6D}', '\u{FF6E}', '\u{FF6F}',
+    // 0xBx
+    '\u{FF70}', '\u{FF71}', '\u{FF72}', '\u{FF73}', '\u{FF74}', '\u{FF75}', '\u{FF76}', '\u{FF77}',
+    '\u{FF78}', '\u{FF79}', '\u{FF7A}', '\u{FF7B}', '\u{FF7C}', '\u{FF7D}', '\u{FF7E}', '\u{FF7F}',
+    // 0xCx
+    '\u{FF80}', '\u{FF81}', '\u{FF82}', '\u{FF83}', '\u{FF84}', '\u{FF85}', '\u{FF86}', '\u{FF87}',
+    '\u{FF88}', '\u{FF89}', '\u{FF8A}', '\u{FF8B}', '\u{FF8C}', '\u{FF8D}', '\u{FF8E}', '\u{FF8F}',
+    // 0xDx
+    '\u{FF90}', '\u{FF91}', '\u{FF92}', '\u{FF93}', '\u{FF94}', '\u{FF95}', '\u{FF96}', '\u{FF97}',
+    '\u{FF98}', '\u{FF99}', '\u{FF9A}', '\u{FF9B}', '\u{FF9C}', '\u{FF9D}', '\u{FF9E}', '\u{FF9F}',
+    // 0xEx
+    '\u{305F}', '\u{3061}', '\u{3064}', '\u{3066}', '\u{3068}', '\u{306A}', '\u{306B}', '\u{306C}',
+    '\u{306D}', '\u{306E}', '\u{306F}', '\u{3072}', '\u{3075}', '\u{3078}', '\u{307B}', '\u{307E}',
+    // 0xFx (0xFE undefined; 0xFF is the cursor, rendered as a full block)
+    '\u{307F}', '\u{3080}', '\u{3081}', '\u{3082}', '\u{3084}', '\u{3086}', '\u{3088}', '\u{3089}',
+    '\u{308A}', '\u{308B}', '\u{308C}', '\u{308D}', '\u{308F}', '\u{3093}', '\u{FFFD}', '\u{2588}',
+];
