@@ -6,11 +6,19 @@ successor to the classic Windows-only DskExplorer.
 
 ## Status
 
-Read-only explorer is working. You can open every common MSX image format,
-browse files and MSX-DOS 2 subdirectories, view file contents as
-HEX / TEXT / tokenized BASIC / SCREEN 2,5,7,8,12 bitmaps, search within a file
-(text or hex), and extract files. Writing, editing, format conversion, and the
-graphical disk-usage / sector views follow in later phases.
+Working: open every common MSX image format, browse files and MSX-DOS 2
+subdirectories, view file contents as HEX / TEXT / tokenized BASIC /
+SCREEN 2,5,7,8,12 bitmaps, search within a file (text or hex), and extract
+files.
+
+Editing (write-back to the source image): add, rename, and delete files, and
+edit a file's bytes in hex. The original boot sector is always preserved, so
+MSX-DOS 1 boot code is never clobbered. `.xsa` is read-only (re-compression is
+a later phase).
+
+Still to come: graphical disk-usage / per-file sector maps, a view-and-edit
+sector view, format conversions (`xsa<->dsk`, `img/msx/ddi->dsk`), and
+drag-and-drop in/out of the OS file manager.
 
 ## Supported image formats (read)
 

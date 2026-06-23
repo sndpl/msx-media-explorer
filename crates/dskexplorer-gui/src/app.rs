@@ -51,7 +51,13 @@ pub struct DskExplorerApp {
     renaming: Option<String>,
     /// Path pending a delete confirmation.
     confirm_delete: Option<String>,
+    /// Editable hex text when editing the current file's bytes.
+    hex_edit: Option<String>,
 }
+
+/// Largest file (bytes) offered for in-app hex editing, to keep the editor
+/// responsive.
+const MAX_HEX_EDIT_BYTES: usize = 32 * 1024;
 
 impl Default for DskExplorerApp {
     fn default() -> Self {
@@ -71,6 +77,7 @@ impl Default for DskExplorerApp {
             pending_scroll_row: None,
             renaming: None,
             confirm_delete: None,
+            hex_edit: None,
         }
     }
 }
@@ -101,6 +108,7 @@ impl DskExplorerApp {
                 self.view_mode = default_view_mode(&path);
                 self.search_matches.clear();
                 self.search_pos = 0;
+                self.hex_edit = None;
                 self.content = Some(FileContent {
                     path: path.clone(),
                     bytes,
@@ -178,9 +186,27 @@ impl DskExplorerApp {
             ui.separator();
             match self.view_mode {
                 ViewMode::Hex => {
-                    ui.label("Bytes/row:");
-                    for n in [8usize, 16, 24, 32] {
-                        ui.selectable_value(&mut self.bytes_per_row, n, n.to_string());
+                    if self.hex_edit.is_some() {
+                        if ui.button("Save edits").clicked() {
+                            self.save_hex_edit();
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.hex_edit = None;
+                        }
+                    } else {
+                        ui.label("Bytes/row:");
+                        for n in [8usize, 16, 24, 32] {
+                            ui.selectable_value(&mut self.bytes_per_row, n, n.to_string());
+                        }
+                        let editable = writable
+                            && self
+                                .content
+                                .as_ref()
+                                .is_some_and(|c| c.bytes.len() <= MAX_HEX_EDIT_BYTES);
+                        if editable && ui.button("Edit hex").clicked() {
+                            let text = format_hex_for_edit(&self.content.as_ref().unwrap().bytes);
+                            self.hex_edit = Some(text);
+                        }
                     }
                 }
                 ViewMode::Text => {
@@ -254,6 +280,21 @@ impl DskExplorerApp {
             });
         }
         ui.separator();
+
+        if self.view_mode == ViewMode::Hex && self.hex_edit.is_some() {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if let Some(text) = self.hex_edit.as_mut() {
+                        ui.add(
+                            egui::TextEdit::multiline(text)
+                                .code_editor()
+                                .desired_width(f32::INFINITY),
+                        );
+                    }
+                });
+            return;
+        }
 
         if self.view_mode == ViewMode::Screen {
             // The screen view needs the mutable texture cache, so handle it
@@ -350,6 +391,7 @@ impl DskExplorerApp {
                 self.selected = None;
                 self.content = None;
                 self.search_matches.clear();
+                self.hex_edit = None;
             }
             Err(e) => self.status = format!("Write failed: {e}"),
         }
@@ -407,6 +449,23 @@ impl DskExplorerApp {
             .unwrap()
             .delete(std::slice::from_ref(&path));
         self.after_mutation(result, format!("Deleted {path}"));
+    }
+
+    fn save_hex_edit(&mut self) {
+        let (Some(edited), Some(path)) = (self.hex_edit.clone(), self.selected.clone()) else {
+            return;
+        };
+        let Some(bytes) = search::parse_hex(&edited) else {
+            self.status =
+                "Invalid hex: need whole byte pairs (0-9, A-F), whitespace ignored".to_string();
+            return;
+        };
+        let result = self
+            .disk
+            .as_mut()
+            .unwrap()
+            .add_files(&[(path.clone(), bytes)]);
+        self.after_mutation(result, format!("Saved edits to {path}"));
     }
 
     /// Render the delete-confirmation modal if a deletion is pending.
@@ -528,6 +587,19 @@ fn render_hex(
             }
         }
     });
+}
+
+/// Format bytes as editable hex: 16 space-separated pairs per line.
+fn format_hex_for_edit(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 {
+            out.push(if i % 16 == 0 { '\n' } else { ' ' });
+        }
+        let _ = write!(out, "{b:02X}");
+    }
+    out
 }
 
 /// Coerce a host filename into an MSX-DOS 8.3 uppercase name.
@@ -657,5 +729,33 @@ impl eframe::App for DskExplorerApp {
         });
 
         self.delete_confirmation(ui.ctx());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_edit_format_parse_roundtrip() {
+        let bytes: Vec<u8> = (0u8..50).collect();
+        let text = format_hex_for_edit(&bytes);
+        assert!(text.contains('\n'), "should wrap at 16 bytes");
+        assert_eq!(msx_disk::search::parse_hex(&text), Some(bytes));
+    }
+
+    #[test]
+    fn sanitize_makes_msx_83_names() {
+        assert_eq!(sanitize_msx_name("my long file.text"), "MYLONGFI.TEX");
+        assert_eq!(sanitize_msx_name("a.b"), "A.B");
+        assert_eq!(sanitize_msx_name(""), "FILE");
+        assert_eq!(sanitize_msx_name("game.com"), "GAME.COM");
+    }
+
+    #[test]
+    fn default_view_mode_by_extension() {
+        assert_eq!(default_view_mode("PIC.SC8"), ViewMode::Screen);
+        assert_eq!(default_view_mode("PROG.BAS"), ViewMode::Basic);
+        assert_eq!(default_view_mode("DATA.BIN"), ViewMode::Hex);
     }
 }
