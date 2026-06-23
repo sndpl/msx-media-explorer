@@ -9,6 +9,7 @@ pub mod cas;
 pub mod error;
 pub mod fs;
 pub mod image;
+pub mod recoil;
 pub mod search;
 pub mod view;
 

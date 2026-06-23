@@ -55,6 +55,27 @@ impl LoadedDisk {
         msx_disk::image::xsa::compress(self.image.data())
     }
 
+    /// Find a companion file: the sibling of `base_path` (same directory and
+    /// stem) whose extension is `ext`, matched case-insensitively.
+    pub fn companion(&self, base_path: &str, ext: &str) -> Option<Vec<u8>> {
+        let dir = base_path.rsplit_once('/').map(|(d, _)| d);
+        let stem = base_path
+            .rsplit('/')
+            .next()
+            .and_then(|n| n.rsplit_once('.').map(|(s, _)| s).or(Some(n)))?;
+        let target = format!("{stem}.{ext}");
+        for entry in self.tree.iter().flat_map(DirEntry::walk) {
+            if entry.is_dir {
+                continue;
+            }
+            let entry_dir = entry.path.rsplit_once('/').map(|(d, _)| d);
+            if entry_dir == dir && entry.name.eq_ignore_ascii_case(&target) {
+                return self.read_file(&entry.path).ok();
+            }
+        }
+        None
+    }
+
     /// Whether this disk can be modified in place (has a path and a writable
     /// container format).
     pub fn writable(&self) -> bool {

@@ -2,10 +2,10 @@
 
 use std::path::Path;
 
+use msx_disk::recoil::{self, FnCompanions};
 use msx_disk::search;
 use msx_disk::view::basic;
 use msx_disk::view::hex::ascii_char;
-use msx_disk::view::screen::{self, ScreenMode};
 use msx_disk::view::text::{self, ControlMode};
 use msx_disk::DirEntry;
 
@@ -318,9 +318,13 @@ impl DskExplorerApp {
             // The screen view needs the mutable texture cache, so handle it
             // outside the shared borrow of `self.content`.
             let mut cache = self.screen_tex.take();
-            match &self.content {
-                Some(content) => render_screen(ui, &mut cache, &content.path, &content.bytes),
-                None => {
+            match (self.disk.as_ref(), self.content.as_ref()) {
+                (Some(disk), Some(content)) => {
+                    let path = content.path.clone();
+                    let companions = FnCompanions(|ext: &str| disk.companion(&path, ext));
+                    render_screen(ui, &mut cache, &content.path, &content.bytes, &companions);
+                }
+                _ => {
                     ui.weak("Select a file to view its contents.");
                 }
             }
@@ -695,7 +699,7 @@ fn sanitize_msx_name(name: &str) -> String {
 /// Pick a sensible default view mode for a file based on its extension.
 fn default_view_mode(path: &str) -> ViewMode {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    if ScreenMode::from_extension(&ext).is_some() {
+    if recoil::is_supported(path) {
         ViewMode::Screen
     } else if ext == "bas" {
         ViewMode::Basic
@@ -704,22 +708,23 @@ fn default_view_mode(path: &str) -> ViewMode {
     }
 }
 
-/// Render a decoded MSX screen image, caching the GPU texture by file path.
+/// Render a decoded MSX graphics image, caching the GPU texture by file path.
 fn render_screen(
     ui: &mut egui::Ui,
     cache: &mut Option<(String, egui::TextureHandle)>,
     path: &str,
     bytes: &[u8],
+    companions: &dyn recoil::CompanionFiles,
 ) {
-    let Some(mode) = ScreenMode::from_filename(path) else {
-        ui.weak("Not a recognized MSX screen file (.SC2/.SC5/.SC7/.SC8/.SCC).");
-        return;
-    };
-
     let stale = cache.as_ref().map(|(p, _)| p != path).unwrap_or(true);
     if stale {
-        let bmp = screen::render(mode, bytes);
-        let image = egui::ColorImage::from_rgba_unmultiplied([bmp.width, bmp.height], &bmp.rgba);
+        let Some(img) = recoil::decode(path, bytes, companions) else {
+            *cache = None;
+            ui.weak("Not a recognized / decodable MSX graphics file.");
+            return;
+        };
+        let image =
+            egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.to_rgba());
         let texture = ui.ctx().load_texture(
             format!("screen:{path}"),
             image,
