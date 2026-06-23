@@ -1,0 +1,21 @@
+[package]
+name = "dskexplorer-gui"
+description = "Cross-platform GUI for browsing and editing MSX disk images"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "dskexplorer"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+eframe = "0.34.3"
+egui = "0.34.3"
+msx-disk = { path = "../msx-disk" }
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }

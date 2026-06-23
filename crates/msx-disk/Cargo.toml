@@ -1,0 +1,16 @@
+[package]
+name = "msx-disk"
+description = "Read, decode, and convert MSX floppy disk image formats (.dsk, .xsa, .cas, and more)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc"] }
+
+[dev-dependencies]

@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+.DS_Store
+
+# Local agent/editor state.
+/.claude/
+
+# Root-level binary disk/tape fixtures (some are copyrighted) — kept local, not
+# committed. Rust integration tests live under crates/*/tests and skip when the
+# fixtures are absent, so CI stays green without them.
+/tests/
