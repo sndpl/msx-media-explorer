@@ -923,6 +923,11 @@ fn sanitize_msx_name(name: &str) -> String {
     }
 }
 
+/// Extensions that default to the Text view.
+const TEXT_EXTENSIONS: &[&str] = &[
+    "txt", "bat", "asc", "doc", "me", "ini", "cfg", "diz", "nfo", "log", "csv", "md",
+];
+
 /// Pick a sensible default view mode for a file based on its extension.
 fn default_view_mode(path: &str) -> ViewMode {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
@@ -930,6 +935,8 @@ fn default_view_mode(path: &str) -> ViewMode {
         ViewMode::Screen
     } else if ext == "bas" {
         ViewMode::Basic
+    } else if TEXT_EXTENSIONS.contains(&ext.as_str()) {
+        ViewMode::Text
     } else {
         ViewMode::Hex
     }
@@ -1056,5 +1063,8 @@ mod tests {
         assert_eq!(default_view_mode("PIC.SC8"), ViewMode::Screen);
         assert_eq!(default_view_mode("PROG.BAS"), ViewMode::Basic);
         assert_eq!(default_view_mode("DATA.BIN"), ViewMode::Hex);
+        assert_eq!(default_view_mode("README.TXT"), ViewMode::Text);
+        assert_eq!(default_view_mode("AUTOEXEC.BAT"), ViewMode::Text);
+        assert_eq!(default_view_mode("notes.txt"), ViewMode::Text);
     }
 }
