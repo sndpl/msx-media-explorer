@@ -63,6 +63,10 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ImageFormat> {
 pub struct DiskImage {
     format: ImageFormat,
     geometry: Geometry,
+    /// Container bytes that precede the normalized data (e.g. the `.img`
+    /// side-count byte or the `.ddi` header); empty for raw `.dsk`/`.msx`.
+    /// Preserved so modified data can be written back in the same container.
+    prefix: Vec<u8>,
     data: Vec<u8>,
 }
 
@@ -114,20 +118,50 @@ impl DiskImage {
 
     /// Build a normalized image from in-memory bytes for a known format.
     pub fn open_bytes(format: ImageFormat, bytes: Vec<u8>) -> Result<DiskImage> {
-        let data = match format {
-            ImageFormat::Dsk => dsk::normalize(bytes)?,
-            ImageFormat::Img => img::normalize(&bytes)?.0,
-            ImageFormat::Msx => msx::normalize(bytes)?,
-            ImageFormat::Ddi => ddi::normalize(&bytes)?,
-            ImageFormat::Xsa => xsa::decompress(&bytes)?,
+        let (prefix, data) = match format {
+            ImageFormat::Dsk => (Vec::new(), dsk::normalize(bytes)?),
+            ImageFormat::Img => {
+                let prefix = bytes[..1.min(bytes.len())].to_vec();
+                (prefix, img::normalize(&bytes)?.0)
+            }
+            ImageFormat::Msx => (Vec::new(), msx::normalize(bytes)?),
+            ImageFormat::Ddi => {
+                let data = ddi::normalize(&bytes)?;
+                let header_len = bytes.len() - data.len();
+                (bytes[..header_len].to_vec(), data)
+            }
+            ImageFormat::Xsa => (Vec::new(), xsa::decompress(&bytes)?),
         };
         let geometry = Geometry::for_raw_len(data.len())
             .ok_or_else(|| Error::Malformed("normalized image is not sector-aligned".into()))?;
         Ok(DiskImage {
             format,
             geometry,
+            prefix,
             data,
         })
+    }
+
+    /// Re-encode modified normalized sector data back into this image's
+    /// container framing, ready to write to disk.
+    ///
+    /// Returns an error for `.xsa`, which would require re-compression
+    /// (planned for a later phase); save those as `.dsk` instead.
+    pub fn reencode(&self, data: &[u8]) -> Result<Vec<u8>> {
+        if self.format == ImageFormat::Xsa {
+            return Err(Error::Unsupported(
+                "cannot write back to .xsa yet; save as .dsk instead".into(),
+            ));
+        }
+        let mut out = Vec::with_capacity(self.prefix.len() + data.len());
+        out.extend_from_slice(&self.prefix);
+        out.extend_from_slice(data);
+        Ok(out)
+    }
+
+    /// Whether modified data can be written back to this image's container.
+    pub fn is_writable(&self) -> bool {
+        self.format != ImageFormat::Xsa
     }
 }
 
@@ -204,5 +238,42 @@ mod tests {
         assert_eq!(detect_by_magic(xsa::MAGIC), Some(ImageFormat::Xsa));
         assert_eq!(detect_by_magic(b"IMxx"), Some(ImageFormat::Ddi));
         assert_eq!(detect_by_magic(b"random"), None);
+    }
+
+    #[test]
+    fn reencode_dsk_is_identity() {
+        let raw = synthetic_raw(SIZE_720K);
+        let img = DiskImage::open_bytes(ImageFormat::Dsk, raw.clone()).unwrap();
+        assert_eq!(img.reencode(&raw).unwrap(), raw);
+    }
+
+    #[test]
+    fn reencode_img_restores_side_byte() {
+        let raw = synthetic_raw(SIZE_720K);
+        let mut bytes = vec![0x02];
+        bytes.extend_from_slice(&raw);
+        let img = DiskImage::open_bytes(ImageFormat::Img, bytes.clone()).unwrap();
+        assert_eq!(img.reencode(img.data()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn reencode_ddi_restores_header() {
+        let raw = synthetic_raw(SIZE_720K);
+        let mut bytes = vec![0u8; 0x1200];
+        bytes.extend_from_slice(&raw);
+        let img = DiskImage::open_bytes(ImageFormat::Ddi, bytes.clone()).unwrap();
+        assert_eq!(img.reencode(img.data()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn reencode_xsa_is_unsupported() {
+        let img = DiskImage {
+            format: ImageFormat::Xsa,
+            geometry: Geometry::DS_720K,
+            prefix: Vec::new(),
+            data: vec![0u8; SIZE_720K],
+        };
+        assert!(!img.is_writable());
+        assert!(img.reencode(img.data()).is_err());
     }
 }

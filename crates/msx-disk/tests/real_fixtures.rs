@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use msx_disk::{cas, view::basic, DiskFs, DiskImage, ImageFormat};
+use msx_disk::{cas, fs::write, view::basic, DiskFs, DiskImage, ImageFormat};
 
 /// Resolve a fixture path under the workspace-root `tests/` directory, or
 /// `None` if it does not exist.
@@ -78,6 +78,29 @@ fn detokenizes_real_basic_program() {
     assert!(listing.contains("DEFINT"), "expected DEFINT keyword");
     assert!(listing.contains("&H"), "expected hex literal");
     assert!(listing.trim_end().ends_with("END"), "should end with END");
+}
+
+#[test]
+fn write_back_to_real_disk_roundtrip() {
+    // Add a file to a real MSX-DOS 2 disk (in memory) and confirm it reads back
+    // while existing files and the original boot sector are preserved.
+    let path = skip_if_absent!("MSX-DOS2 TOOLS.dsk");
+    let image = DiskImage::open(&path).expect("open");
+    let original = image.data().to_vec();
+
+    let modified = write::add_files(&original, &[("PHASE2.TXT", b"written by dskexplorer")])
+        .expect("add file");
+
+    // Original boot sector (BPB + boot code) is untouched.
+    assert_eq!(&modified[..512], &original[..512]);
+
+    let fs = DiskFs::mount(modified).expect("remount");
+    assert_eq!(
+        fs.read_file("PHASE2.TXT").unwrap(),
+        b"written by dskexplorer"
+    );
+    // An existing file still reads correctly.
+    assert!(!fs.read_file("MSXDOS2.SYS").unwrap().is_empty());
 }
 
 #[test]
