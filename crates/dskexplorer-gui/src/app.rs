@@ -55,6 +55,33 @@ struct FileContent {
     bytes: Vec<u8>,
 }
 
+/// A file action chosen from a tree row's right-click context menu. Carries the
+/// path of the row that was clicked; `tree_panel` resolves it against the
+/// current selection before acting.
+enum RowAction {
+    Rename(String),
+    Delete(String),
+    Extract(String),
+}
+
+/// What the user did to a tree row this frame, collected by the row renderers
+/// and applied back in `tree_panel` (the renderers only hold `&self` state).
+#[derive(Default)]
+struct RowEvents {
+    /// A row was clicked to view it; the bool toggles multi-select (Cmd/Ctrl).
+    clicked: Option<(String, bool)>,
+    /// A row began an OS drag-out (the dragged row's path).
+    drag_started: Option<String>,
+    /// A context-menu action was chosen on a row.
+    action: Option<RowAction>,
+}
+
+/// A rename in progress: the file being renamed and the new name being typed.
+struct RenameTarget {
+    path: String,
+    name: String,
+}
+
 /// Root application state.
 pub struct DskExplorerApp {
     disk: Option<LoadedDisk>,
@@ -80,8 +107,8 @@ pub struct DskExplorerApp {
     search_pos: usize,
     /// One-shot request to scroll the hex view to a row.
     pending_scroll_row: Option<usize>,
-    /// New name being typed when renaming the selected file.
-    renaming: Option<String>,
+    /// Rename in progress: the target file and the new name being typed.
+    rename_target: Option<RenameTarget>,
     /// Paths pending a delete confirmation.
     confirm_delete: Option<Vec<String>>,
     /// Editable hex text when editing the current file's bytes.
@@ -137,7 +164,7 @@ impl Default for DskExplorerApp {
             search_matches: Vec::new(),
             search_pos: 0,
             pending_scroll_row: None,
-            renaming: None,
+            rename_target: None,
             confirm_delete: None,
             hex_edit: None,
             app_view: AppView::Files,
@@ -269,6 +296,17 @@ impl DskExplorerApp {
         }
     }
 
+    /// Files a row-level action targets: the whole multi-selection when the
+    /// clicked row is part of it, otherwise just that row. Shared by the
+    /// right-click menu and OS drag-out so both follow the same rule.
+    fn paths_for_row(&self, path: &str) -> Vec<String> {
+        if self.selection.len() > 1 && self.selection.contains(path) {
+            self.selection_paths()
+        } else {
+            vec![path.to_string()]
+        }
+    }
+
     fn handle_dropped_files(&mut self, ctx: &egui::Context) {
         let paths: Vec<PathBuf> = ctx.input(|i| {
             i.raw
@@ -374,46 +412,49 @@ impl DskExplorerApp {
             });
             ui.separator();
         }
-        let mut clicked: Option<(String, bool)> = None;
-        let mut drag_started: Option<String> = None;
+        let writable = self.disk_writable();
+        let mut events = RowEvents::default();
         if let Some(disk) = &self.disk {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     let show_meta = disk.dos == msx_disk::fs::DosVersion::Dos2;
-                    render_entries(
-                        ui,
-                        &disk.tree,
-                        &self.selection,
-                        show_meta,
-                        &mut clicked,
-                        &mut drag_started,
-                    );
+                    render_entries(ui, &disk.tree, &self.selection, show_meta, writable, &mut events);
                 });
         } else if let Some(tape) = &self.tape {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    render_tape_files(ui, tape, &self.selection, &mut clicked, &mut drag_started);
+                    render_tape_files(ui, tape, &self.selection, &mut events);
                 });
         } else {
             ui.weak("No disk open.");
         }
-        if let Some((path, toggle)) = clicked {
+        if let Some((path, toggle)) = events.clicked {
             self.select_file(path, toggle);
+        }
+        if let Some(action) = events.action {
+            match action {
+                RowAction::Rename(path) => {
+                    let name = base_name(&path);
+                    self.rename_target = Some(RenameTarget { path, name });
+                }
+                RowAction::Delete(path) => {
+                    self.confirm_delete = Some(self.paths_for_row(&path));
+                }
+                RowAction::Extract(path) => {
+                    let paths = self.paths_for_row(&path);
+                    self.extract_paths(&paths);
+                }
+            }
         }
         // On macOS/Windows, a dragged row hands its file(s) to the OS drag.
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        if let Some(path) = drag_started {
-            let paths = if self.selection.contains(&path) && self.selection.len() > 1 {
-                self.selection_paths()
-            } else {
-                vec![path]
-            };
-            self.pending_drag_out = Some(paths);
+        if let Some(path) = events.drag_started {
+            self.pending_drag_out = Some(self.paths_for_row(&path));
         }
         #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-        let _ = &drag_started;
+        let _ = &events.drag_started;
     }
 
     fn viewer_panel(&mut self, ui: &mut egui::Ui) {
@@ -456,14 +497,6 @@ impl DskExplorerApp {
             }
             if self.content.is_some() {
                 ui.separator();
-                let extract_label = if self.selection.len() > 1 {
-                    format!("Extract {}…", self.selection.len())
-                } else {
-                    "Extract…".to_string()
-                };
-                if ui.button(extract_label).clicked() {
-                    self.extract_selected();
-                }
                 let copy_label = if self.view_mode == ViewMode::Screen {
                     "Copy image"
                 } else {
@@ -474,43 +507,6 @@ impl DskExplorerApp {
                 }
                 if self.view_mode == ViewMode::Screen && ui.button("Save PNG…").clicked() {
                     self.save_screen_png();
-                }
-            }
-
-            let file_selected = self.selected.is_some() && self.content.is_some();
-            if self.renaming.is_some() {
-                let mut apply = false;
-                let mut cancel = false;
-                if let Some(name) = self.renaming.as_mut() {
-                    ui.separator();
-                    ui.label("New name:");
-                    ui.add(egui::TextEdit::singleline(name).desired_width(120.0));
-                    apply = ui.button("Apply").clicked();
-                    cancel = ui.button("Cancel").clicked();
-                }
-                if apply {
-                    self.apply_rename();
-                } else if cancel {
-                    self.renaming = None;
-                }
-            } else if writable && file_selected {
-                ui.separator();
-                if ui.button("Rename").clicked() {
-                    let base = self
-                        .selected
-                        .as_deref()
-                        .and_then(|p| p.rsplit('/').next())
-                        .unwrap_or("")
-                        .to_string();
-                    self.renaming = Some(base);
-                }
-                let delete_label = if self.selection.len() > 1 {
-                    format!("Delete {}", self.selection.len())
-                } else {
-                    "Delete".to_string()
-                };
-                if ui.button(delete_label).clicked() {
-                    self.confirm_delete = Some(self.selection_paths());
                 }
             }
         });
@@ -751,15 +747,15 @@ impl DskExplorerApp {
     }
 
     fn apply_rename(&mut self) {
-        let (Some(old_path), Some(new_name)) = (self.selected.clone(), self.renaming.take()) else {
+        let Some(target) = self.rename_target.take() else {
             return;
         };
-        let new_base = sanitize_msx_name(&new_name);
-        let new_path = match old_path.rsplit_once('/') {
+        let new_base = sanitize_msx_name(&target.name);
+        let new_path = match target.path.rsplit_once('/') {
             Some((parent, _)) => format!("{parent}/{new_base}"),
             None => new_base.clone(),
         };
-        let result = self.disk.as_mut().unwrap().rename(&old_path, &new_path);
+        let result = self.disk.as_mut().unwrap().rename(&target.path, &new_path);
         self.after_mutation(result, format!("Renamed to {new_base}"));
     }
 
@@ -842,9 +838,46 @@ impl DskExplorerApp {
         }
     }
 
-    fn extract_selected(&mut self) {
-        let paths = self.selection_paths();
-        match paths.as_slice() {
+    /// Render the rename modal if a rename is pending (triggered from the
+    /// tree's right-click menu).
+    fn rename_dialog(&mut self, ctx: &egui::Context) {
+        let Some(target) = self.rename_target.as_mut() else {
+            return;
+        };
+        let old = base_name(&target.path);
+        let mut apply = false;
+        let mut cancel = false;
+        egui::Window::new("Rename file")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("Rename \"{old}\" to:"));
+                let resp =
+                    ui.add(egui::TextEdit::singleline(&mut target.name).desired_width(160.0));
+                // Focus the field the first frame the modal appears.
+                if ui.memory(|m| m.focused().is_none()) {
+                    resp.request_focus();
+                }
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    apply = ui.button("Rename").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+                apply |= enter;
+            });
+        if apply {
+            self.apply_rename();
+        } else if cancel {
+            self.rename_target = None;
+        }
+    }
+
+    /// Extract the given files to the host: a save-as dialog for one, a folder
+    /// picker for several.
+    fn extract_paths(&mut self, paths: &[String]) {
+        match paths {
             [] => {}
             [path] => self.extract_one(path),
             many => self.extract_many(many),
@@ -1524,8 +1557,8 @@ fn render_entries(
     entries: &[DirEntry],
     selection: &BTreeSet<String>,
     show_meta: bool,
-    clicked: &mut Option<(String, bool)>,
-    drag_started: &mut Option<String>,
+    writable: bool,
+    events: &mut RowEvents,
 ) {
     for entry in entries {
         if entry.is_dir {
@@ -1545,14 +1578,7 @@ fn render_entries(
             egui::CollapsingHeader::new(header)
                 .default_open(true)
                 .show(ui, |ui| {
-                    render_entries(
-                        ui,
-                        &entry.children,
-                        selection,
-                        show_meta,
-                        clicked,
-                        drag_started,
-                    );
+                    render_entries(ui, &entry.children, selection, show_meta, writable, events);
                 });
         } else {
             let is_selected = selection.contains(&entry.path);
@@ -1562,11 +1588,28 @@ fn render_entries(
                 .interact(egui::Sense::click_and_drag());
             if resp.clicked() {
                 let toggle = ui.input(|i| i.modifiers.command);
-                *clicked = Some((entry.path.clone(), toggle));
+                events.clicked = Some((entry.path.clone(), toggle));
             }
             if resp.drag_started() {
-                *drag_started = Some(entry.path.clone());
+                events.drag_started = Some(entry.path.clone());
             }
+            resp.context_menu(|ui| {
+                if writable {
+                    if ui.button("Rename…").clicked() {
+                        events.action = Some(RowAction::Rename(entry.path.clone()));
+                        ui.close();
+                    }
+                    if ui.button("Delete").clicked() {
+                        events.action = Some(RowAction::Delete(entry.path.clone()));
+                        ui.close();
+                    }
+                    ui.separator();
+                }
+                if ui.button("Extract…").clicked() {
+                    events.action = Some(RowAction::Extract(entry.path.clone()));
+                    ui.close();
+                }
+            });
         }
     }
 }
@@ -1577,8 +1620,7 @@ fn render_tape_files(
     ui: &mut egui::Ui,
     tape: &LoadedTape,
     selection: &BTreeSet<String>,
-    clicked: &mut Option<(String, bool)>,
-    drag_started: &mut Option<String>,
+    events: &mut RowEvents,
 ) {
     if tape.file_count() == 0 {
         ui.weak("Tape has no recognizable files.");
@@ -1597,11 +1639,17 @@ fn render_tape_files(
             .interact(egui::Sense::click_and_drag());
         if resp.clicked() {
             let toggle = ui.input(|i| i.modifiers.command);
-            *clicked = Some((key.to_string(), toggle));
+            events.clicked = Some((key.to_string(), toggle));
         }
         if resp.drag_started() {
-            *drag_started = Some(key.to_string());
+            events.drag_started = Some(key.to_string());
         }
+        resp.context_menu(|ui| {
+            if ui.button("Extract…").clicked() {
+                events.action = Some(RowAction::Extract(key.to_string()));
+                ui.close();
+            }
+        });
     }
 }
 
@@ -1854,6 +1902,7 @@ impl eframe::App for DskExplorerApp {
         });
 
         self.delete_confirmation(ui.ctx());
+        self.rename_dialog(ui.ctx());
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.process_drag_out(frame);
@@ -2104,5 +2153,34 @@ mod tests {
 
         let empty = DskExplorerApp::default();
         assert!(empty.selection_paths().is_empty());
+    }
+
+    #[test]
+    fn paths_for_row_targets_only_an_unselected_row() {
+        let app = DskExplorerApp {
+            selection: BTreeSet::from(["A.TXT".to_string(), "B.TXT".to_string()]),
+            ..Default::default()
+        };
+        // Right-clicking a row outside the selection acts on that row alone.
+        assert_eq!(app.paths_for_row("C.TXT"), vec!["C.TXT"]);
+    }
+
+    #[test]
+    fn paths_for_row_expands_to_whole_multiselection() {
+        let app = DskExplorerApp {
+            selection: BTreeSet::from(["B.TXT".to_string(), "A.TXT".to_string()]),
+            ..Default::default()
+        };
+        // Right-clicking a row inside a multi-selection acts on the whole set.
+        assert_eq!(app.paths_for_row("A.TXT"), vec!["A.TXT", "B.TXT"]);
+    }
+
+    #[test]
+    fn paths_for_row_single_selected_row_acts_on_itself() {
+        let app = DskExplorerApp {
+            selection: BTreeSet::from(["A.TXT".to_string()]),
+            ..Default::default()
+        };
+        assert_eq!(app.paths_for_row("A.TXT"), vec!["A.TXT"]);
     }
 }
