@@ -62,7 +62,7 @@ fn get_r8g8b8(content: &[u8], offset: usize) -> i32 {
 }
 
 impl Recoil<'_> {
-    fn set_msx_companion_palette(&mut self, ext: &str) {
+    pub(super) fn set_msx_companion_palette(&mut self, ext: &str) {
         match self.read_companion(ext) {
             Some(p) if p.len() >= 32 => self.set_msx_palette(&p, 0, 16),
             _ => self.set_msx_palette(&MSX2_DEFAULT_PALETTE, 0, 16),
@@ -83,7 +83,7 @@ impl Recoil<'_> {
         }
     }
 
-    fn set_sc8_palette(&mut self) {
+    pub(super) fn set_sc8_palette(&mut self) {
         const BLUES: [i32; 4] = [0, 2, 4, 7];
         for c in 0..256 {
             let ci = c as i32;
@@ -103,7 +103,7 @@ impl Recoil<'_> {
         true
     }
 
-    fn decode_msx6(&mut self, content: &[u8], offset: usize) {
+    pub(super) fn decode_msx6(&mut self, content: &[u8], offset: usize) {
         let height = self.get_original_height();
         for y in 0..height {
             for x in 0..self.width {
@@ -145,7 +145,8 @@ impl Recoil<'_> {
         rgb << 3 | (rgb >> 2 & 0x070707)
     }
 
-    fn decode_msx_screen(
+    #[allow(clippy::too_many_arguments)] // faithful port of RECOIL's DecodeMsxScreen
+    pub(super) fn decode_msx_screen(
         &mut self,
         content: &[u8],
         offset: usize,
@@ -153,6 +154,7 @@ impl Recoil<'_> {
         height: usize,
         mode: i32,
         interlace_mask: usize,
+        same_buffer: bool,
     ) {
         if interlace_mask != 0 {
             let res = if mode >= 10 {
@@ -183,38 +185,42 @@ impl Recoil<'_> {
             } else {
                 interlace.unwrap_or(content)
             };
+            // When the second field shares the buffer (MIG), the odd lines start
+            // at a fixed offset; with a separate interlace file they reuse `offset`.
+            let so = if y & interlace_mask == 0 || !same_buffer {
+                offset
+            } else {
+                offset + if mode <= 6 { 0x6a07 } else { 0xd407 }
+            };
             for x in 0..self.width {
                 let rgb = match mode {
                     5 => {
                         self.content_palette[get_nibble(
                             screen,
-                            offset + ((y >> interlace_mask) << 7),
+                            so + ((y >> interlace_mask) << 7),
                             x >> interlace_mask,
                         ) as usize]
                     }
                     6 => {
-                        let b = screen[offset + ((y >> 1) << 7) + (x >> 2)] as i32;
+                        let b = screen[so + ((y >> 1) << 7) + (x >> 2)] as i32;
                         self.content_palette[(b >> ((((!x) & 3) << 1) as u32) & 3) as usize]
                     }
-                    7 => {
-                        self.content_palette
-                            [get_nibble(screen, offset + ((y >> 1) << 8), x) as usize]
-                    }
+                    7 => self.content_palette[get_nibble(screen, so + ((y >> 1) << 8), x) as usize],
                     8 => {
                         self.content_palette[screen
-                            [offset + ((y >> interlace_mask) << 8) + (x >> interlace_mask)]
+                            [so + ((y >> interlace_mask) << 8) + (x >> interlace_mask)]
                             as usize]
                     }
                     10 => self.decode_msx_yjk(
                         screen,
-                        offset + ((y >> interlace_mask) << 8),
+                        so + ((y >> interlace_mask) << 8),
                         x >> interlace_mask,
                         256,
                         true,
                     ),
                     12 => self.decode_msx_yjk(
                         screen,
-                        offset + ((y >> interlace_mask) << 8),
+                        so + ((y >> interlace_mask) << 8),
                         x >> interlace_mask,
                         256,
                         false,
@@ -240,11 +246,11 @@ impl Recoil<'_> {
                 && inter[0] == 0xfe
                 && get_msx_header(&inter) >= interlace_length as i32 - 8
             {
-                self.decode_msx_screen(content, offset, Some(&inter), height, mode, 1);
+                self.decode_msx_screen(content, offset, Some(&inter), height, mode, 1, false);
                 return true;
             }
         }
-        self.decode_msx_screen(content, offset, None, height, mode, 0);
+        self.decode_msx_screen(content, offset, None, height, mode, 0, false);
         false
     }
 
@@ -423,7 +429,12 @@ impl Recoil<'_> {
         true
     }
 
-    fn decode_msx_yjk_screen(&mut self, content: &[u8], offset: usize, use_palette: bool) {
+    pub(super) fn decode_msx_yjk_screen(
+        &mut self,
+        content: &[u8],
+        offset: usize,
+        use_palette: bool,
+    ) {
         let width = self.get_original_width();
         for y in 0..self.height {
             for x in 0..width {

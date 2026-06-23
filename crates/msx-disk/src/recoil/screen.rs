@@ -129,7 +129,7 @@ impl Recoil<'_> {
         true
     }
 
-    fn decode_sc3_screen(&mut self, content: &[u8], offset: usize, is_long: bool) {
+    pub(super) fn decode_sc3_screen(&mut self, content: &[u8], offset: usize, is_long: bool) {
         self.set_size(256, 192, Resolution::Msx14x4);
         for y in 0..192usize {
             for x in 0..256usize {

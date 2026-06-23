@@ -10,6 +10,7 @@
 //! [`CompanionFiles`] provider so the sibling files can come from the same disk.
 
 mod bitstream;
+mod packed;
 mod palette;
 mod screen;
 mod screen2;
@@ -229,6 +230,21 @@ pub(crate) fn clamp_u5(x: i32) -> i32 {
     x.clamp(0, 31)
 }
 
+/// Whether `s` appears at `offset` in `content`.
+pub(crate) fn is_string_at(content: &[u8], offset: usize, s: &[u8]) -> bool {
+    content.len() >= offset + s.len() && content[offset..offset + s.len()] == *s
+}
+
+/// Little-endian u32 at `offset`.
+pub(crate) fn get32_le(content: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        content[offset],
+        content[offset + 1],
+        content[offset + 2],
+        content[offset + 3],
+    ])
+}
+
 /// Extract the lowercased file extension (without the dot).
 fn extension(filename: &str) -> String {
     filename
@@ -282,6 +298,12 @@ pub fn is_supported(filename: &str) -> bool {
             | "gls"
             | "g9b"
             | "stp"
+            | "cmp"
+            | "fnt"
+            | "pct"
+            | "mis"
+            | "mif"
+            | "mig"
     )
 }
 
@@ -312,6 +334,10 @@ pub fn decode(filename: &str, content: &[u8], companions: &dyn CompanionFiles) -
         "glc" | "gls" => r.decode_glyjk(content, false),
         "g9b" => r.decode_g9b(content),
         "stp" => r.decode_gl6(content, false),
+        "cmp" => r.decode_dd_graph(content),
+        "fnt" | "pct" | "mis" => r.decode_pct(content),
+        "mif" => r.decode_mif(content),
+        "mig" => r.decode_mig(content),
         _ => false,
     };
     ok.then(|| r.into_image())
