@@ -11,6 +11,8 @@ pub mod fs;
 pub mod image;
 pub mod recoil;
 pub mod search;
+pub mod tape;
+pub mod tsx;
 pub mod view;
 
 pub use error::{Error, Result};

@@ -203,6 +203,37 @@ fn cas_tape_lists_files() {
 }
 
 #[test]
+fn tsx_tape_parses_blocks_and_files() {
+    use msx_disk::tape::{self, TapeBlock, TapeFormat};
+    let path = skip_if_absent!(
+        "Album de Platino (1987)(Codemasters, SERMA)(Tape 2 - BMX Simulator)(ES)(en)[!][RUN'CAS-'][v0.8.5b].tsx"
+    );
+    let bytes = std::fs::read(&path).expect("read tsx");
+    let t = tape::open(&bytes, TapeFormat::Tsx);
+
+    // Custom-info ripper note and an archive-info block with the title.
+    assert!(t.blocks.iter().any(|b| matches!(
+        b,
+        TapeBlock::CustomInfo { id, .. } if id == "TSX.RIPPER"
+    )));
+    let title = t.blocks.iter().find_map(|b| match b {
+        TapeBlock::ArchiveInfo(pairs) => pairs.iter().find(|(f, _)| f == "Title").map(|(_, v)| v),
+        _ => None,
+    });
+    assert_eq!(title.map(String::as_str), Some("Album de Platino"));
+
+    // The #4B blocks yield logical files, the first an ASCII loader named BMX.
+    let files = t.files();
+    assert!(
+        files.len() >= 3,
+        "expected several files, got {}",
+        files.len()
+    );
+    assert_eq!(files[0].name, "BMX");
+    assert_eq!(files[0].kind, msx_disk::cas::CasFileKind::Ascii);
+}
+
+#[test]
 fn plain_dsk_fixtures_mount_and_read_first_file() {
     for name in ["TOOLS.DSK", "MSX-DOS Hulp (1989)(Philips)(nl).dsk"] {
         let Some(path) = fixture(name) else {

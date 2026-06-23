@@ -65,11 +65,12 @@ fn block_starts(bytes: &[u8]) -> Vec<usize> {
     starts
 }
 
-/// List the files contained in a `.cas` tape image.
-pub fn list(bytes: &[u8]) -> Vec<CasFile> {
+/// The content of each tape block: the bytes between one sync header and the
+/// next (or end of file). These are the same logical blocks a TSX `#4B` block
+/// carries, so the tape layer can treat CAS and TSX uniformly.
+pub fn blocks(bytes: &[u8]) -> Vec<&[u8]> {
     let starts = block_starts(bytes);
-    // Each block's content runs from after its sync to the next sync (or EOF).
-    let blocks: Vec<&[u8]> = starts
+    starts
         .iter()
         .enumerate()
         .map(|(idx, &start)| {
@@ -77,19 +78,41 @@ pub fn list(bytes: &[u8]) -> Vec<CasFile> {
             let content_end = starts.get(idx + 1).copied().unwrap_or(bytes.len());
             &bytes[content_start..content_end]
         })
-        .collect();
+        .collect()
+}
 
+/// If `block` is a file header (ten identical known type bytes + a 6-char name),
+/// return its kind and trimmed name.
+pub fn header_of(block: &[u8]) -> Option<(CasFileKind, String)> {
+    if block.len() < 16 {
+        return None;
+    }
+    let type_byte = block[0];
+    if !block[..10].iter().all(|&b| b == type_byte) {
+        return None;
+    }
+    let kind = CasFileKind::from_byte(type_byte)?;
+    let name = String::from_utf8_lossy(&block[10..16])
+        .trim_matches(|c: char| c.is_whitespace() || c == '\0')
+        .to_string();
+    Some((kind, name))
+}
+
+/// Pair header blocks with the data block(s) that follow them, concatenating
+/// consecutive data blocks (ASCII files are split into 256-byte chunks).
+pub fn files_from_blocks(blocks: &[&[u8]]) -> Vec<CasFile> {
     let mut files = Vec::new();
     let mut i = 0;
     while i < blocks.len() {
-        let block = blocks[i];
-        if let Some(kind) = header_kind(block) {
-            let name = String::from_utf8_lossy(&block[10..16])
-                .trim_matches(|c: char| c.is_whitespace() || c == '\0')
-                .to_string();
-            let data = blocks.get(i + 1).map(|d| d.to_vec()).unwrap_or_default();
+        if let Some((kind, name)) = header_of(blocks[i]) {
+            let mut data = Vec::new();
+            let mut j = i + 1;
+            while j < blocks.len() && header_of(blocks[j]).is_none() {
+                data.extend_from_slice(blocks[j]);
+                j += 1;
+            }
             files.push(CasFile { name, kind, data });
-            i += 2; // skip the data block we just consumed
+            i = j;
         } else {
             i += 1;
         }
@@ -97,18 +120,9 @@ pub fn list(bytes: &[u8]) -> Vec<CasFile> {
     files
 }
 
-/// If `block` is a header block (10 identical known type bytes + a name), return
-/// its file kind.
-fn header_kind(block: &[u8]) -> Option<CasFileKind> {
-    if block.len() < 16 {
-        return None;
-    }
-    let type_byte = block[0];
-    if block[..10].iter().all(|&b| b == type_byte) {
-        CasFileKind::from_byte(type_byte)
-    } else {
-        None
-    }
+/// List the files contained in a `.cas` tape image.
+pub fn list(bytes: &[u8]) -> Vec<CasFile> {
+    files_from_blocks(&blocks(bytes))
 }
 
 #[cfg(test)]
