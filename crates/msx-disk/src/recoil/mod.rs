@@ -9,6 +9,7 @@
 //! (a `.PLx` palette or a `.Sxx` interlace half) read them through a
 //! [`CompanionFiles`] provider so the sibling files can come from the same disk.
 
+mod bitstream;
 mod palette;
 mod screen;
 mod screen2;

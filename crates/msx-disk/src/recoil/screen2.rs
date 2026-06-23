@@ -1,9 +1,9 @@
 //! MSX2 / MSX2+ / V9990 decoders, ported from RECOIL.
 //!
-//! Compressed variants that need a bitstream (RLE-packed `.SR*`/`.SCx` with a
-//! `0xfd` header, packed `.G9B`) are not yet implemented and those files report
-//! as unsupported; the common uncompressed `0xfe` images decode here.
+//! Includes the bitstream-compressed variants: Graph Saurus RLE (`0xfd`-headed
+//! `.SR*`/`.SCx`, via [`SrStream`]) and packed `.G9B` (via [`G9bStream`]).
 
+use super::bitstream::{G9bStream, SrStream};
 use super::palette::{get_msx_header, MSX2_DEFAULT_PALETTE};
 use super::{clamp_u5, get_nibble, Recoil, Resolution};
 
@@ -33,14 +33,26 @@ fn is_msx_256_lines(content: &[u8]) -> bool {
     content.len() == 65543 && content[0] == 0xfe && get_msx_header(content) == 0xffff
 }
 
-/// Resolve the raw screen buffer for SR/SC8/SCC images. The RLE-packed `0xfd`
-/// variant is not yet supported.
-fn unpack_sr(content: &[u8]) -> Option<&[u8]> {
+/// Resolve the raw 54279-byte screen buffer for SR/SC8/SCC images, decompressing
+/// the Graph Saurus RLE (`0xfd`) variant.
+fn unpack_sr(content: &[u8]) -> Option<Vec<u8>> {
     if content.len() < 7 {
         return None;
     }
     match content[0] {
-        0xfe if content.len() >= 54279 && get_msx_header(content) >= 0xd3ff => Some(content),
+        0xfe if content.len() >= 54279 && get_msx_header(content) >= 0xd3ff => {
+            Some(content.to_vec())
+        }
+        0xfd => {
+            let header = get_msx_header(content);
+            if header < 0 || 7 + header as usize != content.len() {
+                return None;
+            }
+            let mut unpacked = vec![0u8; 54279];
+            // Ignore truncation: some Graph Saurus files are clipped.
+            SrStream::new(content, 7).unpack(&mut unpacked, 7, 54279);
+            Some(unpacked)
+        }
         _ => None,
     }
 }
@@ -280,8 +292,8 @@ impl Recoil<'_> {
             0x00, 0, 0x02, 0, 0x30, 0, 0x32, 0, 0x00, 3, 0x02, 3, 0x30, 3, 0x32, 3, 0x72, 4, 0x07,
             0, 0x70, 0, 0x77, 0, 0x00, 7, 0x07, 7, 0x70, 7, 0x77, 7,
         ];
-        let (source, height): (&[u8], usize) = if is_msx_256_lines(content) {
-            (content, 256)
+        let (source, height): (Vec<u8>, usize) = if is_msx_256_lines(content) {
+            (content.to_vec(), 256)
         } else {
             match unpack_sr(content) {
                 Some(c) => (c, 212),
@@ -289,7 +301,7 @@ impl Recoil<'_> {
             }
         };
         self.set_sc8_palette();
-        if !self.decode_msx_sc(source, 7, "s18", height, 8) && content.len() == 64167 {
+        if !self.decode_msx_sc(&source, 7, "s18", height, 8) && content.len() == 64167 {
             self.set_msx_palette(&SPRITE_PALETTE, 0, 16);
             self.decode_msx_sprites(content, 8, 0xfa07, 0xf007);
         }
@@ -319,8 +331,8 @@ impl Recoil<'_> {
     }
 
     pub(super) fn decode_sr7(&mut self, content: &[u8]) -> bool {
-        let (source, height): (&[u8], usize) = if is_msx_256_lines(content) {
-            (content, 256 * 2)
+        let (source, height): (Vec<u8>, usize) = if is_msx_256_lines(content) {
+            (content.to_vec(), 256 * 2)
         } else {
             match unpack_sr(content) {
                 Some(c) => (c, 212 * 2),
@@ -329,7 +341,7 @@ impl Recoil<'_> {
         };
         self.set_msx_companion_palette("pl7");
         self.set_size(512, height, Resolution::Msx21x2);
-        self.decode_nibbles(source, 7, 256);
+        self.decode_nibbles(&source, 7, 256);
         true
     }
 
@@ -455,18 +467,18 @@ impl Recoil<'_> {
     }
 
     pub(super) fn decode_scc(&mut self, content: &[u8]) -> bool {
-        let (source, height): (&[u8], usize) = if is_msx_256_lines(content) {
-            (content, 256)
+        let (source, height): (Vec<u8>, usize) = if is_msx_256_lines(content) {
+            (content.to_vec(), 256)
         } else if content.len() >= 49159 && content[0] == 0xfe && get_msx_header(content) == 0xbfff
         {
-            (content, 192)
+            (content.to_vec(), 192)
         } else {
             match unpack_sr(content) {
                 Some(c) => (c, 212),
                 None => return false,
             }
         };
-        self.decode_scc_sca(source, height, false);
+        self.decode_scc_sca(&source, height, false);
         true
     }
 
@@ -585,7 +597,15 @@ impl Recoil<'_> {
                 self.decode_g9b_unpacked(content, depth, header_length);
                 true
             }
-            _ => false, // packed (G9bStream) not yet supported
+            1 => {
+                let mut unpacked = vec![0u8; unpacked_length];
+                if !G9bStream::new(content).unpack(&mut unpacked, header_length, unpacked_length) {
+                    return false;
+                }
+                self.decode_g9b_unpacked(&unpacked, depth, header_length);
+                true
+            }
+            _ => false,
         }
     }
 }
