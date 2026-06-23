@@ -281,6 +281,7 @@ pub fn is_supported(filename: &str) -> bool {
             | "glc"
             | "gls"
             | "g9b"
+            | "stp"
     )
 }
 
@@ -310,6 +311,7 @@ pub fn decode(filename: &str, content: &[u8], companions: &dyn CompanionFiles) -
         "gla" | "glb" | "sha" | "shb" => r.decode_glyjk(content, true),
         "glc" | "gls" => r.decode_glyjk(content, false),
         "g9b" => r.decode_g9b(content),
+        "stp" => r.decode_gl6(content, false),
         _ => false,
     };
     ok.then(|| r.into_image())
