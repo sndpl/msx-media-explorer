@@ -52,4 +52,8 @@ cargo test --workspace
 
 ## License
 
-Dual-licensed under MIT or Apache-2.0.
+GPL-2.0-or-later. See [COPYING](COPYING).
+
+The MSX/MSX2/MSX2+/V9990 graphics-format decoders are ported from
+[RECOIL](https://recoil.sourceforge.net/) by Piotr Fusik, which is GPLv2+;
+this is why the project is GPL-licensed.

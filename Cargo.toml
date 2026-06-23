@@ -5,7 +5,7 @@ members = ["crates/msx-disk", "crates/dskexplorer-gui"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "GPL-2.0-or-later"
 repository = "https://github.com/sandy/dskexplorer"
 authors = ["Sandy Pleyte"]
 
