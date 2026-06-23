@@ -9,10 +9,14 @@ mod boot;
 pub mod dos;
 pub mod entry;
 pub mod map;
+pub mod partition;
+pub mod volume;
 pub mod write;
 
 pub use dos::{detect_dos_version, DosVersion};
 pub use entry::{Attributes, DirEntry, Timestamp};
+pub use map::FatType;
+pub use volume::Volume;
 
 use std::io::{Cursor, Read};
 

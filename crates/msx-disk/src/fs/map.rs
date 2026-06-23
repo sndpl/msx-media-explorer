@@ -361,6 +361,33 @@ fn find_entry(
     result
 }
 
+/// Read the volume label from the root directory's VOLUME_ID entry, if present.
+///
+/// This scans the root region directly (rather than via [`for_each_entry`],
+/// which deliberately skips volume-label entries). The label is trimmed of
+/// trailing spaces; an empty label yields `None`.
+pub(crate) fn root_volume_label(buf: &[u8], bpb: &Bpb) -> Option<String> {
+    for sector in bpb.root_start()..bpb.data_start() {
+        let base = sector * SECTOR_SIZE;
+        for e in 0..(SECTOR_SIZE / 32) {
+            let off = base + e * 32;
+            let entry = buf.get(off..off + 32)?;
+            if entry[0] == 0x00 {
+                return None; // end of directory
+            }
+            // VOLUME_ID (0x08) set, LFN bits (0x0F) clear, not deleted.
+            if entry[0] != 0xE5 && entry[11] & 0x0F != 0x0F && entry[11] & 0x08 != 0 {
+                let raw: String = entry[..11].iter().map(|&b| b as char).collect();
+                let cleaned = raw.trim_end().trim().to_string();
+                if !cleaned.is_empty() {
+                    return Some(cleaned);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Visit directory entries, stopping when `visit` returns true or the directory
 /// ends. Skips deleted, volume-label, and long-file-name entries.
 pub(crate) fn for_each_entry(

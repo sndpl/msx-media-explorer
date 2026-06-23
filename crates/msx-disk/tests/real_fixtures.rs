@@ -8,6 +8,8 @@
 use std::path::PathBuf;
 
 use msx_disk::fs::map::{self, SectorKind};
+use msx_disk::fs::partition;
+use msx_disk::fs::{FatType, Volume};
 use msx_disk::{cas, fs::write, view::basic, DiskFs, DiskImage, ImageFormat};
 
 /// Resolve a fixture path under the workspace-root `tests/` directory, or
@@ -231,6 +233,69 @@ fn tsx_tape_parses_blocks_and_files() {
     );
     assert_eq!(files[0].name, "BMX");
     assert_eq!(files[0].kind, msx_disk::cas::CasFileKind::Ascii);
+}
+
+#[test]
+fn hd_image_is_partitioned_into_four_fat12_volumes() {
+    // The openMSX MSX_IDE hard-disk image is an MBR with four FAT12 partitions.
+    // It proves the whole HD path end to end: partition detection, the
+    // MSX-correct FAT12 detection (where fatfs would wrongly pick FAT16 and
+    // corrupt reads), directory listing, and a length-correct file read.
+    let path = skip_if_absent!("hd.dsk");
+    let image = DiskImage::open(&path).expect("open hd.dsk");
+    let data = image.data();
+
+    assert!(
+        partition::is_partitioned(data),
+        "hd.dsk should be partitioned"
+    );
+
+    let parts = partition::parse_partition_table(data).expect("partition table");
+    assert_eq!(parts.len(), 4, "expected four partitions");
+    // Entries are stored in reverse physical order; sorting yields LBA 1 first.
+    assert_eq!(parts[0].lba_start, 1, "first partition starts at LBA 1");
+
+    let mut read_a_subdir_file = false;
+    for entry in &parts {
+        let vol = Volume::from_partition(&image, entry).expect("mount partition");
+        assert_eq!(
+            vol.fat_type(),
+            FatType::Fat12,
+            "partition at LBA {} must be FAT12",
+            entry.lba_start
+        );
+
+        let tree = vol.tree();
+        assert!(
+            !tree.is_empty(),
+            "partition at LBA {} should list files",
+            entry.lba_start
+        );
+
+        // Read a file and confirm its byte length matches its directory size.
+        // Prefer one inside a subdirectory: that is the case fatfs-as-FAT16
+        // would corrupt (wrong cluster math on the directory's own chain).
+        for file in tree.iter().flat_map(|e| e.walk()) {
+            if file.is_dir {
+                continue;
+            }
+            let bytes = vol.read_file(&file.path).expect("read file");
+            assert_eq!(
+                bytes.len() as u64,
+                file.size,
+                "size mismatch for {} in LBA {}",
+                file.path,
+                entry.lba_start
+            );
+            if file.path.contains('/') {
+                read_a_subdir_file = true;
+            }
+        }
+    }
+    assert!(
+        read_a_subdir_file,
+        "expected at least one file inside a subdirectory across the partitions"
+    );
 }
 
 #[test]
