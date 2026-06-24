@@ -31,7 +31,10 @@ const TABLE: &[(&str, &str)] = &[
     ("gen", "Z80 assembly source (GEN80)"),
     ("meg", "MegaAssembler Z80 source / Mega-ROM image"),
     // Machine code / executables
-    ("bin", "BSAVE binary (7-byte BLOAD header: FE + start/end/exec)"),
+    (
+        "bin",
+        "BSAVE binary (7-byte BLOAD header: FE + start/end/exec)",
+    ),
     ("com", "MSX-DOS/CP/M command (binary executable)"),
     ("cpm", "Renamed .COM executable"),
     ("exe", "SymbOS executable"),
@@ -110,10 +113,7 @@ const TABLE: &[(&str, &str)] = &[
 /// `ext` is matched case-insensitively, without a leading dot.
 pub fn describe_ext(ext: &str) -> Option<&'static str> {
     let ext = ext.to_ascii_lowercase();
-    TABLE
-        .iter()
-        .find(|(e, _)| *e == ext)
-        .map(|(_, desc)| *desc)
+    TABLE.iter().find(|(e, _)| *e == ext).map(|(_, desc)| *desc)
 }
 
 #[cfg(test)]

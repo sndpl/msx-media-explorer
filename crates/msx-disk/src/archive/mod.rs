@@ -132,8 +132,8 @@ fn parse_timestamp(header: &LhaHeader) -> Option<Timestamp> {
 
 fn entry_from_header(header: &LhaHeader) -> ArchiveEntry {
     let method = Method(header.compression);
-    let decodable = !header.is_directory()
-        && (delharc_supports(&method.0) || pma::supports(&method.0));
+    let decodable =
+        !header.is_directory() && (delharc_supports(&method.0) || pma::supports(&method.0));
     ArchiveEntry {
         path: header.parse_pathname_to_str(),
         original_size: header.original_size,
@@ -161,8 +161,8 @@ pub fn list(bytes: &[u8]) -> Result<Vec<ArchiveEntry>> {
     if is_effectively_empty(bytes) {
         return Ok(Vec::new());
     }
-    let mut reader = LhaDecodeReader::new(Cursor::new(bytes))
-        .map_err(|e| Error::Malformed(e.to_string()))?;
+    let mut reader =
+        LhaDecodeReader::new(Cursor::new(bytes)).map_err(|e| Error::Malformed(e.to_string()))?;
     let mut entries = Vec::new();
     loop {
         entries.push(entry_from_header(reader.header()));
@@ -178,14 +178,16 @@ pub fn list(bytes: &[u8]) -> Result<Vec<ArchiveEntry>> {
 
 /// Decompress a single member by its index in [`list`]'s output.
 pub fn extract(bytes: &[u8], index: usize) -> Result<Vec<u8>> {
-    let mut reader = LhaDecodeReader::new(Cursor::new(bytes))
-        .map_err(|e| Error::Malformed(e.to_string()))?;
+    let mut reader =
+        LhaDecodeReader::new(Cursor::new(bytes)).map_err(|e| Error::Malformed(e.to_string()))?;
     for _ in 0..index {
         if !reader
             .next_file()
             .map_err(|e| Error::Malformed(e.to_string()))?
         {
-            return Err(Error::Malformed(format!("no archive member at index {index}")));
+            return Err(Error::Malformed(format!(
+                "no archive member at index {index}"
+            )));
         }
     }
 

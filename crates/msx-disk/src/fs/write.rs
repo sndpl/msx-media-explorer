@@ -213,6 +213,30 @@ mod tests {
     }
 
     #[test]
+    fn rename_to_japanese_name_persists_high_bytes() {
+        use crate::charset::{self, MsxCharset};
+        let disk = blank_disk();
+        let with = add_files(&disk, &[("OLD.BAS", b"x")]).unwrap();
+        // New name: three half-width katakana bytes (B1 B2 B3) in PUA key form.
+        let key: String = [0xB1u8, 0xB2, 0xB3]
+            .iter()
+            .map(|&b| charset::byte_to_pua(b))
+            .chain(".BAS".chars())
+            .collect();
+        let out = rename(&with, "OLD.BAS", &key).expect("rename to kana name");
+        let fs = DiskFs::mount(out).unwrap();
+        // Reads back by its PUA key with contents intact, and the old name is gone.
+        assert_eq!(fs.read_file(&key).unwrap(), b"x");
+        assert!(fs.read_file("OLD.BAS").is_err());
+        // The stored bytes decode to kana under the Japanese charset.
+        let tree = fs.tree().unwrap();
+        assert_eq!(
+            tree[0].display_name(MsxCharset::Japanese),
+            "\u{FF71}\u{FF72}\u{FF73}.BAS"
+        );
+    }
+
+    #[test]
     fn create_blank_makes_empty_usable_disk() {
         for (double_sided, size) in [(true, SIZE_720K), (false, 368_640)] {
             let blank = create_blank(double_sided).unwrap();

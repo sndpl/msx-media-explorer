@@ -43,8 +43,8 @@ pub(super) fn parse(bytes: &[u8]) -> Option<MusicInfo> {
 fn first_track(bytes: &[u8]) -> Option<&[u8]> {
     let mut i = 14; // past the 14-byte MThd chunk
     while i + 8 <= bytes.len() {
-        let len = u32::from_be_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]])
-            as usize;
+        let len =
+            u32::from_be_bytes([bytes[i + 4], bytes[i + 5], bytes[i + 6], bytes[i + 7]]) as usize;
         let data_start = i + 8;
         let data_end = data_start.checked_add(len)?;
         if &bytes[i..i + 4] == b"MTrk" {
@@ -111,8 +111,12 @@ mod tests {
         let info = parse(&buf).unwrap();
         assert_eq!(info.title.as_deref(), Some("INTRO"));
         assert_eq!(info.format, "Standard MIDI file");
-        assert!(info.extra.contains(&("Format".to_string(), "SMF format 1".to_string())));
-        assert!(info.extra.contains(&("Tracks".to_string(), "2".to_string())));
+        assert!(info
+            .extra
+            .contains(&("Format".to_string(), "SMF format 1".to_string())));
+        assert!(info
+            .extra
+            .contains(&("Tracks".to_string(), "2".to_string())));
     }
 
     #[test]

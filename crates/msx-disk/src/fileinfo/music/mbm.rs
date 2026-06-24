@@ -68,7 +68,9 @@ mod tests {
         let info = parse(&build(0x10, 0x00, "SONG TITLE")).unwrap();
         assert_eq!(info.title.as_deref(), Some("SONG TITLE"));
         assert_eq!(info.positions, Some(0x10));
-        assert!(info.extra.contains(&("File".to_string(), "USER".to_string())));
+        assert!(info
+            .extra
+            .contains(&("File".to_string(), "USER".to_string())));
         assert!(info
             .extra
             .iter()
@@ -79,11 +81,10 @@ mod tests {
     fn edit_file_has_no_positions_and_percussion_flag() {
         let info = parse(&build(0xFF, 0x20, "EDIT SONG")).unwrap();
         assert_eq!(info.positions, None);
-        assert!(info.extra.contains(&("File".to_string(), "EDIT".to_string())));
         assert!(info
             .extra
-            .iter()
-            .any(|(_, v)| v.contains("percussion")));
+            .contains(&("File".to_string(), "EDIT".to_string())));
+        assert!(info.extra.iter().any(|(_, v)| v.contains("percussion")));
     }
 
     #[test]

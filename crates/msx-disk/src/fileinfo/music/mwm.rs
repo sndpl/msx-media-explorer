@@ -81,8 +81,12 @@ mod tests {
         assert_eq!(info.title.as_deref(), Some("WAVE SONG"));
         assert_eq!(info.positions, Some(24));
         assert_eq!(info.channels, Some(24));
-        assert!(info.extra.contains(&("Replay".to_string(), "50 Hz".to_string())));
-        assert!(info.extra.contains(&("Wave kit".to_string(), "MYKIT".to_string())));
+        assert!(info
+            .extra
+            .contains(&("Replay".to_string(), "50 Hz".to_string())));
+        assert!(info
+            .extra
+            .contains(&("Wave kit".to_string(), "MYKIT".to_string())));
     }
 
     #[test]
@@ -90,7 +94,9 @@ mod tests {
         let info = parse(&build(0x07, 0, 0, "EDIT WAVE", "KIT")).unwrap();
         assert_eq!(info.title.as_deref(), Some("EDIT WAVE"));
         assert_eq!(info.positions, None);
-        assert!(info.extra.contains(&("File".to_string(), "EDIT".to_string())));
+        assert!(info
+            .extra
+            .contains(&("File".to_string(), "EDIT".to_string())));
     }
 
     #[test]

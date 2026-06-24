@@ -81,15 +81,21 @@ mod tests {
         assert_eq!(info.title.as_deref(), Some("FM SONG"));
         assert_eq!(info.positions, Some(12));
         assert_eq!(info.channels, Some(6));
-        assert!(info.extra.contains(&("Replay".to_string(), "50 Hz".to_string())));
-        assert!(info.extra.contains(&("4-op channels".to_string(), "3".to_string())));
+        assert!(info
+            .extra
+            .contains(&("Replay".to_string(), "50 Hz".to_string())));
+        assert!(info
+            .extra
+            .contains(&("4-op channels".to_string(), "3".to_string())));
     }
 
     #[test]
     fn parses_raw_file_with_shifted_header() {
         let info = parse(&build(0x00, 0, 0, 0, "RAW FM")).unwrap();
         assert_eq!(info.title.as_deref(), Some("RAW FM"));
-        assert!(info.extra.contains(&("File".to_string(), "RAW".to_string())));
+        assert!(info
+            .extra
+            .contains(&("File".to_string(), "RAW".to_string())));
     }
 
     #[test]

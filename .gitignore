@@ -10,3 +10,10 @@ Cargo.lock.orig
 # committed. Rust integration tests live under crates/*/tests and skip when the
 # fixtures are absent, so CI stays green without them.
 /tests/
+
+# A common macOS global gitignore (~/.gitignore_global) carries `Icon?` to drop
+# custom-folder-icon files; case-insensitively that also matches our app-icon
+# directory `icons` (icon + s), hiding the bundle icons from `git add`. Force
+# the directory and its contents back in so packaging works for everyone.
+!crates/mediaexplorer-gui/assets/icons/
+!crates/mediaexplorer-gui/assets/icons/**

@@ -1,0 +1,51 @@
+[package]
+name = "mediaexplorer-gui"
+description = "Cross-platform GUI for browsing and editing MSX disk and tape images"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "mediaexplorer"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+arboard = { version = "3.6.1", features = ["image-data"] }
+eframe = "0.34.3"
+egui = "0.34.3"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+msx-disk = { path = "../msx-disk" }
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+
+# Native drag-out to the OS file manager (macOS + Windows only; Linux falls
+# back to the Extract dialog).
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+drag = "2.1.1"
+
+# cargo-packager: turns the compiled binary into a real desktop bundle
+# (.app/.dmg on macOS). The binary is built separately (CI lipos the two
+# macOS arches into one universal binary first), so there is intentionally no
+# `before-packaging-command` here — packaging consumes whatever binary already
+# sits in the target dir. Run locally with:
+#   cargo build --release -p mediaexplorer-gui
+#   cargo packager --release -p mediaexplorer-gui --formats app,dmg
+[package.metadata.packager]
+product-name = "MSX Media Explorer"
+identifier = "io.github.sandy.mediaexplorer"
+category = "Utility"
+binaries = [{ path = "mediaexplorer", main = true }]
+icons = [
+    "assets/icons/icon.icns",
+    "assets/icons/icon.ico",
+    "assets/icons/icon.png",
+    "assets/icons/128x128.png",
+    "assets/icons/32x32.png",
+]
+
+[package.metadata.packager.macos]
+minimum-system-version = "10.13"

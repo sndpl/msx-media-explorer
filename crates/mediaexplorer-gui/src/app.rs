@@ -119,14 +119,17 @@ struct RowEvents {
     action: Option<RowAction>,
 }
 
-/// A rename in progress: the file being renamed and the new name being typed.
+/// A rename in progress: the file being renamed, the new name being typed (as a
+/// decoded display name), and the charset snapshot used to decode it on open and
+/// re-encode it on save (so a live charset change can't corrupt the key).
 struct RenameTarget {
     path: String,
     name: String,
+    charset: MsxCharset,
 }
 
 /// Root application state.
-pub struct DskExplorerApp {
+pub struct MediaExplorerApp {
     disk: Option<LoadedDisk>,
     /// Open tape image, when a `.cas`/`.tsx` is loaded instead of a disk.
     tape: Option<LoadedTape>,
@@ -143,8 +146,12 @@ pub struct DskExplorerApp {
     view_mode: ViewMode,
     bytes_per_row: usize,
     text_show_all: bool,
-    /// Cached screen texture, keyed by the file path it was rendered from.
-    screen_tex: Option<(String, egui::TextureHandle)>,
+    /// Cached screen texture, keyed by the file path and forced format it was
+    /// rendered from (so changing either invalidates it).
+    screen_tex: Option<(String, Option<recoil::ImageFormat>, egui::TextureHandle)>,
+    /// Manually-chosen graphics format that overrides extension-based decoding
+    /// in the Screen view. `None` means decode by extension. Reset per file.
+    forced_format: Option<recoil::ImageFormat>,
     search_query: String,
     search_is_hex: bool,
     /// Byte offsets of matches in the current file, with the active index.
@@ -195,9 +202,9 @@ pub struct DskExplorerApp {
 /// responsive.
 const MAX_HEX_EDIT_BYTES: usize = 32 * 1024;
 
-impl Default for DskExplorerApp {
+impl Default for MediaExplorerApp {
     fn default() -> Self {
-        DskExplorerApp {
+        MediaExplorerApp {
             disk: None,
             tape: None,
             dmk_analysis: None,
@@ -210,6 +217,7 @@ impl Default for DskExplorerApp {
             bytes_per_row: 16,
             text_show_all: false,
             screen_tex: None,
+            forced_format: None,
             search_query: String::new(),
             search_is_hex: false,
             search_matches: Vec::new(),
@@ -238,7 +246,7 @@ impl Default for DskExplorerApp {
     }
 }
 
-impl DskExplorerApp {
+impl MediaExplorerApp {
     fn open_path(&mut self, path: &Path) {
         if is_tape(path) {
             self.open_tape(path);
@@ -341,6 +349,7 @@ impl DskExplorerApp {
         };
         self.status = format!("{path} — {} bytes", bytes.len());
         self.view_mode = default_view_mode(&path);
+        self.forced_format = None;
         self.search_matches.clear();
         self.search_pos = 0;
         self.hex_edit = None;
@@ -520,20 +529,22 @@ impl DskExplorerApp {
         let charset = self.charset;
         let mut events = RowEvents::default();
         if let Some(disk) = &self.disk {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    let show_meta = disk.dos == msx_disk::fs::DosVersion::Dos2;
-                    render_entries(
-                        ui,
-                        &disk.tree,
-                        &self.selection,
-                        show_meta,
-                        writable,
-                        charset,
-                        &mut events,
-                    );
-                });
+            if disk.tree.is_empty() {
+                ui.weak(empty_fat_message());
+            } else {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        render_entries(
+                            ui,
+                            &disk.tree,
+                            &self.selection,
+                            writable,
+                            charset,
+                            &mut events,
+                        );
+                    });
+            }
         } else if let Some(tape) = &self.tape {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -549,8 +560,13 @@ impl DskExplorerApp {
         if let Some(action) = events.action {
             match action {
                 RowAction::Rename(path) => {
-                    let name = base_name(&path);
-                    self.rename_target = Some(RenameTarget { path, name });
+                    // Edit the decoded display name; re-encoded on save.
+                    let name = charset::decode_fs_name(self.charset, &base_name(&path));
+                    self.rename_target = Some(RenameTarget {
+                        path,
+                        name,
+                        charset: self.charset,
+                    });
                 }
                 RowAction::Delete(path) => {
                     self.confirm_delete = Some(self.paths_for_row(&path));
@@ -693,17 +709,32 @@ impl DskExplorerApp {
             // The screen view needs the mutable texture cache, so handle it
             // outside the shared borrow of `self.content`.
             let mut cache = self.screen_tex.take();
+            let mut show_picker = false;
             match (self.disk.as_ref(), self.content.as_ref()) {
                 (Some(disk), Some(content)) => {
                     let path = content.path.clone();
                     let companions = FnCompanions(|ext: &str| disk.companion(&path, ext));
-                    render_screen(ui, &mut cache, &content.path, &content.bytes, &companions);
+                    let shown = render_screen(
+                        ui,
+                        &mut cache,
+                        &content.path,
+                        &content.bytes,
+                        self.forced_format,
+                        &companions,
+                    );
+                    // Fallback-only: offer the format picker when decoding fails,
+                    // and keep it visible while a manual format is active so a
+                    // wrong guess can be corrected.
+                    show_picker = !shown || self.forced_format.is_some();
                 }
                 _ => {
                     ui.weak("Select a file to view its contents.");
                 }
             }
             self.screen_tex = cache;
+            if show_picker {
+                self.screen_format_picker(ui);
+            }
             return;
         }
 
@@ -718,9 +749,13 @@ impl DskExplorerApp {
                 ui.weak("Select a file to view its contents.");
             }
             Some(content) => match self.view_mode {
-                ViewMode::Info => {
-                    render_info(ui, &content.path, &content.bytes, self.selected_entry())
-                }
+                ViewMode::Info => render_info(
+                    ui,
+                    &content.path,
+                    &content.bytes,
+                    self.selected_entry(),
+                    self.charset,
+                ),
                 ViewMode::Hex => render_hex(
                     ui,
                     &content.bytes,
@@ -729,9 +764,7 @@ impl DskExplorerApp {
                     highlight,
                     self.charset,
                 ),
-                ViewMode::Text => {
-                    render_text(ui, &content.bytes, self.text_show_all, self.charset)
-                }
+                ViewMode::Text => render_text(ui, &content.bytes, self.text_show_all, self.charset),
                 ViewMode::Basic => render_basic(ui, &content.bytes, self.charset),
                 ViewMode::Screen | ViewMode::Archive => unreachable!("handled above"),
             },
@@ -989,13 +1022,17 @@ impl DskExplorerApp {
         let Some(target) = self.rename_target.take() else {
             return;
         };
-        let new_base = sanitize_msx_name(&target.name);
+        // Sanitize the decoded name, then re-encode it to the PUA fatfs key that
+        // `rename` expects; the status message keeps the readable form.
+        let display = sanitize_8_3(&target.name, |c| is_rename_char(c, target.charset));
+        let new_base = charset::encode_fs_name(target.charset, &display)
+            .unwrap_or_else(|| display.clone());
         let new_path = match target.path.rsplit_once('/') {
             Some((parent, _)) => format!("{parent}/{new_base}"),
-            None => new_base.clone(),
+            None => new_base,
         };
         let result = self.disk.as_mut().unwrap().rename(&target.path, &new_path);
-        self.after_mutation(result, format!("Renamed to {new_base}"));
+        self.after_mutation(result, format!("Renamed to {display}"));
     }
 
     fn confirm_delete_now(&mut self) {
@@ -1042,20 +1079,24 @@ impl DskExplorerApp {
         }
         let mut do_delete = false;
         let mut cancel = false;
+        // Decode names for display only; the stored `paths` (PUA-encoded) stay
+        // the keys used for the actual delete.
+        let charset = self.charset;
         egui::Window::new("Confirm delete")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 if let [path] = paths.as_slice() {
-                    ui.label(format!("Delete \"{path}\" from the disk?"));
+                    let shown = charset::decode_fs_name(charset, path);
+                    ui.label(format!("Delete \"{shown}\" from the disk?"));
                 } else {
                     ui.label(format!("Delete these {} files from the disk?", paths.len()));
                     egui::ScrollArea::vertical()
                         .max_height(160.0)
                         .show(ui, |ui| {
                             for path in &paths {
-                                ui.monospace(path);
+                                ui.monospace(charset::decode_fs_name(charset, path));
                             }
                         });
                 }
@@ -1083,7 +1124,8 @@ impl DskExplorerApp {
         let Some(target) = self.rename_target.as_mut() else {
             return;
         };
-        let old = base_name(&target.path);
+        let charset = target.charset;
+        let old = charset::decode_fs_name(charset, &base_name(&target.path));
         let mut apply = false;
         let mut cancel = false;
         egui::Window::new("Rename file")
@@ -1094,9 +1136,9 @@ impl DskExplorerApp {
                 ui.label(format!("Rename \"{old}\" to:"));
                 let resp =
                     ui.add(egui::TextEdit::singleline(&mut target.name).desired_width(160.0));
-                // Restrict to a valid 8.3 name as the user types.
+                // Restrict to a valid 8.3 name (charset-aware) as the user types.
                 if resp.changed() {
-                    target.name = normalize_msx_input(&target.name);
+                    target.name = normalize_msx_input(&target.name, charset);
                 }
                 // Focus the field the first frame the modal appears.
                 if ui.memory(|m| m.focused().is_none()) {
@@ -1290,7 +1332,7 @@ impl DskExplorerApp {
     /// not bytes) and return their absolute locations.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     fn stage_files_for_drag(&self, paths: &[String]) -> Result<Vec<PathBuf>, String> {
-        let dir = std::env::temp_dir().join("dskexplorer-dragout");
+        let dir = std::env::temp_dir().join("mediaexplorer-dragout");
         std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
         let mut staged = Vec::with_capacity(paths.len());
         for path in paths {
@@ -1323,13 +1365,41 @@ impl DskExplorerApp {
         };
     }
 
-    /// Decode the currently-selected file as an MSX image, if it is one.
+    /// Decode the currently-selected file as an MSX image, if it is one,
+    /// honoring any manually-forced format.
     fn decode_current_screen(&self) -> Option<recoil::Image> {
         let disk = self.disk.as_ref()?;
         let content = self.content.as_ref()?;
         let path = content.path.clone();
         let companions = FnCompanions(|ext: &str| disk.companion(&path, ext));
-        recoil::decode(&content.path, &content.bytes, &companions)
+        decode_screen(
+            self.forced_format,
+            &content.path,
+            &content.bytes,
+            &companions,
+        )
+    }
+
+    /// A fallback picker letting the user force a graphics format when a file's
+    /// extension is unknown or its bytes don't decode under it. Shown in the
+    /// Screen view only when auto-decoding fails or a format is already forced.
+    fn screen_format_picker(&mut self, ui: &mut egui::Ui) {
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Try decoding as:");
+            let selected = self
+                .forced_format
+                .map(|f| f.label())
+                .unwrap_or("Auto (from extension)");
+            egui::ComboBox::from_id_salt("screen_format")
+                .selected_text(selected)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.forced_format, None, "Auto (from extension)");
+                    for &fmt in recoil::ImageFormat::all() {
+                        ui.selectable_value(&mut self.forced_format, Some(fmt), fmt.label());
+                    }
+                });
+        });
     }
 
     /// Copy the current view to the clipboard: the decoded image in Screen mode,
@@ -1360,7 +1430,9 @@ impl DskExplorerApp {
             return;
         };
         let text = match self.view_mode {
-            ViewMode::Info => format_fileinfo_text(&content.path, &content.bytes, self.selected_entry()),
+            ViewMode::Info => {
+                format_fileinfo_text(&content.path, &content.bytes, self.selected_entry())
+            }
             ViewMode::Hex => dump_to_string(
                 &content.bytes,
                 HexConfig {
@@ -1689,13 +1761,18 @@ impl DskExplorerApp {
             let geo = disk.geometry;
             ui.label(egui::RichText::new(describe_geometry(geo)).weak());
             ui.horizontal(|ui| {
-                ui.label(format!("Size: {}", humanize_bytes(geo.total_bytes() as u64)));
+                ui.label(format!(
+                    "Size: {}",
+                    humanize_bytes(geo.total_bytes() as u64)
+                ));
                 if disk.is_partitioned() {
                     ui.separator();
                     ui.label(format!("Sectors: {}", geo.total_sectors()));
                     ui.separator();
                     ui.label(format!("{} partitions", disk.tree.len()));
                 } else if let Some(fs) = self.disk_fs_geometry {
+                    ui.separator();
+                    ui.label(format!("Free: {}", humanize_bytes(fs.free_bytes())));
                     ui.separator();
                     ui.label(format!("Clusters: {}", fs.cluster_count));
                     ui.separator();
@@ -1887,20 +1964,43 @@ fn format_timestamp(ts: Option<msx_disk::fs::Timestamp>) -> String {
     }
 }
 
-/// Build the label for a file row: name + size, plus date/time and attribute
-/// columns when `show_meta` is set (MSX-DOS 2 disks). The name is decoded for
-/// display under `charset`.
-fn format_file_row(entry: &DirEntry, show_meta: bool, charset: MsxCharset) -> String {
-    let base = format!("{:<14} {:>8}", entry.display_name(charset), entry.size);
-    if show_meta {
-        format!(
-            "{base}  {:<16}  {}",
-            format_timestamp(entry.modified),
-            format_attributes(entry.attributes)
-        )
-    } else {
-        base
-    }
+/// Character width of a full file row from `format_file_row`:
+/// `name(14) + ' ' + size(8) + "  " + date(16) + "  " + attrs(4)` = 47. MSX 8.3
+/// names never exceed the 14-wide name field, so every row is exactly this wide.
+const FILE_ROW_CHARS: usize = 47;
+
+/// Default width for the file tree panel: wide enough that a full monospace file
+/// row fits on one line, plus room for the folder indent, scrollbar, and margins.
+fn files_panel_default_width(ui: &egui::Ui) -> f32 {
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let sample = "0".repeat(FILE_ROW_CHARS);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(sample, font, egui::Color32::WHITE);
+    galley.rect.width() + 64.0
+}
+
+/// Build the label for a file row: name + size + date/time + attributes. The
+/// date/time and attribute columns are always shown (MSX-DOS 1 disks carry them
+/// too); an absent timestamp renders as a blank date column. The name is decoded
+/// for display under `charset`.
+fn format_file_row(entry: &DirEntry, charset: MsxCharset) -> String {
+    format!(
+        "{:<14} {:>8}  {:<16}  {}",
+        entry.display_name(charset),
+        entry.size,
+        format_timestamp(entry.modified),
+        format_attributes(entry.attributes)
+    )
+}
+
+/// Message shown in the Files panel when a disk mounts but its FAT directory
+/// holds no entries (a blank disk, or a sector-based / non-DOS disk that stores
+/// no files in a FAT). Points the user at the raw views.
+fn empty_fat_message() -> &'static str {
+    "This disk's FAT directory is empty — no files to list.\n\n\
+     It may be a blank disk or a sector-based (non-DOS) disk. \
+     Use the Sectors or Map view to inspect its raw contents."
 }
 
 /// Recursively render the directory tree, recording a clicked file path.
@@ -1908,42 +2008,30 @@ fn render_entries(
     ui: &mut egui::Ui,
     entries: &[DirEntry],
     selection: &BTreeSet<String>,
-    show_meta: bool,
     writable: bool,
     charset: MsxCharset,
     events: &mut RowEvents,
 ) {
     for entry in entries {
         if entry.is_dir {
-            // Plain header on DOS1; monospace with aligned date/attr columns on DOS2.
-            let header: egui::WidgetText = if show_meta {
-                egui::RichText::new(format!(
-                    "\u{1F4C1} {:<12}  {:<16}  {}",
-                    entry.display_name(charset),
-                    format_timestamp(entry.modified),
-                    format_attributes(entry.attributes)
-                ))
-                .monospace()
-                .into()
-            } else {
-                format!("\u{1F4C1} {}", entry.display_name(charset)).into()
-            };
+            // Monospace header with aligned date/attribute columns; an absent
+            // timestamp (e.g. synthetic partition nodes) renders blank.
+            let header: egui::WidgetText = egui::RichText::new(format!(
+                "\u{1F4C1} {:<12}  {:<16}  {}",
+                entry.display_name(charset),
+                format_timestamp(entry.modified),
+                format_attributes(entry.attributes)
+            ))
+            .monospace()
+            .into();
             egui::CollapsingHeader::new(header)
                 .default_open(true)
                 .show(ui, |ui| {
-                    render_entries(
-                        ui,
-                        &entry.children,
-                        selection,
-                        show_meta,
-                        writable,
-                        charset,
-                        events,
-                    );
+                    render_entries(ui, &entry.children, selection, writable, charset, events);
                 });
         } else {
             let is_selected = selection.contains(&entry.path);
-            let label = format_file_row(entry, show_meta, charset);
+            let label = format_file_row(entry, charset);
             let resp = ui
                 .selectable_label(is_selected, egui::RichText::new(label).monospace())
                 .interact(egui::Sense::click_and_drag());
@@ -2073,7 +2161,10 @@ fn format_hex_for_edit(bytes: &[u8]) -> String {
 /// Coerce a host filename into an MSX-DOS 8.3 uppercase name.
 /// The final path component (file name) of a slash-separated disk path.
 fn base_name(path: &str) -> String {
-    path.rsplit(['/', '\\']).next().unwrap_or("file").to_string()
+    path.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("file")
+        .to_string()
 }
 
 /// Truncate `s` to at most `max` characters, marking elision with a trailing
@@ -2159,22 +2250,34 @@ fn is_openable(path: &Path) -> bool {
 /// alphanumerics. Shared by [`sanitize_msx_name`] and [`normalize_msx_input`].
 const MSX_NAME_PUNCT: &str = "_-!#$%&@^{}()~'";
 
-/// True if `c` is allowed in an MSX 8.3 filename.
+/// True if `c` is allowed in an MSX 8.3 filename (ASCII rule only).
 fn is_msx_name_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || MSX_NAME_PUNCT.contains(c)
 }
 
-fn sanitize_msx_name(name: &str) -> String {
-    let upper = name.to_uppercase();
+/// True if `c` is allowed in a rename under `charset`. ASCII follows the 8.3
+/// rule; a high glyph (kana, accented Latin, ...) is allowed when the charset
+/// can encode it, so non-ASCII names survive editing instead of being stripped.
+fn is_rename_char(c: char, charset: MsxCharset) -> bool {
+    if (c as u32) < 0x80 {
+        is_msx_name_char(c)
+    } else {
+        charset::encode_byte(charset, c).is_some()
+    }
+}
+
+/// Coerce `name` into a valid 8.3 shape: ASCII-uppercase, keep only characters
+/// for which `allowed` holds, cap the stem at 8 and extension at 3 characters
+/// (counted as characters, since one MSX byte is one glyph). An empty stem
+/// becomes `FILE`.
+fn sanitize_8_3(name: &str, allowed: impl Fn(char) -> bool) -> String {
+    let upper: String = name.chars().map(|c| c.to_ascii_uppercase()).collect();
     let (stem, ext) = match upper.rsplit_once('.') {
         Some((s, e)) => (s, e),
         None => (upper.as_str(), ""),
     };
     let keep = |s: &str, max: usize| -> String {
-        s.chars()
-            .filter(|c| is_msx_name_char(*c))
-            .take(max)
-            .collect()
+        s.chars().filter(|c| allowed(*c)).take(max).collect()
     };
     let mut stem = keep(stem, 8);
     if stem.is_empty() {
@@ -2188,25 +2291,31 @@ fn sanitize_msx_name(name: &str) -> String {
     }
 }
 
+/// Coerce a dropped host filename into a valid ASCII 8.3 MSX name.
+fn sanitize_msx_name(name: &str) -> String {
+    sanitize_8_3(name, is_msx_name_char)
+}
+
 /// Restrict free-form rename input to a valid 8.3 shape *as it is typed*:
-/// uppercase, only allowed characters, at most one `.` separator, an 8-char
-/// stem and a 3-char extension. Unlike [`sanitize_msx_name`] it leaves an empty
-/// stem empty (so the field can be cleared) and keeps a trailing `.` so the
-/// extension can still be typed.
-fn normalize_msx_input(raw: &str) -> String {
+/// ASCII-uppercase, only characters allowed under `charset`, at most one `.`
+/// separator, an 8-char stem and a 3-char extension. Unlike [`sanitize_8_3`] it
+/// leaves an empty stem empty (so the field can be cleared) and keeps a trailing
+/// `.` so the extension can still be typed.
+fn normalize_msx_input(raw: &str, charset: MsxCharset) -> String {
     let mut stem = String::new();
     let mut ext = String::new();
     let mut in_ext = false;
-    for c in raw.to_uppercase().chars() {
+    for c in raw.chars() {
+        let c = c.to_ascii_uppercase();
         if c == '.' {
             // The first dot starts the extension; later dots are ignored.
             in_ext = true;
-        } else if is_msx_name_char(c) {
+        } else if is_rename_char(c, charset) {
             if in_ext {
-                if ext.len() < 3 {
+                if ext.chars().count() < 3 {
                     ext.push(c);
                 }
-            } else if stem.len() < 8 {
+            } else if stem.chars().count() < 8 {
                 stem.push(c);
             }
         }
@@ -2247,20 +2356,66 @@ fn default_view_mode(path: &str) -> ViewMode {
     }
 }
 
-/// Render a decoded MSX graphics image, caching the GPU texture by file path.
-fn render_screen(
-    ui: &mut egui::Ui,
-    cache: &mut Option<(String, egui::TextureHandle)>,
+/// Decode the selected file as an MSX image: forcing `forced` when set,
+/// otherwise classifying by file extension. The single seam shared by the
+/// Screen view, Copy image, and Save PNG so they never diverge.
+fn decode_screen(
+    forced: Option<recoil::ImageFormat>,
     path: &str,
     bytes: &[u8],
     companions: &dyn recoil::CompanionFiles,
-) {
-    let stale = cache.as_ref().map(|(p, _)| p != path).unwrap_or(true);
+) -> Option<recoil::Image> {
+    match forced {
+        Some(fmt) => recoil::decode_as(fmt, bytes, companions),
+        None => recoil::decode(path, bytes, companions),
+    }
+}
+
+/// The message shown in the Screen view when decoding fails. It names the
+/// forced format so a failed manual attempt reads differently per format (and
+/// differently from the initial auto-detect failure), giving explicit feedback
+/// that an attempt was made.
+fn screen_decode_failed_message(forced: Option<recoil::ImageFormat>) -> String {
+    match forced {
+        Some(fmt) => format!(
+            "Could not decode as {}. Try another format below.",
+            fmt.label()
+        ),
+        None => {
+            "Not a recognized MSX graphics file. Pick a format below to try decoding it anyway."
+                .to_string()
+        }
+    }
+}
+
+/// Render a decoded MSX graphics image, caching the GPU texture by `(path,
+/// forced format)`. Returns whether an image was shown (false on decode
+/// failure, so the caller can offer the format picker).
+fn render_screen(
+    ui: &mut egui::Ui,
+    cache: &mut Option<(String, Option<recoil::ImageFormat>, egui::TextureHandle)>,
+    path: &str,
+    bytes: &[u8],
+    forced: Option<recoil::ImageFormat>,
+    companions: &dyn recoil::CompanionFiles,
+) -> bool {
+    let stale = cache
+        .as_ref()
+        .map(|(p, f, _)| p != path || *f != forced)
+        .unwrap_or(true);
     if stale {
-        let Some(img) = recoil::decode(path, bytes, companions) else {
+        let Some(img) = decode_screen(forced, path, bytes, companions) else {
             *cache = None;
-            ui.weak("Not a recognized / decodable MSX graphics file.");
-            return;
+            let msg = screen_decode_failed_message(forced);
+            if forced.is_some() {
+                // A manual attempt that failed: make it prominent (theme-aware
+                // warning colour) so the result of the pick is unmistakable.
+                let color = ui.visuals().warn_fg_color;
+                ui.colored_label(color, msg);
+            } else {
+                ui.weak(msg);
+            }
+            return false;
         };
         let image =
             egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.to_rgba());
@@ -2269,15 +2424,24 @@ fn render_screen(
             image,
             egui::TextureOptions::NEAREST,
         );
-        *cache = Some((path.to_string(), texture));
+        *cache = Some((path.to_string(), forced, texture));
     }
 
-    if let Some((_, texture)) = cache {
+    if let Some((_, _, texture)) = cache {
+        // Confirm which forced format produced the image, so a successful manual
+        // attempt is acknowledged (not just the initial extension-based decode).
+        if let Some(fmt) = forced {
+            ui.colored_label(
+                egui::Color32::from_rgb(0x3c, 0xa8, 0x4b),
+                format!("Decoded as {}.", fmt.label()),
+            );
+        }
         egui::ScrollArea::both().show(ui, |ui| {
             let size = texture.size_vec2() * 2.0; // 2x nearest-neighbour zoom
             ui.image(egui::load::SizedTexture::new(texture.id(), size));
         });
     }
+    cache.is_some()
 }
 
 /// Detokenized MSX-BASIC listing.
@@ -2347,8 +2511,24 @@ fn format_fileinfo_text(path: &str, bytes: &[u8], entry: Option<&DirEntry>) -> S
     out
 }
 
+/// The file name to show in the Info panel: decoded under `charset` so
+/// Japanese/accented names render the same way as in the file list (which uses
+/// [`DirEntry::display_name`]) rather than as the raw PUA-encoded name.
+fn info_display_name(entry: Option<&DirEntry>, path: &str, charset: MsxCharset) -> String {
+    match entry {
+        Some(e) => e.display_name(charset),
+        None => charset::decode_fs_name(charset, &base_name(path)),
+    }
+}
+
 /// File Info view: filesystem facts plus content-derived format details.
-fn render_info(ui: &mut egui::Ui, path: &str, bytes: &[u8], entry: Option<&DirEntry>) {
+fn render_info(
+    ui: &mut egui::Ui,
+    path: &str,
+    bytes: &[u8],
+    entry: Option<&DirEntry>,
+    charset: MsxCharset,
+) {
     let info = msx_disk::fileinfo::describe(path, bytes);
     let yes_no = |b: bool| if b { "yes" } else { "no" };
 
@@ -2358,7 +2538,7 @@ fn render_info(ui: &mut egui::Ui, path: &str, bytes: &[u8], entry: Option<&DirEn
             ui.heading("File");
             egui::Grid::new("info_file").num_columns(2).show(ui, |ui| {
                 ui.label("Name:");
-                ui.monospace(base_name(path));
+                ui.monospace(info_display_name(entry, path, charset));
                 ui.end_row();
                 let size = entry.map(|e| e.size).unwrap_or(bytes.len() as u64);
                 ui.label("Size:");
@@ -2485,7 +2665,7 @@ fn render_text(ui: &mut egui::Ui, bytes: &[u8], show_all: bool, charset: MsxChar
         });
 }
 
-impl eframe::App for DskExplorerApp {
+impl eframe::App for MediaExplorerApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         self.handle_dropped_files(ui.ctx());
 
@@ -2499,9 +2679,14 @@ impl eframe::App for DskExplorerApp {
             self.status_bar(ui);
             ui.add_space(2.0);
         });
+        let tree_width = files_panel_default_width(ui);
         egui::Panel::left("tree")
             .resizable(true)
-            .default_size(280.0)
+            // `min_size` (not `default_size`) so a persisted-narrower width from
+            // an earlier run is clamped back up to one full row; the user can
+            // still drag the panel wider.
+            .default_size(tree_width)
+            .min_size(tree_width)
             .show_inside(ui, |ui| {
                 self.tree_panel(ui);
             });
@@ -2545,21 +2730,55 @@ mod tests {
 
     #[test]
     fn normalize_input_enforces_83_shape() {
+        let intl = MsxCharset::International;
         // Uppercases, drops disallowed characters, caps stem and extension.
-        assert_eq!(normalize_msx_input("my long file.text"), "MYLONGFI.TEX");
-        assert_eq!(normalize_msx_input("game.com"), "GAME.COM");
+        assert_eq!(normalize_msx_input("my long file.text", intl), "MYLONGFI.TEX");
+        assert_eq!(normalize_msx_input("game.com", intl), "GAME.COM");
         // Only the first dot separates; later dots are dropped.
-        assert_eq!(normalize_msx_input("a.b.c"), "A.BC");
+        assert_eq!(normalize_msx_input("a.b.c", intl), "A.BC");
         // Spaces and other illegal characters are filtered out.
-        assert_eq!(normalize_msx_input("a b/c?"), "ABC");
+        assert_eq!(normalize_msx_input("a b/c?", intl), "ABC");
     }
 
     #[test]
     fn normalize_input_allows_in_progress_typing() {
+        let intl = MsxCharset::International;
         // Empty stays empty (the field can be cleared) instead of "FILE".
-        assert_eq!(normalize_msx_input(""), "");
+        assert_eq!(normalize_msx_input("", intl), "");
         // A trailing dot is kept so the extension can still be typed.
-        assert_eq!(normalize_msx_input("GAME."), "GAME.");
+        assert_eq!(normalize_msx_input("GAME.", intl), "GAME.");
+    }
+
+    /// Three half-width katakana (bytes 0xB1..=0xB3) as decoded display glyphs.
+    fn sample_kana() -> String {
+        (0xB1u8..=0xB3)
+            .map(|b| charset::decode_byte(MsxCharset::Japanese, b))
+            .collect()
+    }
+
+    #[test]
+    fn rename_normalize_keeps_japanese_glyphs() {
+        let kana = sample_kana();
+        let out = normalize_msx_input(&format!("{kana}.bas"), MsxCharset::Japanese);
+        assert_eq!(out, format!("{kana}.BAS"));
+    }
+
+    #[test]
+    fn rename_normalize_drops_glyphs_outside_charset() {
+        // Kana isn't representable in International, so it is stripped; ASCII stays.
+        let out = normalize_msx_input(&format!("{}AB.bas", sample_kana()), MsxCharset::International);
+        assert_eq!(out, "AB.BAS");
+    }
+
+    #[test]
+    fn rename_round_trips_japanese_name_to_fatfs_key() {
+        // The on-disk (PUA) key decodes for display, sanitizes, and re-encodes
+        // to the exact same key — proving a rename preserves Japanese names.
+        let key = "\u{F0B1}\u{F0B2}\u{F0B3}.BAS";
+        let display = charset::decode_fs_name(MsxCharset::Japanese, key);
+        let sane = sanitize_8_3(&display, |c| is_rename_char(c, MsxCharset::Japanese));
+        let encoded = charset::encode_fs_name(MsxCharset::Japanese, &sane).unwrap();
+        assert_eq!(encoded, key);
     }
 
     #[test]
@@ -2569,6 +2788,73 @@ mod tests {
         // No stem means nothing to apply.
         assert!(msx_name_stem("").is_empty());
         assert!(msx_name_stem(".COM").is_empty());
+    }
+
+    /// A synthetic, minimal SCREEN 2 BSAVE buffer (single top-left pixel), used
+    /// to exercise format selection without a real disk fixture.
+    fn synthetic_sc2() -> Vec<u8> {
+        let mut buf = vec![0u8; 14343];
+        buf[0] = 0xfe;
+        buf[3] = 0xff;
+        buf[4] = 0x37;
+        buf[7] = 0x80;
+        buf[0x2007] = 0xf1;
+        buf
+    }
+
+    #[test]
+    fn screen_failure_message_distinguishes_forced_attempt() {
+        // A failed manual attempt names the format, so picking a type that does
+        // not decode produces a visibly different message (proving an attempt
+        // was made) rather than the constant "not recognized" placeholder.
+        let forced = screen_decode_failed_message(Some(recoil::ImageFormat::Screen8));
+        assert!(
+            forced.contains("SCREEN 8"),
+            "forced-failure message should name the format: {forced}"
+        );
+        assert!(
+            forced.to_lowercase().contains("could not"),
+            "should read as a failed attempt: {forced}"
+        );
+
+        // The auto (no forced format) message is distinct and points at the
+        // picker.
+        let auto = screen_decode_failed_message(None);
+        assert!(!auto.contains("SCREEN 8"));
+        assert!(
+            auto.to_lowercase().contains("pick a format"),
+            "auto message should point at the picker: {auto}"
+        );
+    }
+
+    #[test]
+    fn decode_screen_uses_extension_when_no_format_forced() {
+        let buf = synthetic_sc2();
+        assert!(decode_screen(None, "pic.sc2", &buf, &recoil::NoCompanions).is_some());
+        // An unknown extension can't be classified, so auto-decode fails.
+        assert!(decode_screen(None, "pic.dat", &buf, &recoil::NoCompanions).is_none());
+    }
+
+    #[test]
+    fn decode_screen_forced_format_overrides_extension() {
+        let buf = synthetic_sc2();
+        // Forcing SCREEN 2 decodes a file whose extension is unrecognized.
+        assert!(decode_screen(
+            Some(recoil::ImageFormat::Screen2),
+            "pic.dat",
+            &buf,
+            &recoil::NoCompanions
+        )
+        .is_some());
+        // Forcing a mismatched format on a recognized .sc2 fails (these are not
+        // SCREEN 8 bytes), proving the forced format wins over the extension.
+        assert!(decode_screen(
+            Some(recoil::ImageFormat::Screen8),
+            "pic.sc2",
+            &buf,
+            &recoil::NoCompanions
+        )
+        .is_none());
     }
 
     #[test]
@@ -2666,17 +2952,9 @@ mod tests {
     }
 
     #[test]
-    fn file_row_omits_metadata_for_dos1() {
-        let e = file_entry("GAME.COM", 1234, msx_disk::fs::Attributes::default(), None);
-        assert_eq!(
-            format_file_row(&e, false, MsxCharset::International),
-            format!("{:<14} {:>8}", "GAME.COM", 1234u64)
-        );
-    }
-
-    #[test]
-    fn file_row_appends_metadata_for_dos2() {
+    fn file_row_always_includes_date_and_attributes() {
         use msx_disk::fs::{Attributes, Timestamp};
+        // DOS1 disks carry timestamps too, so a file with one always shows it.
         let e = file_entry(
             "GAME.COM",
             1234,
@@ -2692,15 +2970,78 @@ mod tests {
                 minute: 30,
             }),
         );
-        let row = format_file_row(&e, true, MsxCharset::International);
+        let row = format_file_row(&e, MsxCharset::International);
+        assert!(row.starts_with(&format!("{:<14} {:>8}", "GAME.COM", 1234u64)));
         assert!(row.contains("1991-03-25 14:30"), "row: {row}");
         assert!(row.trim_end().ends_with("---A"), "row: {row}");
     }
 
     #[test]
+    fn info_name_decodes_under_charset_like_the_file_list() {
+        // A PUA-encoded high byte (0xB1 -> U+F0B1) must decode to the same glyph
+        // the file list shows, not render as the raw PUA name.
+        let name = "\u{F0B1}.BIN";
+        let e = file_entry(name, 10, msx_disk::fs::Attributes::default(), None);
+        let shown = info_display_name(Some(&e), "DIR/\u{F0B1}.BIN", MsxCharset::Japanese);
+        // Matches the file list's decoded name...
+        assert_eq!(shown, e.display_name(MsxCharset::Japanese));
+        // ...and is no longer the raw, undecoded PUA string.
+        assert_ne!(shown, name);
+    }
+
+    #[test]
+    fn info_name_falls_back_to_path_base_when_no_entry() {
+        // With no DirEntry, the path's base name is still decoded under charset.
+        let shown = info_display_name(None, "DIR/\u{F0B1}.BIN", MsxCharset::Japanese);
+        assert_eq!(shown, charset::decode_fs_name(MsxCharset::Japanese, "\u{F0B1}.BIN"));
+    }
+
+    #[test]
+    fn file_row_width_matches_panel_sizing_constant() {
+        use msx_disk::fs::{Attributes, Timestamp};
+        // A maximal file row must be exactly FILE_ROW_CHARS wide, so the panel's
+        // default width (derived from that constant) fits a full row on one line.
+        let e = file_entry(
+            "ABCDEFGH.IJK",
+            99_999_999,
+            Attributes {
+                read_only: true,
+                hidden: true,
+                system: true,
+                archive: true,
+            },
+            Some(Timestamp {
+                year: 9999,
+                month: 12,
+                day: 31,
+                hour: 23,
+                minute: 59,
+            }),
+        );
+        let row = format_file_row(&e, MsxCharset::International);
+        assert_eq!(row.chars().count(), FILE_ROW_CHARS, "row: {row:?}");
+    }
+
+    #[test]
+    fn empty_fat_message_names_fat_and_points_to_raw_views() {
+        let msg = empty_fat_message();
+        assert!(msg.to_lowercase().contains("fat"), "msg: {msg}");
+        assert!(msg.contains("Sectors"), "msg: {msg}");
+    }
+
+    #[test]
+    fn file_row_keeps_columns_when_timestamp_absent() {
+        // No timestamp -> blank date column, but the attribute column remains.
+        let e = file_entry("GAME.COM", 1234, msx_disk::fs::Attributes::default(), None);
+        let row = format_file_row(&e, MsxCharset::International);
+        assert!(row.starts_with(&format!("{:<14} {:>8}", "GAME.COM", 1234u64)));
+        assert!(row.trim_end().ends_with("----"), "row: {row}");
+    }
+
+    #[test]
     fn disk_search_jump_maps_offset_to_sector_and_row() {
         // Offset 1234 -> sector 2 (1024..1536), row (1234 % 512) / 16 = 210/16 = 13.
-        let mut app = DskExplorerApp {
+        let mut app = MediaExplorerApp {
             disk_search_matches: vec![1234],
             ..Default::default()
         };
@@ -2712,7 +3053,7 @@ mod tests {
 
     #[test]
     fn disk_search_step_wraps_in_both_directions() {
-        let mut app = DskExplorerApp {
+        let mut app = MediaExplorerApp {
             disk_search_matches: vec![0, 512, 1024],
             ..Default::default()
         };
@@ -2730,7 +3071,7 @@ mod tests {
 
     #[test]
     fn disk_search_step_is_noop_without_matches() {
-        let mut app = DskExplorerApp::default();
+        let mut app = MediaExplorerApp::default();
         app.step_disk_search(true);
         assert_eq!(app.disk_search_pos, 0);
     }
@@ -2803,7 +3144,7 @@ mod tests {
 
     #[test]
     fn selection_paths_prefers_marked_set_in_sorted_order() {
-        let app = DskExplorerApp {
+        let app = MediaExplorerApp {
             selection: BTreeSet::from(["B.TXT".to_string(), "A.TXT".to_string()]),
             selected: Some("C.TXT".to_string()),
             ..Default::default()
@@ -2813,19 +3154,19 @@ mod tests {
 
     #[test]
     fn selection_paths_falls_back_to_viewed_file() {
-        let app = DskExplorerApp {
+        let app = MediaExplorerApp {
             selected: Some("ONLY.TXT".to_string()),
             ..Default::default()
         };
         assert_eq!(app.selection_paths(), vec!["ONLY.TXT"]);
 
-        let empty = DskExplorerApp::default();
+        let empty = MediaExplorerApp::default();
         assert!(empty.selection_paths().is_empty());
     }
 
     #[test]
     fn paths_for_row_targets_only_an_unselected_row() {
-        let app = DskExplorerApp {
+        let app = MediaExplorerApp {
             selection: BTreeSet::from(["A.TXT".to_string(), "B.TXT".to_string()]),
             ..Default::default()
         };
@@ -2835,7 +3176,7 @@ mod tests {
 
     #[test]
     fn paths_for_row_expands_to_whole_multiselection() {
-        let app = DskExplorerApp {
+        let app = MediaExplorerApp {
             selection: BTreeSet::from(["B.TXT".to_string(), "A.TXT".to_string()]),
             ..Default::default()
         };
@@ -2845,7 +3186,7 @@ mod tests {
 
     #[test]
     fn paths_for_row_single_selected_row_acts_on_itself() {
-        let app = DskExplorerApp {
+        let app = MediaExplorerApp {
             selection: BTreeSet::from(["A.TXT".to_string()]),
             ..Default::default()
         };

@@ -105,7 +105,7 @@ fn write_back_to_real_disk_roundtrip() {
     let image = DiskImage::open(&path).expect("open");
     let original = image.data().to_vec();
 
-    let modified = write::add_files(&original, &[("PHASE2.TXT", b"written by dskexplorer")])
+    let modified = write::add_files(&original, &[("PHASE2.TXT", b"written by mediaexplorer")])
         .expect("add file");
 
     // Original boot sector (BPB + boot code) is untouched.
@@ -114,7 +114,7 @@ fn write_back_to_real_disk_roundtrip() {
     let fs = DiskFs::mount(modified).expect("remount");
     assert_eq!(
         fs.read_file("PHASE2.TXT").unwrap(),
-        b"written by dskexplorer"
+        b"written by mediaexplorer"
     );
     // An existing file still reads correctly.
     assert!(!fs.read_file("MSXDOS2.SYS").unwrap().is_empty());
@@ -354,6 +354,33 @@ fn hd_image_is_partitioned_into_four_fat12_volumes() {
         read_a_subdir_file,
         "expected at least one file inside a subdirectory across the partitions"
     );
+}
+
+#[test]
+fn dark_castle_screen5_pics_decode_when_forced() {
+    use msx_disk::recoil::{self, ImageFormat, NoCompanions};
+    let path = skip_if_absent!("Dark Castle.dsk");
+    let fs = DiskFs::from_image(&DiskImage::open(&path).expect("open")).expect("mount");
+
+    let read = |name: &str| {
+        fs.tree()
+            .expect("tree")
+            .iter()
+            .flat_map(|e| e.walk())
+            .find(|e| !e.is_dir && e.name.eq_ignore_ascii_case(name))
+            .map(|e| fs.read_file(&e.path).expect("read"))
+    };
+
+    // WAKU.PIC is a full-page SCREEN 5 image (VRAM start 0): the strict path.
+    let waku = read("WAKU.PIC").expect("WAKU.PIC present");
+    let img = recoil::decode_as(ImageFormat::Screen5, &waku, &NoCompanions).expect("WAKU decodes");
+    assert_eq!((img.width, img.height), (256, 212));
+
+    // MOJI.PIC is SCREEN 5 data BLOAD'd to VRAM 0x6100; it must render via the
+    // offset rebuild, not be rejected.
+    let moji = read("MOJI.PIC").expect("MOJI.PIC present");
+    let img = recoil::decode_as(ImageFormat::Screen5, &moji, &NoCompanions).expect("MOJI decodes");
+    assert_eq!((img.width, img.height), (256, 212));
 }
 
 #[test]

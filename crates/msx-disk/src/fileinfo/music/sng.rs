@@ -12,7 +12,9 @@ const MAX_POSITIONS: u8 = 100;
 pub(super) fn parse(bytes: &[u8]) -> Option<MusicInfo> {
     let &song_length = bytes.get(SONG_LENGTH_OFFSET)?;
     // No signature exists; sanity-check the position count.
-    let positions = (1..=MAX_POSITIONS).contains(&song_length).then(|| u32::from(song_length));
+    let positions = (1..=MAX_POSITIONS)
+        .contains(&song_length)
+        .then(|| u32::from(song_length));
 
     Some(MusicInfo {
         format: "SCC-Musixx",

@@ -60,6 +60,29 @@ pub fn decode(charset: MsxCharset, bytes: &[u8]) -> String {
     bytes.iter().map(|&b| decode_byte(charset, b)).collect()
 }
 
+/// Encode one display scalar back to its MSX byte under `charset`, or `None` if
+/// the charset cannot represent it. Inverse of [`decode_byte`]: ASCII scalars
+/// map to themselves; high glyphs are looked up in the charset's high table.
+pub fn encode_byte(charset: MsxCharset, c: char) -> Option<u8> {
+    if c == '\u{FFFD}' {
+        return None; // the replacement char is not a real, encodable glyph
+    }
+    if (c as u32) < 0x80 {
+        return Some(c as u8);
+    }
+    (0x80u8..=0xFF).find(|&b| decode_byte(charset, b) == c)
+}
+
+/// Encode a display name (ASCII plus decoded high glyphs) back into the
+/// PUA-encoded fatfs key form the filesystem stores. Inverse of
+/// [`decode_fs_name`]. Returns `None` if any character is not representable in
+/// `charset`.
+pub fn encode_fs_name(charset: MsxCharset, name: &str) -> Option<String> {
+    name.chars()
+        .map(|c| encode_byte(charset, c).map(byte_to_pua))
+        .collect()
+}
+
 /// Decode a `fatfs` name string into a display string under `charset`.
 ///
 /// Names produced via [`PuaOemCpConverter`] are ASCII for `< 0x80` and carry
@@ -262,6 +285,42 @@ mod tests {
     }
 
     #[test]
+    fn encode_byte_round_trips_through_decode() {
+        // For every defined cell, encoding the decoded glyph yields a byte that
+        // decodes back to the same glyph (robust to any duplicate glyphs).
+        for &cs in MsxCharset::ALL {
+            for b in 0u8..=0xFF {
+                let c = decode_byte(cs, b);
+                if c == '\u{FFFD}' {
+                    assert_eq!(encode_byte(cs, c), None, "{cs:?} undefined {b:#04X}");
+                    continue;
+                }
+                let enc = encode_byte(cs, c).expect("defined glyph is encodable");
+                assert_eq!(decode_byte(cs, enc), c, "{cs:?} byte {b:#04X}");
+            }
+        }
+    }
+
+    #[test]
+    fn encode_fs_name_inverts_decode_for_kana() {
+        // A PUA-encoded katakana name decodes to kana, then re-encodes to the
+        // exact same fatfs key.
+        let key = "\u{F0B1}\u{F0B2}\u{F0B3}.BAS";
+        let display = decode_fs_name(MsxCharset::Japanese, key);
+        assert_ne!(display, key, "should have decoded to kana");
+        assert_eq!(
+            encode_fs_name(MsxCharset::Japanese, &display),
+            Some(key.to_string())
+        );
+    }
+
+    #[test]
+    fn encode_fs_name_rejects_unrepresentable_scalar() {
+        // An emoji has no Japanese byte, so the name cannot be encoded.
+        assert_eq!(encode_fs_name(MsxCharset::Japanese, "\u{1F600}.BIN"), None);
+    }
+
+    #[test]
     fn fs_name_byte_recovers_pua_and_ascii() {
         assert_eq!(fs_name_byte('A'), Some(0x41));
         assert_eq!(fs_name_byte('\u{F0CC}'), Some(0xCC));
@@ -273,7 +332,11 @@ mod tests {
         let conv = &PUA_OEM_CP_CONVERTER;
         for b in 0u8..=0xFF {
             let c = conv.decode(b);
-            assert_eq!(conv.encode(c), Some(b), "byte {b:#04X} failed to round-trip");
+            assert_eq!(
+                conv.encode(c),
+                Some(b),
+                "byte {b:#04X} failed to round-trip"
+            );
         }
     }
 

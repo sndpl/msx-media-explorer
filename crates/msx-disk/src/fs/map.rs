@@ -231,6 +231,29 @@ pub struct FsGeometry {
     pub total_sectors: usize,
     /// Number of data clusters (excluding the two reserved FAT entries).
     pub cluster_count: usize,
+    /// Data clusters whose FAT entry is 0 (unallocated, i.e. free space).
+    pub free_clusters: usize,
+}
+
+impl FsGeometry {
+    /// Unallocated space in bytes (free data clusters times the cluster size).
+    pub fn free_bytes(&self) -> u64 {
+        (self.free_clusters * self.sectors_per_cluster * self.bytes_per_sector) as u64
+    }
+}
+
+/// Count the free data clusters (FAT entries equal to 0) for a volume with
+/// `cluster_count` data clusters. `buf` must start at the volume's boot sector.
+pub(crate) fn count_free_clusters(
+    buf: &[u8],
+    bpb: &Bpb,
+    fat_type: FatType,
+    cluster_count: usize,
+) -> usize {
+    let fat_start_byte = bpb.fat_start() * SECTOR_SIZE;
+    (2..2 + cluster_count)
+        .filter(|&c| fat_entry(buf, fat_start_byte, fat_type, c) == 0)
+        .count()
 }
 
 /// Parse BPB-derived filesystem geometry from a normalized disk buffer, or
@@ -240,11 +263,14 @@ pub fn fs_geometry(data: &[u8]) -> Option<FsGeometry> {
     let bpb = Bpb::parse(&buf)?;
     let total_sectors = buf.len() / SECTOR_SIZE;
     let cluster_count = bpb.cluster_count(total_sectors);
+    let fat_type = bpb.fat_type(total_sectors);
+    let free_clusters = count_free_clusters(&buf, &bpb, fat_type, cluster_count);
     Some(FsGeometry {
         bytes_per_sector: bpb.bytes_per_sector,
         sectors_per_cluster: bpb.sectors_per_cluster,
         total_sectors,
         cluster_count,
+        free_clusters,
     })
 }
 
@@ -523,6 +549,40 @@ mod tests {
         assert_eq!(geo.total_sectors, 1440);
         assert!(geo.sectors_per_cluster.is_power_of_two());
         assert!(geo.cluster_count > 0);
+    }
+
+    #[test]
+    fn fs_geometry_reports_all_clusters_free_when_empty() {
+        // A zeroed 720KB image has an all-zero FAT after boot repair, so every
+        // data cluster is free.
+        let geo = fs_geometry(&vec![0u8; SIZE_720K]).expect("geometry");
+        assert_eq!(geo.free_clusters, geo.cluster_count);
+        assert_eq!(geo.free_clusters, 713);
+        // 713 clusters * 2 sectors * 512 bytes = 730112 bytes free.
+        assert_eq!(geo.free_bytes(), 713 * 1024);
+    }
+
+    #[test]
+    fn fs_geometry_counts_used_clusters_on_populated_disk() {
+        let disk = make_disk();
+        let geo = fs_geometry(&disk).expect("geometry");
+        // BIG.BIN/SUB/HI.TXT occupy some clusters, so not all are free.
+        assert!(geo.free_clusters > 0);
+        assert!(geo.free_clusters < geo.cluster_count);
+        // Free + used clusters (derived from the sector map) == total clusters.
+        let map = disk_usage(&disk).unwrap();
+        let used_sectors = map
+            .kinds
+            .iter()
+            .filter(|&&k| k == SectorKind::DataUsed)
+            .count();
+        let used_clusters = used_sectors / geo.sectors_per_cluster;
+        assert_eq!(geo.free_clusters + used_clusters, geo.cluster_count);
+        // free_bytes derives from free clusters and the cluster size.
+        assert_eq!(
+            geo.free_bytes(),
+            (geo.free_clusters * geo.sectors_per_cluster * geo.bytes_per_sector) as u64
+        );
     }
 
     /// Build a `Bpb` directly from field values for fat-type tests.

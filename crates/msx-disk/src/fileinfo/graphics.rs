@@ -13,7 +13,12 @@ pub struct GraphicsInfo {
 
 /// Describe a graphics file from its name, or `None` for unknown extensions.
 pub fn describe(name: &str) -> Option<GraphicsInfo> {
-    let ext = name.rsplit(['/', '\\']).next()?.rsplit_once('.')?.1.to_ascii_lowercase();
+    let ext = name
+        .rsplit(['/', '\\'])
+        .next()?
+        .rsplit_once('.')?
+        .1
+        .to_ascii_lowercase();
     let label = match ext.as_str() {
         "sc2" | "grp" => "SCREEN 2",
         "sc3" => "SCREEN 3",
@@ -63,8 +68,14 @@ mod tests {
     #[test]
     fn labels_common_screens() {
         assert_eq!(describe("FOO.SC7").unwrap().label, "SCREEN 7");
-        assert_eq!(describe("path/to/BAR.s12").unwrap().label, "SCREEN 12 (YJK)");
-        assert_eq!(describe("X.CMP").unwrap().label, "DD Graph (compressed SCREEN 5)");
+        assert_eq!(
+            describe("path/to/BAR.s12").unwrap().label,
+            "SCREEN 12 (YJK)"
+        );
+        assert_eq!(
+            describe("X.CMP").unwrap().label,
+            "DD Graph (compressed SCREEN 5)"
+        );
         assert_eq!(describe("Y.MAG").unwrap().label, "MAG (Maki-chan image)");
     }
 

@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/msx-disk", "crates/dskexplorer-gui"]
+members = ["crates/msx-disk", "crates/mediaexplorer-gui"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "GPL-2.0-or-later"
-repository = "https://github.com/sandy/dskexplorer"
+repository = "https://github.com/sandy/mediaexplorer"
 authors = ["Sandy Pleyte"]
 
 [workspace.lints.clippy]

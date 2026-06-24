@@ -93,11 +93,15 @@ impl Volume {
     /// BPB-derived filesystem geometry for this volume.
     pub fn fs_geometry(&self) -> map::FsGeometry {
         let total_sectors = self.data.len() / SECTOR_SIZE;
+        let cluster_count = self.bpb.cluster_count(total_sectors);
+        let free_clusters =
+            map::count_free_clusters(&self.data, &self.bpb, self.fat_type, cluster_count);
         map::FsGeometry {
             bytes_per_sector: self.bpb.bytes_per_sector,
             sectors_per_cluster: self.bpb.sectors_per_cluster,
             total_sectors,
-            cluster_count: self.bpb.cluster_count(total_sectors),
+            cluster_count,
+            free_clusters,
         }
     }
 

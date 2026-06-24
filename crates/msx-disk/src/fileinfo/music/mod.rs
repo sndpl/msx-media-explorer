@@ -41,8 +41,19 @@ pub struct MusicInfo {
 pub fn is_music_ext(ext: &str) -> bool {
     matches!(
         ext,
-        "mbm" | "mus" | "pro" | "mwm" | "mfm" | "mid" | "sbm" | "sng" | "pt3" | "mod" | "etc"
-            | "cop" | "saa"
+        "mbm"
+            | "mus"
+            | "pro"
+            | "mwm"
+            | "mfm"
+            | "mid"
+            | "sbm"
+            | "sng"
+            | "pt3"
+            | "mod"
+            | "etc"
+            | "cop"
+            | "saa"
     )
 }
 

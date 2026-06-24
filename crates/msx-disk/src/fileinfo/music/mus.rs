@@ -95,8 +95,12 @@ mod tests {
         assert_eq!(info.format, "FAC SoundTracker 2.0");
         assert_eq!(info.title.as_deref(), Some("MY TUNE"));
         assert_eq!(info.author.as_deref(), Some("ME"));
-        assert!(info.extra.contains(&("Tracks".to_string(), "83".to_string())));
-        assert!(info.extra.contains(&("Sample kit".to_string(), "DRUMS".to_string())));
+        assert!(info
+            .extra
+            .contains(&("Tracks".to_string(), "83".to_string())));
+        assert!(info
+            .extra
+            .contains(&("Sample kit".to_string(), "DRUMS".to_string())));
         assert!(info.extra.iter().any(|(_, v)| v.contains("9CH MSX-AUDIO")));
     }
 

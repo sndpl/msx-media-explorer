@@ -135,7 +135,10 @@ impl HistoryList {
             node.prev = ((i + 1) % 256) as u8;
             node.next = ((i + 255) % 256) as u8;
         }
-        let mut list = HistoryList { history, head: 0x20 };
+        let mut list = HistoryList {
+            history,
+            head: 0x20,
+        };
 
         // The chain is cut into groups so that printable ASCII is closest to
         // the start, followed by control characters, then other groups.
@@ -326,8 +329,7 @@ impl<'a> Pm2<'a> {
             return Some(());
         }
 
-        self.need_offset_tree =
-            num_codes >= 10 && !(num_codes == 29 && min_code_length == 0);
+        self.need_offset_tree = num_codes >= 10 && !(num_codes == 29 && min_code_length == 0);
 
         if min_code_length == 0 {
             set_tree_single(&mut self.code_tree, (num_codes - 1) as u8);
@@ -454,7 +456,8 @@ impl<'a> Pm2<'a> {
     }
 
     fn copy_from_history(&mut self, code: u32, out: &mut Vec<u8>) {
-        let (to_copy, offset) = match (self.history_get_count(code), self.history_get_offset(code)) {
+        let (to_copy, offset) = match (self.history_get_count(code), self.history_get_offset(code))
+        {
             (Some(c), Some(o)) => (c, o),
             _ => return,
         };

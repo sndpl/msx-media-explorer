@@ -227,7 +227,9 @@ mod tests {
             let fs = fatfs::FileSystem::new(&mut cursor, opts).expect("mount");
             let root = fs.root_dir();
             use std::io::Write;
-            let mut f = root.create_file("\u{F0B1}\u{F0B2}\u{F0B3}.BAS").expect("create");
+            let mut f = root
+                .create_file("\u{F0B1}\u{F0B2}\u{F0B3}.BAS")
+                .expect("create");
             f.write_all(b"10 END").expect("write");
         }
         cursor.into_inner()

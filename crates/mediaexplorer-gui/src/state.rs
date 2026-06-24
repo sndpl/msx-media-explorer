@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use msx_disk::cas::CasFile;
 use msx_disk::fs::partition::{self, PartitionEntry};
 use msx_disk::fs::write;
-use msx_disk::fs::{detect_dos_version, DosVersion, FatType, Volume};
+use msx_disk::fs::{FatType, Volume};
 use msx_disk::image::geometry::Geometry;
 use msx_disk::tape::{self, Tape, TapeFormat};
 use msx_disk::{DirEntry, DiskFs, DiskImage, Error, ImageFormat};
@@ -29,9 +29,6 @@ pub struct LoadedDisk {
     pub format: ImageFormat,
     pub geometry: Geometry,
     pub label: Option<String>,
-    /// Detected MSX-DOS generation (governs whether date/time + attributes are
-    /// shown, since only DOS2 maintains them).
-    pub dos: DosVersion,
     pub tree: Vec<DirEntry>,
     image: DiskImage,
     backing: Backing,
@@ -56,13 +53,11 @@ impl LoadedDisk {
         let fs = DiskFs::from_image(&image)?;
         let label = fs.volume_label();
         let tree = fs.tree()?;
-        let dos = detect_dos_version(image.data(), &tree);
         Ok(LoadedDisk {
             path,
             format: image.format(),
             geometry: image.geometry(),
             label,
-            dos,
             tree,
             image,
             backing: Backing::Floppy { fs },
@@ -108,8 +103,6 @@ impl LoadedDisk {
             geometry: image.geometry(),
             // Labels live on the partition nodes for HD images.
             label: None,
-            // HD partition listings show plain rows (no DOS2 metadata columns).
-            dos: DosVersion::Dos1,
             tree,
             image,
             backing: Backing::Partitioned { volumes },
@@ -354,7 +347,11 @@ pub(crate) fn humanize_bytes(bytes: u64) -> String {
     } else {
         0
     };
-    format!("{:.2} {}", bytes as f64 / MOD.powi(power as i32), UNITS[power])
+    format!(
+        "{:.2} {}",
+        bytes as f64 / MOD.powi(power as i32),
+        UNITS[power]
+    )
 }
 
 /// A currently-open tape image (`.cas` / `.tsx`): its blocks for the overview
@@ -530,6 +527,17 @@ mod tests {
     }
 
     #[test]
+    fn blank_disk_mounts_with_empty_tree() {
+        // A zeroed image mounts as a blank FAT volume (boot sector repaired),
+        // so its FAT directory holds no entries — the sector-based / empty-FAT
+        // case the Files panel must surface with a message.
+        let image = DiskImage::open_bytes(ImageFormat::Dsk, vec![0u8; 720 * 1024]).expect("image");
+        let disk = LoadedDisk::from_image(image, None).expect("mount blank disk");
+        assert!(!disk.is_partitioned());
+        assert!(disk.tree.is_empty());
+    }
+
+    #[test]
     fn loads_fixture_disk_when_present() {
         let Some(path) = fixture() else {
             eprintln!("skipping: fixture not present");
@@ -557,7 +565,7 @@ mod tests {
             return;
         };
         // Work on a temp copy so the real fixture is never modified.
-        let tmp = std::env::temp_dir().join("dskexplorer_phase2_test.dsk");
+        let tmp = std::env::temp_dir().join("mediaexplorer_phase2_test.dsk");
         std::fs::copy(&src, &tmp).expect("copy fixture");
 
         let mut disk = LoadedDisk::open(&tmp).expect("open");

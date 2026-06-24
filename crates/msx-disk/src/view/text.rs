@@ -85,7 +85,10 @@ mod tests {
 
     #[test]
     fn crlf_collapses_to_single_newline() {
-        assert_eq!(to_text(b"a\r\nb\rc\nd", ControlMode::Dots, INTL), "a\nb\nc\nd");
+        assert_eq!(
+            to_text(b"a\r\nb\rc\nd", ControlMode::Dots, INTL),
+            "a\nb\nc\nd"
+        );
     }
 
     #[test]

@@ -10,9 +10,13 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  BIN_NAME: dskexplorer
+  BIN_NAME: mediaexplorer
+  # Pinned so CI matches what the .app/.dmg flow was validated against locally.
+  CARGO_PACKAGER_VERSION: 0.11.8
 
 jobs:
+  # Linux and Windows ship the bare executable (Linux has no native bundle here;
+  # Windows users run the .exe directly). macOS is handled by the `macos` job.
   build:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -24,10 +28,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-latest
-            target: x86_64-apple-darwin
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,7 +41,7 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
             libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p dskexplorer-gui
+        run: cargo build --release --target ${{ matrix.target }} -p mediaexplorer-gui
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
@@ -58,9 +58,63 @@ jobs:
           name: ${{ matrix.target }}
           path: dist/*
 
+  # Builds a universal (arm64 + x86_64) .app, ad-hoc signs it, and packages a
+  # .dmg. Ad-hoc signing (no Apple Developer ID / notarization) means the app is
+  # valid and runs, but Gatekeeper still flags it as from an unidentified
+  # developer on first launch: users right-click -> Open once, or run
+  # `xattr -dr com.apple.quarantine "/Applications/MSX Media Explorer.app"`.
+  macos:
+    name: Build (macOS universal .app + .dmg)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked --version "${CARGO_PACKAGER_VERSION}"
+      - name: Build both architectures
+        run: |
+          cargo build --release --target aarch64-apple-darwin -p mediaexplorer-gui
+          cargo build --release --target x86_64-apple-darwin -p mediaexplorer-gui
+      - name: Combine into a universal binary
+        run: |
+          mkdir -p target/release
+          lipo -create -output "target/release/${BIN_NAME}" \
+            "target/aarch64-apple-darwin/release/${BIN_NAME}" \
+            "target/x86_64-apple-darwin/release/${BIN_NAME}"
+          lipo -archs "target/release/${BIN_NAME}"
+      - name: Build .app bundle
+        run: |
+          cargo packager --release -p mediaexplorer-gui \
+            --formats app --out-dir dist --binaries-dir target/release
+      - name: Ad-hoc sign and seal the bundle
+        run: |
+          APP="dist/MSX Media Explorer.app"
+          # cargo-packager leaves the bundle unsealed (only the linker's ad-hoc
+          # signature on the Mach-O); this re-signs and writes _CodeSignature so
+          # the bundle passes strict verification and runs on Apple Silicon.
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+      - name: Package .dmg
+        run: |
+          APP="dist/MSX Media Explorer.app"
+          STAGE="$(mktemp -d)/dmg"
+          mkdir -p "$STAGE"
+          cp -R "$APP" "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create -volname "MSX Media Explorer" -srcfolder "$STAGE" \
+            -ov -format UDZO "dist/${BIN_NAME}-macos-universal.dmg"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-universal
+          path: dist/${{ env.BIN_NAME }}-macos-universal.dmg
+
   release:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -71,7 +125,7 @@ jobs:
           mkdir -p release
           find artifacts -type f -exec cp {} release/ \;
           cd release
-          sha256sum * > SHA256SUMS
+          sha256sum -- * > SHA256SUMS
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:

@@ -12,7 +12,9 @@ const SIG_IN_HEADER: usize = 10;
 const PLAYER_BASE: usize = 0x4b3;
 
 pub(super) fn parse(bytes: &[u8]) -> Option<MusicInfo> {
-    let has_sig = |base: usize| bytes.get(base + SIG_IN_HEADER..base + SIG_IN_HEADER + SIGNATURE.len()) == Some(SIGNATURE);
+    let has_sig = |base: usize| {
+        bytes.get(base + SIG_IN_HEADER..base + SIG_IN_HEADER + SIGNATURE.len()) == Some(SIGNATURE)
+    };
 
     let with_player = if has_sig(0) {
         false
@@ -31,7 +33,12 @@ pub(super) fn parse(bytes: &[u8]) -> Option<MusicInfo> {
         channels: Some(6),
         extra: vec![(
             "Player code".to_string(),
-            if with_player { "included" } else { "not present" }.to_string(),
+            if with_player {
+                "included"
+            } else {
+                "not present"
+            }
+            .to_string(),
         )],
     })
 }

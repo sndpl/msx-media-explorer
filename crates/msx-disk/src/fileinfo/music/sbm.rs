@@ -68,7 +68,9 @@ mod tests {
         assert!(info
             .extra
             .contains(&("Instrument kit".to_string(), "KICK.SBK".to_string())));
-        assert!(info.extra.contains(&("Tempo".to_string(), "12".to_string())));
+        assert!(info
+            .extra
+            .contains(&("Tempo".to_string(), "12".to_string())));
     }
 
     #[test]
