@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use msx_disk::fs::map::{self, SectorKind};
 use msx_disk::fs::partition;
 use msx_disk::fs::{FatType, Volume};
-use msx_disk::{cas, fs::write, view::basic, DiskFs, DiskImage, ImageFormat};
+use msx_disk::{cas, fs::write, view::basic, view::disasm, DirEntry, DiskFs, DiskImage, ImageFormat};
 
 /// Resolve a fixture path under the workspace-root `tests/` directory, or
 /// `None` if it does not exist.
@@ -95,6 +95,41 @@ fn detokenizes_real_basic_program() {
     assert!(listing.contains("DEFINT"), "expected DEFINT keyword");
     assert!(listing.contains("&H"), "expected hex literal");
     assert!(listing.trim_end().ends_with("END"), "should end with END");
+}
+
+#[test]
+fn disassembles_a_real_com_tool() {
+    let path = skip_if_absent!("MSX-DOS2 TOOLS.dsk");
+    let fs = DiskFs::from_image(&DiskImage::open(&path).expect("open")).expect("mount");
+    let tree = fs.tree().expect("tree");
+
+    // Pick the first `.COM` executable anywhere on the disk.
+    let Some(entry) = tree
+        .iter()
+        .flat_map(DirEntry::walk)
+        .find(|e| !e.is_dir && e.name.to_ascii_uppercase().ends_with(".COM"))
+    else {
+        eprintln!("skipping: no .COM file on the fixture");
+        return;
+    };
+
+    let bytes = fs.read_file(&entry.path).expect("read .com");
+    let img = disasm::locate(&entry.name, &bytes);
+    assert_eq!(img.origin, 0x0100, ".com loads at the MSX-DOS TPA");
+
+    let listing = disasm::disassemble(img.code, img.origin, img.exec);
+    assert!(
+        listing.contains("\n0100  "),
+        "first instruction line should be at 0x0100"
+    );
+    // A real program decodes to recognizable instructions, not just data.
+    assert!(
+        listing
+            .lines()
+            .any(|l| l.contains("CALL ") || l.contains("JP ") || l.contains("LD ")),
+        "expected real Z80 instructions in the disassembly of {}",
+        entry.name
+    );
 }
 
 #[test]

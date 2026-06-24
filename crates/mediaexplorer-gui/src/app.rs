@@ -10,6 +10,7 @@ use msx_disk::recoil::{self, FnCompanions};
 use msx_disk::search;
 use msx_disk::tape::TapeBlock;
 use msx_disk::view::basic;
+use msx_disk::view::disasm;
 use msx_disk::view::hex::{ascii_char, dump_to_string, HexConfig};
 use msx_disk::view::text::{self, ControlMode};
 use msx_disk::{charset, DirEntry, ImageFormat, MsxCharset};
@@ -47,6 +48,8 @@ enum ViewMode {
     Hex,
     Text,
     Basic,
+    /// Z80/R800 disassembly of machine-code files.
+    Disasm,
     Screen,
     /// Contents of a selected `.lzh`/`.lzs`/`.pma` archive file.
     Archive,
@@ -604,6 +607,7 @@ impl MediaExplorerApp {
             ui.selectable_value(&mut self.view_mode, ViewMode::Hex, "Hex");
             ui.selectable_value(&mut self.view_mode, ViewMode::Text, "Text");
             ui.selectable_value(&mut self.view_mode, ViewMode::Basic, "BASIC");
+            ui.selectable_value(&mut self.view_mode, ViewMode::Disasm, "Disasm");
             ui.selectable_value(&mut self.view_mode, ViewMode::Screen, "Screen");
             if self.archive.is_some() {
                 ui.selectable_value(&mut self.view_mode, ViewMode::Archive, "Archive");
@@ -637,7 +641,11 @@ impl MediaExplorerApp {
                 ViewMode::Text => {
                     ui.checkbox(&mut self.text_show_all, "Show all characters");
                 }
-                ViewMode::Basic | ViewMode::Screen | ViewMode::Info | ViewMode::Archive => {}
+                ViewMode::Basic
+                | ViewMode::Disasm
+                | ViewMode::Screen
+                | ViewMode::Info
+                | ViewMode::Archive => {}
             }
             if self.content.is_some() && self.view_mode != ViewMode::Archive {
                 ui.separator();
@@ -766,6 +774,7 @@ impl MediaExplorerApp {
                 ),
                 ViewMode::Text => render_text(ui, &content.bytes, self.text_show_all, self.charset),
                 ViewMode::Basic => render_basic(ui, &content.bytes, self.charset),
+                ViewMode::Disasm => render_disasm(ui, &content.path, &content.bytes),
                 ViewMode::Screen | ViewMode::Archive => unreachable!("handled above"),
             },
         }
@@ -1451,6 +1460,10 @@ impl MediaExplorerApp {
                 self.charset,
             ),
             ViewMode::Basic => basic::detokenize(&content.bytes, self.charset),
+            ViewMode::Disasm => {
+                let img = disasm::locate(&content.path, &content.bytes);
+                disasm::disassemble(img.code, img.origin, img.exec)
+            }
             // Screen is handled above; the Copy button is hidden in Archive mode.
             ViewMode::Screen | ViewMode::Archive => return,
         };
@@ -2349,6 +2362,8 @@ fn default_view_mode(path: &str) -> ViewMode {
         ViewMode::Basic
     } else if msx_disk::fileinfo::music::is_music_ext(&ext) {
         ViewMode::Info
+    } else if matches!(ext.as_str(), "com" | "cpm" | "bin") {
+        ViewMode::Disasm
     } else if TEXT_EXTENSIONS.contains(&ext.as_str()) {
         ViewMode::Text
     } else {
@@ -2450,6 +2465,31 @@ fn render_basic(ui: &mut egui::Ui, bytes: &[u8], charset: MsxCharset) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(listing).monospace()).wrap());
+        });
+}
+
+/// The most code we disassemble at once: the full Z80 16-bit address space.
+/// Beyond this, displayed addresses would wrap and banked ROMs need mapping we
+/// don't have, so the listing is capped with a notice.
+const MAX_DISASM_BYTES: usize = 64 * 1024;
+
+/// Z80/R800 disassembly listing. The load address and code window come from the
+/// file's type and any BSAVE header (see [`disasm::locate`]).
+fn render_disasm(ui: &mut egui::Ui, path: &str, bytes: &[u8]) {
+    let img = disasm::locate(path, bytes);
+    let shown = &img.code[..img.code.len().min(MAX_DISASM_BYTES)];
+    let listing = disasm::disassemble(shown, img.origin, img.exec);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if img.code.len() > MAX_DISASM_BYTES {
+                ui.weak(format!(
+                    "Showing first {} kB of {} kB.",
+                    MAX_DISASM_BYTES / 1024,
+                    img.code.len() / 1024
+                ));
+            }
             ui.add(egui::Label::new(egui::RichText::new(listing).monospace()).wrap());
         });
 }
@@ -2861,7 +2901,9 @@ mod tests {
     fn default_view_mode_by_extension() {
         assert_eq!(default_view_mode("PIC.SC8"), ViewMode::Screen);
         assert_eq!(default_view_mode("PROG.BAS"), ViewMode::Basic);
-        assert_eq!(default_view_mode("DATA.BIN"), ViewMode::Hex);
+        assert_eq!(default_view_mode("DATA.BIN"), ViewMode::Disasm);
+        assert_eq!(default_view_mode("GAME.COM"), ViewMode::Disasm);
+        assert_eq!(default_view_mode("TOOL.cpm"), ViewMode::Disasm);
         assert_eq!(default_view_mode("README.TXT"), ViewMode::Text);
         assert_eq!(default_view_mode("AUTOEXEC.BAT"), ViewMode::Text);
         assert_eq!(default_view_mode("notes.txt"), ViewMode::Text);
