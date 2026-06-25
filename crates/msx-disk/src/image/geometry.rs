@@ -49,6 +49,21 @@ impl Geometry {
         self.total_sectors() * SECTOR_SIZE
     }
 
+    /// Physical `(track, head, sector)` of a logical sector index.
+    ///
+    /// Uses the canonical MSX track-by-track interleave the normalizers produce:
+    /// sectors within a track come first, then the other side of the same track,
+    /// then the next track. This is the inverse of the linear LBA layout the
+    /// sector map iterates over.
+    pub fn chs_of_lba(&self, lba: usize) -> (u16, u8, u8) {
+        let spt = (self.sectors_per_track as usize).max(1);
+        let sides = (self.sides as usize).max(1);
+        let sector = (lba % spt) as u8;
+        let head = ((lba / spt) % sides) as u8;
+        let track = (lba / (spt * sides)) as u16;
+        (track, head, sector)
+    }
+
     /// Best-effort geometry for a raw image of `len` bytes.
     ///
     /// The two standard MSX sizes map to their exact geometries. Any other size
@@ -73,5 +88,29 @@ impl Geometry {
             }
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chs_of_lba_double_sided_interleaves_sides_within_a_track() {
+        let g = Geometry::DS_720K; // 2 sides, 80 tracks, 9 spt
+        assert_eq!(g.chs_of_lba(0), (0, 0, 0));
+        assert_eq!(g.chs_of_lba(8), (0, 0, 8)); // last sector of track 0, side 0
+        assert_eq!(g.chs_of_lba(9), (0, 1, 0)); // first sector of track 0, side 1
+        assert_eq!(g.chs_of_lba(17), (0, 1, 8)); // last sector of track 0, side 1
+        assert_eq!(g.chs_of_lba(18), (1, 0, 0)); // first sector of track 1, side 0
+    }
+
+    #[test]
+    fn chs_of_lba_single_sided_advances_track_every_spt() {
+        let g = Geometry::SS_360K; // 1 side, 80 tracks, 9 spt
+        assert_eq!(g.chs_of_lba(0), (0, 0, 0));
+        assert_eq!(g.chs_of_lba(8), (0, 0, 8));
+        assert_eq!(g.chs_of_lba(9), (1, 0, 0));
+        assert_eq!(g.chs_of_lba(18), (2, 0, 0));
     }
 }

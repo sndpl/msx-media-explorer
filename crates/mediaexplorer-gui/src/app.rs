@@ -68,6 +68,14 @@ enum AppView {
     Blocks,
 }
 
+/// How the disk-usage Map is drawn: a flat sector grid, or a circular
+/// disk-platter (concentric tracks, sector wedges, one circle per side).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MapStyle {
+    Grid,
+    Disk,
+}
+
 /// The largest amount of a file rendered in the text view at once.
 const MAX_TEXT_BYTES: usize = 128 * 1024;
 
@@ -224,6 +232,8 @@ pub struct MediaExplorerApp {
     hex_edit: Option<String>,
     /// Top-level view selection.
     app_view: AppView,
+    /// How the Map tab is drawn (sector grid vs circular disk platter).
+    map_style: MapStyle,
     /// Sector shown in the Sectors view.
     current_sector: usize,
     /// Editable hex text when editing the current sector.
@@ -290,6 +300,7 @@ impl Default for MediaExplorerApp {
             confirm_delete: None,
             hex_edit: None,
             app_view: AppView::Files,
+            map_style: MapStyle::Grid,
             current_sector: 0,
             sector_edit: None,
             disk_map: None,
@@ -2008,12 +2019,13 @@ impl MediaExplorerApp {
         }
     }
 
-    /// Graphical disk-usage map; the selected file's sectors are outlined.
+    /// Graphical disk-usage map. Either a flat sector grid or a circular disk
+    /// platter, per [`MapStyle`]; the selected file's sectors are outlined.
     fn map_panel(&mut self, ui: &mut egui::Ui) {
-        let Some(map) = self.disk_map.as_ref() else {
+        if self.disk_map.is_none() {
             ui.weak("No disk map available.");
             return;
-        };
+        }
         let file_set: std::collections::HashSet<usize> = self
             .selected
             .as_deref()
@@ -2026,6 +2038,7 @@ impl MediaExplorerApp {
             .unwrap_or_default()
             .into_iter()
             .collect();
+        let geometry = self.disk.as_ref().map(|d| d.geometry);
 
         ui.horizontal_wrapped(|ui| {
             for (label, color) in [
@@ -2044,8 +2057,40 @@ impl MediaExplorerApp {
                 ui.label("white outline = selected file");
             }
         });
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.map_style, MapStyle::Grid, "Grid");
+            ui.selectable_value(&mut self.map_style, MapStyle::Disk, "Disk");
+        });
         ui.separator();
 
+        let style = self.map_style;
+        let Some(map) = self.disk_map.as_ref() else {
+            return;
+        };
+        let clicked = match style {
+            MapStyle::Grid => Self::map_grid(ui, map, &file_set),
+            MapStyle::Disk => match geometry {
+                Some(geo) => Self::map_disk(ui, map, geo, &file_set),
+                None => {
+                    ui.weak("No geometry available.");
+                    None
+                }
+            },
+        };
+        if let Some(idx) = clicked {
+            self.current_sector = idx;
+            self.sector_edit = None;
+            self.app_view = AppView::Sectors;
+        }
+    }
+
+    /// Flat sector grid: each cell is one sector, colored by kind. Returns the
+    /// clicked sector index, if any.
+    fn map_grid(
+        ui: &mut egui::Ui,
+        map: &msx_disk::fs::map::DiskMap,
+        file_set: &std::collections::HashSet<usize>,
+    ) -> Option<usize> {
         const COLS: usize = 64;
         const CELL: f32 = 9.0;
         let count = map.sector_count;
@@ -2082,11 +2127,123 @@ impl MediaExplorerApp {
                 }
             }
         });
-        if let Some(idx) = clicked {
-            self.current_sector = idx;
-            self.sector_edit = None;
-            self.app_view = AppView::Sectors;
-        }
+        clicked
+    }
+
+    /// Circular disk-platter map: concentric rings are tracks (track 0 is the
+    /// outermost ring), angular wedges are sectors, with one platter per side
+    /// drawn side-by-side. Uses the same usage palette as the grid. Returns the
+    /// clicked sector index, if any.
+    fn map_disk(
+        ui: &mut egui::Ui,
+        map: &msx_disk::fs::map::DiskMap,
+        geo: Geometry,
+        file_set: &std::collections::HashSet<usize>,
+    ) -> Option<usize> {
+        use std::f32::consts::{PI, TAU};
+
+        let sides = (geo.sides as usize).max(1);
+        let tracks = (geo.tracks as usize).max(1);
+        let spt = (geo.sectors_per_track as usize).max(1);
+        let count = map.sector_count;
+
+        const GAP: f32 = 16.0; // space between the two platters
+        const MARGIN: f32 = 8.0; // padding around each platter
+        let avail = ui.available_width().max(120.0);
+        let d = ((avail - GAP * (sides as f32 - 1.0)) / sides as f32).clamp(160.0, 520.0);
+        let r_out = d / 2.0 - MARGIN;
+        let r_in = (r_out * 0.18).max(18.0);
+        let bw = (r_out - r_in) / tracks as f32;
+        let total_w = d * sides as f32 + GAP * (sides as f32 - 1.0);
+        let total_h = d;
+        let steps = 5usize; // arc subdivisions per wedge, for round-looking rings
+
+        let mut clicked = None;
+        egui::ScrollArea::both().show(ui, |ui| {
+            let (resp, painter) =
+                ui.allocate_painter(egui::vec2(total_w, total_h), egui::Sense::click());
+            let origin = resp.rect.min;
+
+            for h in 0..sides {
+                let center = origin + egui::vec2(d / 2.0 + h as f32 * (d + GAP), d / 2.0);
+                for track in 0..tracks {
+                    let ro = r_out - track as f32 * bw;
+                    let ri = (ro - bw + 0.5).max(r_in);
+                    for sector in 0..spt {
+                        let lba = (track * sides + h) * spt + sector;
+                        if lba >= count {
+                            continue;
+                        }
+                        let a0 = -PI / 2.0 + sector as f32 * (TAU / spt as f32);
+                        let a1 = a0 + TAU / spt as f32;
+                        let color = kind_color(map.kinds[lba]);
+
+                        let mut mesh = egui::epaint::Mesh::default();
+                        for s in 0..=steps {
+                            let a = a0 + (a1 - a0) * s as f32 / steps as f32;
+                            let (sin, cos) = a.sin_cos();
+                            let dir = egui::vec2(cos, sin);
+                            mesh.colored_vertex(center + dir * ri, color);
+                            mesh.colored_vertex(center + dir * ro, color);
+                        }
+                        for s in 0..steps {
+                            let base = (s * 2) as u32;
+                            mesh.add_triangle(base, base + 1, base + 2);
+                            mesh.add_triangle(base + 1, base + 3, base + 2);
+                        }
+                        painter.add(egui::Shape::mesh(mesh));
+
+                        if file_set.contains(&lba) {
+                            let stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+                            let mut outer = Vec::with_capacity(steps + 1);
+                            let mut inner = Vec::with_capacity(steps + 1);
+                            for s in 0..=steps {
+                                let a = a0 + (a1 - a0) * s as f32 / steps as f32;
+                                let (sin, cos) = a.sin_cos();
+                                let dir = egui::vec2(cos, sin);
+                                outer.push(center + dir * ro);
+                                inner.push(center + dir * ri);
+                            }
+                            painter.line_segment([outer[0], inner[0]], stroke);
+                            painter.line_segment([outer[steps], inner[steps]], stroke);
+                            painter.add(egui::Shape::line(outer, stroke));
+                            painter.add(egui::Shape::line(inner, stroke));
+                        }
+                    }
+                }
+
+                painter.circle_filled(center, r_in, egui::Color32::from_gray(20));
+                painter.text(
+                    center,
+                    egui::Align2::CENTER_CENTER,
+                    format!("Side {h}"),
+                    egui::FontId::proportional(13.0),
+                    egui::Color32::from_gray(160),
+                );
+            }
+
+            if resp.clicked() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    for h in 0..sides {
+                        let center = origin + egui::vec2(d / 2.0 + h as f32 * (d + GAP), d / 2.0);
+                        let rel = p - center;
+                        let radius = rel.length();
+                        if radius < r_in || radius > r_out {
+                            continue;
+                        }
+                        let track = (((r_out - radius) / bw) as usize).min(tracks - 1);
+                        let angle = (rel.y.atan2(rel.x) + PI / 2.0).rem_euclid(TAU);
+                        let sector = ((angle / (TAU / spt as f32)) as usize).min(spt - 1);
+                        let lba = (track * sides + h) * spt + sector;
+                        if lba < count {
+                            clicked = Some(lba);
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+        clicked
     }
 
     /// Bottom status bar. With a disk open it shows the physical disk type plus
