@@ -36,7 +36,11 @@ The viewer offers tabs that adapt to the selected file:
 
 - **Info** — content-derived facts: a description of the file type, the
   BSAVE/BLOAD header when present, and graphics- or music-format details.
-- **Hex** — hex dump with an ASCII column and selectable bytes-per-row.
+- **Hex** — hex dump with an ASCII column and selectable bytes-per-row, plus
+  byte selection (click / shift-click / drag), copy of the selected bytes as hex
+  or ASCII, go-to-offset, named bookmarks, and a data inspector that reads the
+  bytes at the cursor as u8/i8/u16/i16/u24/u32/hex/binary and decodes MSX
+  structures (BSAVE header, boot-sector BPB, FCB).
 - **Text** — decoded text, with an option to show control characters.
 - **BASIC** — detokenizes a tokenized MSX-BASIC program into a listing.
 - **Screen** — renders MSX graphics (see below).
@@ -55,6 +59,8 @@ The viewer offers tabs that adapt to the selected file:
   Pro-Tracker (`.pro`), SCC Blaffer NT (`.sbm`), SCC-Musixx (`.sng`),
   ProTracker 3 / Vortex Tracker II (`.pt3`), Amiga modules (`.mod`), Standard
   MIDI (`.mid`), and E-Tracker (`.etc`/`.cop`/`.saa`).
+- CRC32 and SHA-1 checksums of the file, to match a dump against software
+  databases (TOSEC, Generation MSX, openMSX's software DB).
 
 ### Graphics viewer
 
@@ -88,6 +94,11 @@ The viewer offers tabs that adapt to the selected file:
   and disk-wide search (text or hex, jump between matches).
 - **Map** — a graphical disk-usage map (reserved / FAT / root / used / free)
   that outlines the selected file's sectors; click a cell to open that sector.
+- **Stats** — whole-disk insight: used/free split, file and directory counts, a
+  file-type breakdown, the largest files, fragmentation, a FAT-chain integrity
+  check (lost / cross-linked / out-of-range clusters), and CRC32/SHA-1 of the
+  whole image. Works for floppies and shows per-partition figures for hard-disk
+  images.
 - **Analyze** (`.dmk`) — lists every track's sectors, density, and CRC status,
   so non-standard or copy-protected tracks are visible.
 - **Blocks** (tapes) — shows every tape block, including TSX `#35` custom-info,

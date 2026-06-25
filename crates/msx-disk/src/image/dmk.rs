@@ -80,6 +80,32 @@ pub struct DmkAnalysis {
     pub track_infos: Vec<DmkTrackInfo>,
 }
 
+impl DmkAnalysis {
+    /// The number of sides that actually carry recorded sectors. This is what
+    /// [`normalize`] keys the LBA layout off, and can be smaller than [`sides`]
+    /// (the header's declared side count) when a side is unformatted.
+    ///
+    /// [`sides`]: Self::sides
+    pub fn effective_sides(&self) -> u8 {
+        let any_side1 = self
+            .track_infos
+            .iter()
+            .any(|t| t.sectors.iter().any(|s| s.head == 1));
+        if any_side1 {
+            2
+        } else {
+            1
+        }
+    }
+
+    /// Whether the header declares two sides but only side 0 is formatted — a
+    /// single-sided disk stored in a two-sided container (common for some
+    /// copy-protected games). [`normalize`] collapses these to a 360KB image.
+    pub fn single_sided_in_two_sided_container(&self) -> bool {
+        self.sides == 2 && self.effective_sides() == 1
+    }
+}
+
 struct Header {
     write_protected: bool,
     tracks: u8,
@@ -239,7 +265,19 @@ pub fn normalize(bytes: &[u8]) -> Result<Vec<u8>> {
         ));
     }
 
-    let out_len = header.tracks as usize * header.sides as usize * spt * SECTOR_SIZE;
+    // The DMK header records the *physical* side count, but a single-sided disk
+    // is often stored in a two-sided container: every sector is recorded on
+    // head 0 and side 1 is left unformatted. Trusting the header would lay the
+    // side-0 data into a two-sided LBA map, interleaving empty tracks between
+    // the real ones and scrambling the filesystem. Derive the side count from
+    // the sectors actually recorded instead.
+    let sides = if sectors.iter().any(|s| s.info.head == 1) {
+        2
+    } else {
+        1
+    };
+
+    let out_len = header.tracks as usize * sides * spt * SECTOR_SIZE;
     let mut out = vec![0u8; out_len];
     for s in &sectors {
         let (cyl, head, sector) = (s.info.cyl as usize, s.info.head as usize, s.info.sector);
@@ -247,11 +285,11 @@ pub fn normalize(bytes: &[u8]) -> Result<Vec<u8>> {
             || s.data.len() != SECTOR_SIZE
             || !(1..=spt).contains(&(sector as usize))
             || cyl >= header.tracks as usize
-            || head >= header.sides as usize
+            || head >= sides
         {
             continue;
         }
-        let lba = (cyl * header.sides as usize + head) * spt + (sector as usize - 1);
+        let lba = (cyl * sides + head) * spt + (sector as usize - 1);
         let start = lba * SECTOR_SIZE;
         if start + SECTOR_SIZE <= out.len() {
             out[start..start + SECTOR_SIZE].copy_from_slice(&s.data);
@@ -358,6 +396,25 @@ mod tests {
         file
     }
 
+    /// A single-sided disk stored in a two-sided container: the header declares
+    /// two sides, every sector is on head 0, and side 1 is unformatted. This is
+    /// how some copy-protected games (and openMSX dumps of them) are stored.
+    fn build_dmk_single_side_in_two_sided_container(tracks: u8) -> Vec<u8> {
+        let track_len = 0x1900;
+        let mut file = vec![0u8; HEADER_LEN];
+        file[1] = tracks;
+        file[2..4].copy_from_slice(&(track_len as u16).to_le_bytes());
+        file[4] = 0x00; // header claims two sides
+        for track in 0..tracks {
+            // Side 0 holds standard nine-sector data; its payloads encode the
+            // single-sided LBA (sides = 1).
+            file.extend_from_slice(&build_track(track_len, track, 0, 1, 9));
+            // Side 1 is unformatted: an all-zero track parses to no sectors.
+            file.extend_from_slice(&vec![0u8; track_len]);
+        }
+        file
+    }
+
     #[test]
     fn crc16_matches_known_vector() {
         // CRC-16/CCITT-FALSE of "123456789" is 0x29B1.
@@ -410,6 +467,45 @@ mod tests {
         assert!(s0.id_crc_ok, "id untouched");
         assert!(!s0.data_crc_ok, "payload corrupted");
         assert!(!analysis.track_infos[0].is_standard());
+    }
+
+    #[test]
+    fn single_sided_data_in_two_sided_container_normalizes_to_360k() {
+        // The header claims two sides but only head 0 is formatted, so the disk
+        // must collapse to a contiguous single-sided 360KB image rather than a
+        // 720KB layout with empty side-1 tracks interleaved between the data.
+        let dmk = build_dmk_single_side_in_two_sided_container(80);
+        let dsk = normalize(&dmk).expect("normalize");
+        assert_eq!(dsk.len(), SIZE_360K);
+        // Sectors stay contiguous: each payload byte equals its single-sided LBA.
+        for lba in 0..720usize {
+            assert_eq!(dsk[lba * SECTOR_SIZE], (lba & 0xFF) as u8, "lba {lba}");
+        }
+    }
+
+    #[test]
+    fn analysis_flags_single_sided_data_in_two_sided_container() {
+        let dmk = build_dmk_single_side_in_two_sided_container(80);
+        let analysis = analyze(&dmk).expect("analyze");
+        assert_eq!(analysis.sides, 2, "header declares two sides");
+        assert_eq!(analysis.effective_sides(), 1, "only side 0 is formatted");
+        assert!(analysis.single_sided_in_two_sided_container());
+    }
+
+    #[test]
+    fn analysis_does_not_flag_genuine_two_sided_disk() {
+        let analysis = analyze(&build_dmk(80, 2, 9)).expect("analyze");
+        assert_eq!(analysis.effective_sides(), 2);
+        assert!(!analysis.single_sided_in_two_sided_container());
+    }
+
+    #[test]
+    fn analysis_does_not_flag_honest_single_sided_disk() {
+        // Header honestly declares one side, so there is nothing to flag.
+        let analysis = analyze(&build_dmk(80, 1, 9)).expect("analyze");
+        assert_eq!(analysis.sides, 1);
+        assert_eq!(analysis.effective_sides(), 1);
+        assert!(!analysis.single_sided_in_two_sided_container());
     }
 
     #[test]

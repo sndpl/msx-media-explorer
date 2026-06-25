@@ -106,14 +106,25 @@ fn existing_bpb_is_valid(data: &[u8]) -> bool {
 
     let total_sectors_16 = rd_u16(data, 19);
 
-    bytes_per_sector == SECTOR_SIZE as u16
-        && sectors_per_cluster.is_power_of_two()
+    if bytes_per_sector != SECTOR_SIZE as u16 {
+        return false;
+    }
+
+    // The system area (reserved + FATs + root directory) must fit, with room
+    // for at least one data sector. A custom boot loader sometimes leaves a
+    // bogus total_sectors (e.g. 2) that passes a mere non-zero check but cannot
+    // hold its own structures; reject it so the canonical BPB is synthesized.
+    let root_dir_sectors = (root_entries as usize * 32).div_ceil(bytes_per_sector as usize);
+    let system_sectors =
+        reserved as usize + num_fats as usize * sectors_per_fat as usize + root_dir_sectors;
+
+    sectors_per_cluster.is_power_of_two()
         && (1..=2).contains(&num_fats)
         && reserved >= 1
         && root_entries > 0
         && (root_entries as usize * 32).is_multiple_of(bytes_per_sector as usize)
         && (1..=15).contains(&sectors_per_fat)
-        && total_sectors_16 != 0
+        && (total_sectors_16 as usize) > system_sectors
 }
 
 fn write_bpb(data: &mut [u8], b: &Bpb) {
@@ -178,5 +189,20 @@ mod tests {
     fn rejects_nonstandard_size_without_bpb() {
         let mut data = vec![0u8; 100 * SECTOR_SIZE];
         assert!(repair_boot_sector(&mut data).is_err());
+    }
+
+    #[test]
+    fn synthesizes_bpb_when_total_sectors_cannot_hold_filesystem() {
+        // A custom boot loader (e.g. the Brainstorm game) leaves an otherwise
+        // plausible BPB whose total_sectors is far too small to contain even the
+        // reserved + FAT + root-directory area. It must be replaced, not trusted.
+        let mut data = vec![0u8; SIZE_360K];
+        write_bpb(&mut data, &BPB_360K);
+        data[19..21].copy_from_slice(&2u16.to_le_bytes()); // bogus total_sectors
+
+        assert!(!existing_bpb_is_valid(&data));
+        repair_boot_sector(&mut data).unwrap();
+        assert_eq!(rd_u16(&data, 19), 720, "canonical 360KB count synthesized");
+        assert_eq!(data[21], 0xF8);
     }
 }

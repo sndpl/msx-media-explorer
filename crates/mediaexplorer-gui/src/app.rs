@@ -63,6 +63,7 @@ enum AppView {
     Files,
     Sectors,
     Map,
+    Stats,
     Analyze,
     Blocks,
 }
@@ -83,6 +84,8 @@ const TAPE_EXTS: &[&str] = &["cas", "tsx"];
 struct FileContent {
     path: String,
     bytes: Vec<u8>,
+    /// CRC32 + SHA-1 of the bytes, computed once here (not per frame).
+    checksums: msx_disk::Checksums,
 }
 
 /// Cached member listing for the selected archive file, computed once when the
@@ -129,6 +132,57 @@ struct RenameTarget {
     path: String,
     name: String,
     charset: MsxCharset,
+}
+
+/// A named byte offset the user can jump back to in the hex view.
+struct Bookmark {
+    offset: usize,
+    name: String,
+}
+
+/// Per-hex-view interaction state: the byte cursor, an inclusive selection
+/// range, the go-to-offset input, and bookmarks. Kept separately for the file
+/// hex view and the sector hex view so they don't clobber each other.
+#[derive(Default)]
+struct HexUiState {
+    /// The anchored byte (selection start / data-inspector origin).
+    cursor: Option<usize>,
+    /// The selected byte range, inclusive and normalized (`lo <= hi`).
+    selection: Option<(usize, usize)>,
+    /// Text in the go-to-offset box.
+    goto_input: String,
+    /// Named offsets the user has saved.
+    bookmarks: Vec<Bookmark>,
+    /// The byte where the current click-drag began.
+    drag_anchor: Option<usize>,
+}
+
+impl HexUiState {
+    /// Clear the transient selection/cursor (keeps bookmarks and goto input).
+    fn clear_selection(&mut self) {
+        self.cursor = None;
+        self.selection = None;
+        self.drag_anchor = None;
+    }
+}
+
+/// A read-only snapshot of a [`HexUiState`] passed to [`render_hex`] for
+/// painting the selection and cursor.
+#[derive(Clone, Copy, Default)]
+struct HexSelection {
+    cursor: Option<usize>,
+    selection: Option<(usize, usize)>,
+}
+
+/// A pointer gesture recognized in the hex view, applied by the caller to its
+/// [`HexUiState`].
+enum HexGesture {
+    /// A click-drag began at this byte.
+    DragStart(usize),
+    /// A click-drag extended to this byte.
+    DragTo(usize),
+    /// A click landed on this byte; `shift` extends the selection from the cursor.
+    Click { byte: usize, shift: bool },
 }
 
 /// Root application state.
@@ -199,6 +253,12 @@ pub struct MediaExplorerApp {
     /// When true, [`charset`] follows auto-detection on each disk load; a manual
     /// dropdown choice pins it (sets this false).
     charset_auto: bool,
+    /// Hex power-inspection state for the file viewer's Hex tab.
+    hex: HexUiState,
+    /// Hex power-inspection state for the Sectors view.
+    sector_hex: HexUiState,
+    /// Whether the data inspector panel is shown beneath the hex views.
+    show_inspector: bool,
 }
 
 /// Largest file (bytes) offered for in-app hex editing, to keep the editor
@@ -245,6 +305,9 @@ impl Default for MediaExplorerApp {
             pending_drag_out: None,
             charset: MsxCharset::default(),
             charset_auto: true,
+            hex: HexUiState::default(),
+            sector_hex: HexUiState::default(),
+            show_inspector: false,
         }
     }
 }
@@ -272,6 +335,8 @@ impl MediaExplorerApp {
         self.current_sector = 0;
         self.sector_edit = None;
         self.app_view = AppView::Files;
+        self.hex = HexUiState::default();
+        self.sector_hex = HexUiState::default();
     }
 
     fn open_disk(&mut self, path: &Path) {
@@ -356,6 +421,8 @@ impl MediaExplorerApp {
         self.search_matches.clear();
         self.search_pos = 0;
         self.hex_edit = None;
+        // A byte selection / bookmarks are meaningless across files.
+        self.hex = HexUiState::default();
         if toggle {
             if !self.selection.remove(&path) {
                 self.selection.insert(path.clone());
@@ -374,9 +441,11 @@ impl MediaExplorerApp {
         } else {
             None
         };
+        let checksums = msx_disk::Checksums::of(&bytes);
         self.content = Some(FileContent {
             path: path.clone(),
             bytes,
+            checksums,
         });
         self.selected = Some(path);
     }
@@ -490,6 +559,7 @@ impl MediaExplorerApp {
                     if !disk.is_partitioned() {
                         ui.selectable_value(&mut self.app_view, AppView::Map, "Map");
                     }
+                    ui.selectable_value(&mut self.app_view, AppView::Stats, "Stats");
                 }
                 if self.dmk_analysis.is_some() {
                     ui.selectable_value(&mut self.app_view, AppView::Analyze, "Analyze");
@@ -636,6 +706,37 @@ impl MediaExplorerApp {
                             let text = format_hex_for_edit(&self.content.as_ref().unwrap().bytes);
                             self.hex_edit = Some(text);
                         }
+                        ui.separator();
+                        ui.label("Go to:");
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut self.hex.goto_input)
+                                .desired_width(70.0)
+                                .hint_text("hex"),
+                        );
+                        let submit =
+                            resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if ui.button("Go").clicked() || submit {
+                            self.goto_hex_offset();
+                        }
+                        ui.checkbox(&mut self.show_inspector, "Inspector");
+                        let has_sel = self.hex.selection.is_some();
+                        if ui
+                            .add_enabled(has_sel, egui::Button::new("Copy hex"))
+                            .clicked()
+                        {
+                            if let Some(t) = self.selected_hex_text(false) {
+                                self.copy_text_to_clipboard(t);
+                            }
+                        }
+                        if ui
+                            .add_enabled(has_sel, egui::Button::new("Copy ASCII"))
+                            .clicked()
+                        {
+                            if let Some(t) = self.selected_hex_text(true) {
+                                self.copy_text_to_clipboard(t);
+                            }
+                        }
+                        self.hex_bookmarks_menu(ui);
                     }
                 }
                 ViewMode::Text => {
@@ -752,6 +853,13 @@ impl MediaExplorerApp {
             .get(self.search_pos)
             .map(|&o| o / self.bytes_per_row.max(1));
 
+        if self.view_mode == ViewMode::Hex {
+            // The hex view needs `&mut self` (selection state + inspector panel),
+            // so handle it outside the shared `self.content` borrow below.
+            self.hex_view(ui, scroll_to, highlight);
+            return;
+        }
+
         match &self.content {
             None => {
                 ui.weak("Select a file to view its contents.");
@@ -763,20 +871,188 @@ impl MediaExplorerApp {
                     &content.bytes,
                     self.selected_entry(),
                     self.charset,
-                ),
-                ViewMode::Hex => render_hex(
-                    ui,
-                    &content.bytes,
-                    self.bytes_per_row,
-                    scroll_to,
-                    highlight,
-                    self.charset,
+                    &content.checksums,
                 ),
                 ViewMode::Text => render_text(ui, &content.bytes, self.text_show_all, self.charset),
                 ViewMode::Basic => render_basic(ui, &content.bytes, self.charset),
                 ViewMode::Disasm => render_disasm(ui, &content.path, &content.bytes),
-                ViewMode::Screen | ViewMode::Archive => unreachable!("handled above"),
+                ViewMode::Screen | ViewMode::Archive | ViewMode::Hex => {
+                    unreachable!("handled above")
+                }
             },
+        }
+    }
+
+    /// The Hex view: an optional data-inspector panel docked at the bottom and
+    /// the interactive hex dump filling the rest. Selection gestures update
+    /// [`MediaExplorerApp::hex`].
+    fn hex_view(&mut self, ui: &mut egui::Ui, scroll_to: Option<usize>, highlight: Option<usize>) {
+        if self.content.is_none() {
+            ui.weak("Select a file to view its contents.");
+            return;
+        }
+        let charset = self.charset;
+        let bpr = self.bytes_per_row.max(1);
+        if self.show_inspector {
+            let origin = self
+                .hex
+                .cursor
+                .or(self.hex.selection.map(|(s, _)| s))
+                .unwrap_or(0);
+            let bytes = &self.content.as_ref().unwrap().bytes;
+            egui::Panel::bottom("hex_inspector")
+                .resizable(true)
+                .default_size(170.0)
+                .show_inside(ui, |ui| render_inspector(ui, bytes, origin, charset));
+        }
+        let sel = HexSelection {
+            cursor: self.hex.cursor,
+            selection: self.hex.selection,
+        };
+        let gesture = {
+            let bytes = &self.content.as_ref().unwrap().bytes;
+            render_hex(ui, bytes, bpr, scroll_to, highlight, charset, sel)
+        };
+        if let Some(g) = gesture {
+            apply_hex_gesture(&mut self.hex, g);
+        }
+    }
+
+    /// Jump the file hex view to the offset typed in the go-to box.
+    fn goto_hex_offset(&mut self) {
+        let Some(off) = parse_offset(&self.hex.goto_input) else {
+            self.status = "Enter a hex offset, e.g. 1A0".to_string();
+            return;
+        };
+        let len = self.content.as_ref().map(|c| c.bytes.len()).unwrap_or(0);
+        if off >= len {
+            self.status = format!("Offset 0x{off:X} is past the end ({len} bytes)");
+            return;
+        }
+        self.hex.cursor = Some(off);
+        self.hex.selection = None;
+        self.pending_scroll_row = Some(off / self.bytes_per_row.max(1));
+        self.status = format!("Jumped to 0x{off:06X}");
+    }
+
+    /// The selected bytes of the file hex view, as a hex or ASCII string.
+    fn selected_hex_text(&self, ascii: bool) -> Option<String> {
+        let content = self.content.as_ref()?;
+        let (lo, hi) = self.hex.selection?;
+        let hi = hi.min(content.bytes.len().saturating_sub(1));
+        let slice = content.bytes.get(lo..=hi)?;
+        Some(format_selected_bytes(slice, ascii, self.charset))
+    }
+
+    /// The selected bytes of the current sector, as a hex or ASCII string.
+    fn sector_selection_text(&self, ascii: bool) -> Option<String> {
+        let (lo, hi) = self.sector_hex.selection?;
+        let bytes = self.disk.as_ref()?.sector_bytes(self.current_sector)?;
+        let hi = hi.min(bytes.len().saturating_sub(1));
+        let slice = bytes.get(lo..=hi)?;
+        Some(format_selected_bytes(slice, ascii, self.charset))
+    }
+
+    /// The Bookmarks menu for the file hex view: add the cursor offset, jump to
+    /// a saved one, or delete it.
+    fn hex_bookmarks_menu(&mut self, ui: &mut egui::Ui) {
+        ui.menu_button("Bookmarks", |ui| {
+            if let Some(cur) = self.hex.cursor {
+                if ui.button(format!("Add bookmark at 0x{cur:06X}")).clicked() {
+                    self.hex.bookmarks.push(Bookmark {
+                        offset: cur,
+                        name: format!("0x{cur:06X}"),
+                    });
+                    ui.close();
+                }
+            } else {
+                ui.weak("Click a byte to set the cursor first.");
+            }
+            if self.hex.bookmarks.is_empty() {
+                return;
+            }
+            ui.separator();
+            let mut goto = None;
+            let mut remove = None;
+            for (i, bm) in self.hex.bookmarks.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui.button(&bm.name).clicked() {
+                        goto = Some(bm.offset);
+                        ui.close();
+                    }
+                    if ui.small_button("\u{2715}").clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some(off) = goto {
+                self.hex.cursor = Some(off);
+                self.hex.selection = None;
+                self.pending_scroll_row = Some(off / self.bytes_per_row.max(1));
+            }
+            if let Some(i) = remove {
+                self.hex.bookmarks.remove(i);
+            }
+        });
+    }
+
+    /// Whole-disk statistics view: image checksums plus per-volume counts,
+    /// file-type breakdown, largest files, and FAT-chain integrity.
+    fn stats_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(disk) = self.disk.as_ref() else {
+            ui.weak("No disk open.");
+            return;
+        };
+        let mut copy: Option<String> = None;
+        let mut jump: Option<String> = None;
+        let charset = self.charset;
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.heading("Image checksums");
+                checksum_grid(ui, "stats_image_cks", disk.checksums(), &mut copy);
+
+                if disk.is_partitioned() {
+                    for i in 0..disk.partition_count() {
+                        ui.add_space(10.0);
+                        let title = disk
+                            .tree
+                            .get(i)
+                            .map(|n| n.name.clone())
+                            .unwrap_or_else(|| format!("Partition {}", i + 1));
+                        egui::CollapsingHeader::new(title)
+                            .id_salt(("partition_stats", i))
+                            .default_open(i == 0)
+                            .show(ui, |ui| match disk.volume_stats(i) {
+                                Some(s) => render_disk_stats(
+                                    ui,
+                                    s,
+                                    i,
+                                    &format!("P{}/", i + 1),
+                                    charset,
+                                    &mut jump,
+                                ),
+                                None => {
+                                    ui.weak("No statistics for this partition.");
+                                }
+                            });
+                    }
+                } else {
+                    ui.add_space(10.0);
+                    match disk.stats() {
+                        Some(s) => render_disk_stats(ui, s, 0, "", charset, &mut jump),
+                        None => {
+                            ui.weak("No filesystem statistics (no FAT BPB).");
+                        }
+                    }
+                }
+            });
+        if let Some(t) = copy {
+            self.copy_text_to_clipboard(t);
+        }
+        if let Some(path) = jump {
+            self.app_view = AppView::Files;
+            self.select_file(path, false);
         }
     }
 
@@ -1034,8 +1310,8 @@ impl MediaExplorerApp {
         // Sanitize the decoded name, then re-encode it to the PUA fatfs key that
         // `rename` expects; the status message keeps the readable form.
         let display = sanitize_8_3(&target.name, |c| is_rename_char(c, target.charset));
-        let new_base = charset::encode_fs_name(target.charset, &display)
-            .unwrap_or_else(|| display.clone());
+        let new_base =
+            charset::encode_fs_name(target.charset, &display).unwrap_or_else(|| display.clone());
         let new_path = match target.path.rsplit_once('/') {
             Some((parent, _)) => format!("{parent}/{new_base}"),
             None => new_base,
@@ -1439,9 +1715,12 @@ impl MediaExplorerApp {
             return;
         };
         let text = match self.view_mode {
-            ViewMode::Info => {
-                format_fileinfo_text(&content.path, &content.bytes, self.selected_entry())
-            }
+            ViewMode::Info => format_fileinfo_text(
+                &content.path,
+                &content.bytes,
+                self.selected_entry(),
+                &content.checksums,
+            ),
             ViewMode::Hex => dump_to_string(
                 &content.bytes,
                 HexConfig {
@@ -1521,14 +1800,17 @@ impl MediaExplorerApp {
             {
                 self.current_sector = s;
                 self.sector_edit = None;
+                self.sector_hex.clear_selection();
             }
             if ui.button("\u{25C0}").clicked() && self.current_sector > 0 {
                 self.current_sector -= 1;
                 self.sector_edit = None;
+                self.sector_hex.clear_selection();
             }
             if ui.button("\u{25B6}").clicked() && self.current_sector + 1 < sector_count {
                 self.current_sector += 1;
                 self.sector_edit = None;
+                self.sector_hex.clear_selection();
             }
             ui.label(format!(
                 "/ {sector_count}    offset {:#08X}",
@@ -1549,6 +1831,27 @@ impl MediaExplorerApp {
                     .and_then(|d| d.sector_bytes(self.current_sector))
                 {
                     self.sector_edit = Some(format_hex_for_edit(&b));
+                }
+            }
+            if self.sector_edit.is_none() {
+                ui.separator();
+                ui.checkbox(&mut self.show_inspector, "Inspector");
+                let has_sel = self.sector_hex.selection.is_some();
+                if ui
+                    .add_enabled(has_sel, egui::Button::new("Copy hex"))
+                    .clicked()
+                {
+                    if let Some(t) = self.sector_selection_text(false) {
+                        self.copy_text_to_clipboard(t);
+                    }
+                }
+                if ui
+                    .add_enabled(has_sel, egui::Button::new("Copy ASCII"))
+                    .clicked()
+                {
+                    if let Some(t) = self.sector_selection_text(true) {
+                        self.copy_text_to_clipboard(t);
+                    }
                 }
             }
         });
@@ -1601,7 +1904,26 @@ impl MediaExplorerApp {
                 .sector_highlight
                 .filter(|(s, _)| *s == self.current_sector)
                 .map(|(_, r)| r);
-            render_hex(ui, &bytes, 16, scroll, highlight, self.charset);
+            if self.show_inspector {
+                let origin = self
+                    .sector_hex
+                    .cursor
+                    .or(self.sector_hex.selection.map(|(s, _)| s))
+                    .unwrap_or(0);
+                let charset = self.charset;
+                egui::Panel::bottom("sector_inspector")
+                    .resizable(true)
+                    .default_size(170.0)
+                    .show_inside(ui, |ui| render_inspector(ui, &bytes, origin, charset));
+            }
+            let sel = HexSelection {
+                cursor: self.sector_hex.cursor,
+                selection: self.sector_hex.selection,
+            };
+            let gesture = render_hex(ui, &bytes, 16, scroll, highlight, self.charset, sel);
+            if let Some(g) = gesture {
+                apply_hex_gesture(&mut self.sector_hex, g);
+            }
         }
     }
 
@@ -1654,6 +1976,7 @@ impl MediaExplorerApp {
             let row = (off % 512) / 16;
             self.current_sector = sector;
             self.sector_edit = None;
+            self.sector_hex.clear_selection();
             self.sector_scroll_row = Some(row);
             self.sector_highlight = Some((sector, row));
         }
@@ -1843,6 +2166,13 @@ impl MediaExplorerApp {
             standard,
             analysis.track_infos.len(),
         ));
+        if analysis.single_sided_in_two_sided_container() {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xE0, 0xA0, 0x30),
+                "Single-sided disk in a two-sided container: the header declares 2 \
+                 sides but only side 0 is formatted. Read as a 360KB single-sided image.",
+            );
+        }
         ui.separator();
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -2119,6 +2449,12 @@ fn render_tape_files(
 ///
 /// `scroll_to_row` requests a one-shot scroll (e.g. to a search hit), and
 /// `highlight_row` tints the current match row.
+/// Render a virtualized hex dump and report any byte selection gesture.
+///
+/// Each visible block is painted into a single interactive region whose byte
+/// cells are hit-tested, so clicks and drags map to byte offsets. `scroll_to_row`
+/// and `highlight_row` keep the search behavior; `sel` paints the current
+/// selection and cursor.
 fn render_hex(
     ui: &mut egui::Ui,
     bytes: &[u8],
@@ -2126,10 +2462,26 @@ fn render_hex(
     scroll_to_row: Option<usize>,
     highlight_row: Option<usize>,
     charset: MsxCharset,
-) {
+    sel: HexSelection,
+) -> Option<HexGesture> {
     let bpr = bytes_per_row.max(1);
     let total_rows = bytes.len().div_ceil(bpr);
+    let font_id = egui::TextStyle::Monospace.resolve(ui.style());
     let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+    // Monospace advance width, measured from a single laid-out glyph.
+    let char_w = ui
+        .painter()
+        .layout_no_wrap("0".to_string(), font_id.clone(), egui::Color32::WHITE)
+        .rect
+        .width();
+    let text_color = ui.visuals().text_color();
+    let sel_color = ui.visuals().selection.bg_fill;
+    let cursor_stroke = egui::Stroke::new(1.0, ui.visuals().strong_text_color());
+    // Columns: 6-digit address + 2 spaces, bpr*3 hex chars, 1 gap, bpr ascii.
+    let total_cols = 8 + bpr * 3 + 1 + bpr;
+    let content_width = total_cols as f32 * char_w;
+
+    let mut gesture = None;
     let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
     if let Some(row) = scroll_to_row {
         // Center the target row in the viewport where possible.
@@ -2137,9 +2489,70 @@ fn render_hex(
         area = area.vertical_scroll_offset(offset);
     }
     area.show_rows(ui, row_height, total_rows, |ui, range| {
-        for row in range {
+        let visible = range.len();
+        let width = content_width.max(ui.available_width());
+        let (resp, painter) = ui.allocate_painter(
+            egui::vec2(width, visible as f32 * row_height),
+            egui::Sense::click_and_drag(),
+        );
+        let origin = resp.rect.min;
+        let hex_cell_x = |col: usize| origin.x + (8 + col * 3) as f32 * char_w;
+        let ascii_cell_x = |col: usize| origin.x + (8 + bpr * 3 + 1 + col) as f32 * char_w;
+
+        for (i, row) in range.clone().enumerate() {
+            let y = origin.y + i as f32 * row_height;
             let offset = row * bpr;
             let chunk = &bytes[offset..(offset + bpr).min(bytes.len())];
+
+            // Search-match row tint (behind everything).
+            if highlight_row == Some(row) {
+                painter.rect_filled(
+                    egui::Rect::from_min_size(
+                        egui::pos2(origin.x, y),
+                        egui::vec2(width, row_height),
+                    ),
+                    0.0,
+                    egui::Color32::DARK_BLUE,
+                );
+            }
+            // Per-byte selection background and cursor outline.
+            for col in 0..chunk.len() {
+                let byte = offset + col;
+                let selected = sel
+                    .selection
+                    .is_some_and(|(lo, hi)| (lo..=hi).contains(&byte));
+                if selected {
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(hex_cell_x(col), y),
+                            egui::vec2(char_w * 2.0, row_height),
+                        ),
+                        0.0,
+                        sel_color,
+                    );
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            egui::pos2(ascii_cell_x(col), y),
+                            egui::vec2(char_w, row_height),
+                        ),
+                        0.0,
+                        sel_color,
+                    );
+                }
+                if sel.cursor == Some(byte) {
+                    painter.rect_stroke(
+                        egui::Rect::from_min_size(
+                            egui::pos2(hex_cell_x(col), y),
+                            egui::vec2(char_w * 2.0, row_height),
+                        ),
+                        0.0,
+                        cursor_stroke,
+                        egui::StrokeKind::Inside,
+                    );
+                }
+            }
+
+            // Build and paint the row text on top.
             let mut line = format!("{offset:06X}  ");
             for col in 0..bpr {
                 match chunk.get(col) {
@@ -2149,13 +2562,337 @@ fn render_hex(
             }
             line.push(' ');
             line.extend(chunk.iter().map(|&b| ascii_char(b, charset)));
-            if highlight_row == Some(row) {
-                ui.monospace(egui::RichText::new(line).background_color(egui::Color32::DARK_BLUE));
-            } else {
-                ui.monospace(line);
+            painter.text(
+                egui::pos2(origin.x, y),
+                egui::Align2::LEFT_TOP,
+                line,
+                font_id.clone(),
+                text_color,
+            );
+        }
+
+        // Map a pointer interaction to a byte and a gesture.
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let rel_row = ((pos.y - origin.y) / row_height).floor();
+            if rel_row >= 0.0 && (rel_row as usize) < visible {
+                let row = range.start + rel_row as usize;
+                if let Some(byte) = byte_at_x(pos.x - origin.x, char_w, bpr, row, bytes.len()) {
+                    gesture = if resp.drag_started() {
+                        Some(HexGesture::DragStart(byte))
+                    } else if resp.dragged() {
+                        Some(HexGesture::DragTo(byte))
+                    } else if resp.clicked() {
+                        let shift = ui.input(|i| i.modifiers.shift);
+                        Some(HexGesture::Click { byte, shift })
+                    } else {
+                        None
+                    };
+                }
             }
         }
     });
+    gesture
+}
+
+/// Map a click x-offset (relative to the row's left edge) to a byte column,
+/// covering both the hex pair area and the ASCII gutter. `None` for the address
+/// gutter, the gap, or past the row's data.
+fn byte_at_x(local_x: f32, char_w: f32, bpr: usize, row: usize, len: usize) -> Option<usize> {
+    if char_w <= 0.0 || local_x < 0.0 {
+        return None;
+    }
+    let ch = (local_x / char_w) as usize;
+    let hex_start = 8;
+    let hex_end = 8 + bpr * 3;
+    let ascii_start = hex_end + 1;
+    let col = if ch >= ascii_start {
+        ch - ascii_start
+    } else if ch >= hex_start {
+        (ch - hex_start) / 3
+    } else {
+        return None;
+    };
+    if col >= bpr {
+        return None;
+    }
+    let byte = row * bpr + col;
+    (byte < len).then_some(byte)
+}
+
+/// Normalize two byte offsets into an inclusive `(lo, hi)` range.
+fn normalize(a: usize, b: usize) -> (usize, usize) {
+    (a.min(b), a.max(b))
+}
+
+/// Apply a hex gesture to a view's interaction state.
+fn apply_hex_gesture(hs: &mut HexUiState, gesture: HexGesture) {
+    match gesture {
+        HexGesture::DragStart(b) => {
+            hs.drag_anchor = Some(b);
+            hs.cursor = Some(b);
+            hs.selection = None;
+        }
+        HexGesture::DragTo(b) => {
+            if let Some(a) = hs.drag_anchor {
+                hs.selection = Some(normalize(a, b));
+                hs.cursor = Some(a.min(b));
+            }
+        }
+        HexGesture::Click { byte, shift } => {
+            if shift {
+                let anchor = hs.cursor.unwrap_or(byte);
+                hs.selection = Some(normalize(anchor, byte));
+            } else {
+                hs.cursor = Some(byte);
+                hs.selection = None;
+            }
+            hs.drag_anchor = None;
+        }
+    }
+}
+
+/// Parse a hexadecimal byte offset (with or without a `0x` prefix).
+fn parse_offset(s: &str) -> Option<usize> {
+    let t = s.trim();
+    let t = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .unwrap_or(t);
+    if t.is_empty() {
+        return None;
+    }
+    usize::from_str_radix(t, 16).ok()
+}
+
+/// A two-column label/value grid row.
+fn kv_row(ui: &mut egui::Ui, key: &str, value: impl Into<String>) {
+    ui.label(key);
+    ui.monospace(value.into());
+    ui.end_row();
+}
+
+/// The BSAVE-header grid, shared by the Info view and the data inspector.
+fn bload_grid(ui: &mut egui::Ui, b: &msx_disk::fileinfo::BloadHeader, id_salt: &str) {
+    egui::Grid::new(id_salt).num_columns(2).show(ui, |ui| {
+        for (name, addr) in [("Start", b.start), ("End", b.end), ("Exec", b.exec)] {
+            kv_row(ui, name, format!("0x{addr:04X}"));
+        }
+        kv_row(ui, "Length", format!("{} bytes", b.data_len()));
+    });
+}
+
+/// The data inspector: interpret the bytes at `origin` as common primitive
+/// types and decode MSX structures (BSAVE header, boot-sector BPB, FCB) when the
+/// bytes there parse as one.
+fn render_inspector(ui: &mut egui::Ui, bytes: &[u8], origin: usize, charset: MsxCharset) {
+    ui.horizontal(|ui| {
+        ui.strong("Data inspector");
+        ui.weak(format!("@ 0x{origin:06X}"));
+    });
+    ui.separator();
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            let at = bytes.get(origin..).unwrap_or(&[]);
+            if at.is_empty() {
+                ui.weak("Cursor is past the end of the data.");
+                return;
+            }
+            egui::Grid::new("inspector_prims")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    let b = at[0];
+                    kv_row(ui, "u8", b.to_string());
+                    kv_row(ui, "i8", (b as i8).to_string());
+                    kv_row(ui, "hex", format!("0x{b:02X}"));
+                    kv_row(ui, "binary", format!("{b:08b}"));
+                    kv_row(ui, "char", ascii_char(b, charset).to_string());
+                    if at.len() >= 2 {
+                        let v = u16::from_le_bytes([at[0], at[1]]);
+                        kv_row(ui, "u16 (LE)", v.to_string());
+                        kv_row(ui, "i16 (LE)", (v as i16).to_string());
+                    }
+                    if at.len() >= 3 {
+                        let v = (at[0] as u32) | (at[1] as u32) << 8 | (at[2] as u32) << 16;
+                        kv_row(ui, "u24 (LE)", v.to_string());
+                    }
+                    if at.len() >= 4 {
+                        let v = u32::from_le_bytes([at[0], at[1], at[2], at[3]]);
+                        kv_row(ui, "u32 (LE)", v.to_string());
+                    }
+                });
+
+            if let Some(h) = msx_disk::fileinfo::bload::parse(at) {
+                ui.add_space(6.0);
+                ui.strong("BSAVE header");
+                bload_grid(ui, &h, "inspect_bload");
+            }
+            if let Some(bpb) = msx_disk::fs::map::Bpb::parse(at) {
+                ui.add_space(6.0);
+                ui.strong("Boot sector (BPB)");
+                egui::Grid::new("inspect_bpb")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        kv_row(ui, "Bytes/sector", bpb.bytes_per_sector.to_string());
+                        kv_row(ui, "Sectors/cluster", bpb.sectors_per_cluster.to_string());
+                        kv_row(ui, "Reserved sectors", bpb.reserved.to_string());
+                        kv_row(ui, "FAT copies", bpb.num_fats.to_string());
+                        kv_row(ui, "Root entries", bpb.root_entries.to_string());
+                        kv_row(ui, "Sectors/FAT", bpb.sectors_per_fat.to_string());
+                    });
+            }
+            if let Some(fcb) = msx_disk::fileinfo::fcb::parse(at) {
+                ui.add_space(6.0);
+                ui.strong("FCB");
+                egui::Grid::new("inspect_fcb")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        let drive = if fcb.drive == 0 {
+                            "default".to_string()
+                        } else {
+                            format!("{} ({}:)", fcb.drive, (b'A' + fcb.drive - 1) as char)
+                        };
+                        kv_row(ui, "Drive", drive);
+                        kv_row(ui, "Name", fcb.name);
+                        kv_row(ui, "Current block", fcb.current_block.to_string());
+                        kv_row(ui, "Record size", fcb.record_size.to_string());
+                        kv_row(ui, "File size", format!("{} bytes", fcb.file_size));
+                    });
+            }
+        });
+}
+
+/// Render a selected byte slice as space-separated hex pairs, or as decoded
+/// ASCII/glyph characters under `charset`.
+fn format_selected_bytes(slice: &[u8], ascii: bool, charset: MsxCharset) -> String {
+    if ascii {
+        slice.iter().map(|&b| ascii_char(b, charset)).collect()
+    } else {
+        slice
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// A CRC32/SHA-1 grid with a per-value Copy button; copy requests land in `copy`.
+fn checksum_grid(
+    ui: &mut egui::Ui,
+    id_salt: &str,
+    cks: &msx_disk::Checksums,
+    copy: &mut Option<String>,
+) {
+    egui::Grid::new(id_salt).num_columns(3).show(ui, |ui| {
+        ui.label("CRC32:");
+        ui.monospace(cks.crc32_hex());
+        if ui.small_button("Copy").clicked() {
+            *copy = Some(cks.crc32_hex());
+        }
+        ui.end_row();
+        ui.label("SHA-1:");
+        ui.monospace(cks.sha1_hex());
+        if ui.small_button("Copy").clicked() {
+            *copy = Some(cks.sha1_hex());
+        }
+        ui.end_row();
+    });
+}
+
+/// The display label for a largest-files row: the size and the file's name
+/// decoded for display under `charset` (paths on disk are PUA-encoded, so a raw
+/// path would show high bytes as tofu).
+fn largest_file_label(size: u64, raw_path: &str, charset: MsxCharset) -> String {
+    let display = charset::decode_fs_name(charset, raw_path);
+    format!("{:>10}  {}", humanize_bytes(size), display)
+}
+
+/// Render one volume's statistics. `salt` keeps widget ids unique across
+/// partitions; `path_prefix` (`""` or `P{n}/`) turns a largest-file row into a
+/// jump target; a clicked row's full path lands in `jump`.
+fn render_disk_stats(
+    ui: &mut egui::Ui,
+    s: &msx_disk::DiskStats,
+    salt: usize,
+    path_prefix: &str,
+    charset: MsxCharset,
+    jump: &mut Option<String>,
+) {
+    egui::Grid::new(("disk_stats_summary", salt))
+        .num_columns(2)
+        .show(ui, |ui| {
+            kv_row(ui, "Total", humanize_bytes(s.total_bytes));
+            kv_row(ui, "Used", humanize_bytes(s.used_bytes));
+            kv_row(ui, "Free", humanize_bytes(s.free_bytes));
+            kv_row(ui, "Files", s.file_count.to_string());
+            kv_row(ui, "Directories", s.dir_count.to_string());
+            kv_row(ui, "Fragmentation", format!("{:.1}%", s.fragmentation_pct));
+        });
+
+    ui.add_space(8.0);
+    ui.label("FAT integrity");
+    let integ = &s.integrity;
+    if integ.is_clean() {
+        ui.colored_label(
+            egui::Color32::from_rgb(0x4C, 0xAF, 0x50),
+            "Clean \u{2014} no lost, cross-linked, or bad clusters.",
+        );
+    } else {
+        let warn = ui.visuals().warn_fg_color;
+        if !integ.lost_clusters.is_empty() {
+            ui.colored_label(
+                warn,
+                format!("Lost clusters: {}", integ.lost_clusters.len()),
+            );
+        }
+        if !integ.cross_linked.is_empty() {
+            ui.colored_label(
+                warn,
+                format!("Cross-linked clusters: {}", integ.cross_linked.len()),
+            );
+        }
+        if !integ.bad_pointers.is_empty() {
+            ui.colored_label(
+                warn,
+                format!("Bad chain pointers: {}", integ.bad_pointers.len()),
+            );
+        }
+    }
+
+    if !s.extensions.is_empty() {
+        ui.add_space(8.0);
+        ui.label("By file type");
+        ui.monospace(format!(
+            "{:<7} {:>5} {:>12}  {}",
+            "Ext", "Count", "Bytes", "Description"
+        ));
+        for e in &s.extensions {
+            let ext = if e.ext.is_empty() { "(none)" } else { &e.ext };
+            ui.monospace(format!(
+                "{:<7} {:>5} {:>12}  {}",
+                ext,
+                e.count,
+                e.total_bytes,
+                e.description.unwrap_or("")
+            ));
+        }
+    }
+
+    if !s.largest_files.is_empty() {
+        ui.add_space(8.0);
+        ui.label("Largest files");
+        for f in &s.largest_files {
+            let label = largest_file_label(f.size, &f.path, charset);
+            let resp = ui.add(
+                egui::Label::new(egui::RichText::new(label).monospace())
+                    .sense(egui::Sense::click()),
+            );
+            if resp.clicked() {
+                // The jump target keeps the raw (PUA-encoded) path as the key.
+                *jump = Some(format!("{path_prefix}{}", f.path));
+            }
+        }
+    }
 }
 
 /// Format bytes as editable hex: 16 space-separated pairs per line.
@@ -2289,9 +3026,8 @@ fn sanitize_8_3(name: &str, allowed: impl Fn(char) -> bool) -> String {
         Some((s, e)) => (s, e),
         None => (upper.as_str(), ""),
     };
-    let keep = |s: &str, max: usize| -> String {
-        s.chars().filter(|c| allowed(*c)).take(max).collect()
-    };
+    let keep =
+        |s: &str, max: usize| -> String { s.chars().filter(|c| allowed(*c)).take(max).collect() };
     let mut stem = keep(stem, 8);
     if stem.is_empty() {
         stem = "FILE".to_string();
@@ -2495,7 +3231,12 @@ fn render_disasm(ui: &mut egui::Ui, path: &str, bytes: &[u8]) {
 }
 
 /// Plain-text rendering of the File Info view, for the Copy button.
-fn format_fileinfo_text(path: &str, bytes: &[u8], entry: Option<&DirEntry>) -> String {
+fn format_fileinfo_text(
+    path: &str,
+    bytes: &[u8],
+    entry: Option<&DirEntry>,
+    checksums: &msx_disk::Checksums,
+) -> String {
     use std::fmt::Write;
     let info = msx_disk::fileinfo::describe(path, bytes);
     let mut out = String::new();
@@ -2548,6 +3289,8 @@ fn format_fileinfo_text(path: &str, bytes: &[u8], entry: Option<&DirEntry>) -> S
             let _ = writeln!(out, "{k}: {v}");
         }
     }
+    let _ = writeln!(out, "CRC32: {}", checksums.crc32_hex());
+    let _ = writeln!(out, "SHA-1: {}", checksums.sha1_hex());
     out
 }
 
@@ -2568,6 +3311,7 @@ fn render_info(
     bytes: &[u8],
     entry: Option<&DirEntry>,
     charset: MsxCharset,
+    checksums: &msx_disk::Checksums,
 ) {
     let info = msx_disk::fileinfo::describe(path, bytes);
     let yes_no = |b: bool| if b { "yes" } else { "no" };
@@ -2679,6 +3423,15 @@ fn render_info(
                     }
                 });
             }
+
+            ui.add_space(8.0);
+            ui.heading("Checksums");
+            egui::Grid::new("info_checksums")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    kv_row(ui, "CRC32", checksums.crc32_hex());
+                    kv_row(ui, "SHA-1", checksums.sha1_hex());
+                });
         });
 }
 
@@ -2734,6 +3487,7 @@ impl eframe::App for MediaExplorerApp {
             AppView::Files => self.viewer_panel(ui),
             AppView::Sectors => self.sector_panel(ui),
             AppView::Map => self.map_panel(ui),
+            AppView::Stats => self.stats_panel(ui),
             AppView::Analyze => self.analyze_panel(ui),
             AppView::Blocks => self.blocks_panel(ui),
         });
@@ -2761,6 +3515,97 @@ mod tests {
     }
 
     #[test]
+    fn largest_file_label_decodes_pua_names_under_charset() {
+        // A PUA-encoded path (high bytes carried in U+F080..=U+F0FF) must render
+        // as decoded glyphs under the active charset, not raw PUA — which shows
+        // as tofu boxes in the Stats "Largest files" list.
+        let raw = "\u{F0B1}\u{F0B2}\u{F0B3}-01.PIC";
+        let label = largest_file_label(27_801, raw, MsxCharset::Japanese);
+        assert!(
+            !label
+                .chars()
+                .any(|c| ('\u{F080}'..='\u{F0FF}').contains(&c)),
+            "label still shows raw PUA bytes (tofu): {label:?}"
+        );
+        // It contains the same decoded name the file tree shows.
+        let decoded = charset::decode_fs_name(MsxCharset::Japanese, raw);
+        assert!(
+            label.ends_with(&decoded),
+            "label {label:?} should end with {decoded:?}"
+        );
+    }
+
+    #[test]
+    fn byte_at_x_maps_hex_and_ascii_columns() {
+        let cw = 8.0; // pixels per character
+        let bpr = 16;
+        // Address gutter (chars 0-7) maps to nothing.
+        assert_eq!(byte_at_x(0.0, cw, bpr, 0, 512), None);
+        // First hex pair starts at char 8.
+        assert_eq!(byte_at_x(8.0 * cw, cw, bpr, 0, 512), Some(0));
+        // Second hex pair starts at char 11 (8 + 3).
+        assert_eq!(byte_at_x(11.0 * cw, cw, bpr, 0, 512), Some(1));
+        // The gap char between hex and ASCII (char 8+48=56) maps to nothing.
+        assert_eq!(byte_at_x((8 + bpr * 3) as f32 * cw, cw, bpr, 0, 512), None);
+        // ASCII gutter starts at char 8 + 48 + 1 = 57 → column 0.
+        assert_eq!(
+            byte_at_x((8 + bpr * 3 + 1) as f32 * cw, cw, bpr, 0, 512),
+            Some(0)
+        );
+        // Row offset is applied: row 2, column 3 → byte 35.
+        assert_eq!(
+            byte_at_x((8 + 3 * 3) as f32 * cw, cw, bpr, 2, 512),
+            Some(35)
+        );
+        // Past the data length yields None.
+        assert_eq!(byte_at_x(8.0 * cw, cw, bpr, 100, 10), None);
+    }
+
+    #[test]
+    fn normalize_orders_endpoints() {
+        assert_eq!(normalize(5, 2), (2, 5));
+        assert_eq!(normalize(2, 5), (2, 5));
+        assert_eq!(normalize(7, 7), (7, 7));
+    }
+
+    #[test]
+    fn parse_offset_accepts_hex_forms() {
+        assert_eq!(parse_offset("1A0"), Some(0x1A0));
+        assert_eq!(parse_offset("0x1a0"), Some(0x1A0));
+        assert_eq!(parse_offset("  0X10 "), Some(0x10));
+        assert_eq!(parse_offset(""), None);
+        assert_eq!(parse_offset("xyz"), None);
+    }
+
+    #[test]
+    fn hex_gesture_updates_selection_state() {
+        let mut hs = HexUiState::default();
+        // A plain click sets the cursor and clears any selection.
+        apply_hex_gesture(
+            &mut hs,
+            HexGesture::Click {
+                byte: 4,
+                shift: false,
+            },
+        );
+        assert_eq!(hs.cursor, Some(4));
+        assert_eq!(hs.selection, None);
+        // Shift-click extends from the cursor.
+        apply_hex_gesture(
+            &mut hs,
+            HexGesture::Click {
+                byte: 9,
+                shift: true,
+            },
+        );
+        assert_eq!(hs.selection, Some((4, 9)));
+        // A drag selects from anchor to the dragged byte (normalized).
+        apply_hex_gesture(&mut hs, HexGesture::DragStart(20));
+        apply_hex_gesture(&mut hs, HexGesture::DragTo(12));
+        assert_eq!(hs.selection, Some((12, 20)));
+    }
+
+    #[test]
     fn sanitize_makes_msx_83_names() {
         assert_eq!(sanitize_msx_name("my long file.text"), "MYLONGFI.TEX");
         assert_eq!(sanitize_msx_name("a.b"), "A.B");
@@ -2772,7 +3617,10 @@ mod tests {
     fn normalize_input_enforces_83_shape() {
         let intl = MsxCharset::International;
         // Uppercases, drops disallowed characters, caps stem and extension.
-        assert_eq!(normalize_msx_input("my long file.text", intl), "MYLONGFI.TEX");
+        assert_eq!(
+            normalize_msx_input("my long file.text", intl),
+            "MYLONGFI.TEX"
+        );
         assert_eq!(normalize_msx_input("game.com", intl), "GAME.COM");
         // Only the first dot separates; later dots are dropped.
         assert_eq!(normalize_msx_input("a.b.c", intl), "A.BC");
@@ -2806,7 +3654,10 @@ mod tests {
     #[test]
     fn rename_normalize_drops_glyphs_outside_charset() {
         // Kana isn't representable in International, so it is stripped; ASCII stays.
-        let out = normalize_msx_input(&format!("{}AB.bas", sample_kana()), MsxCharset::International);
+        let out = normalize_msx_input(
+            &format!("{}AB.bas", sample_kana()),
+            MsxCharset::International,
+        );
         assert_eq!(out, "AB.BAS");
     }
 
@@ -3035,7 +3886,10 @@ mod tests {
     fn info_name_falls_back_to_path_base_when_no_entry() {
         // With no DirEntry, the path's base name is still decoded under charset.
         let shown = info_display_name(None, "DIR/\u{F0B1}.BIN", MsxCharset::Japanese);
-        assert_eq!(shown, charset::decode_fs_name(MsxCharset::Japanese, "\u{F0B1}.BIN"));
+        assert_eq!(
+            shown,
+            charset::decode_fs_name(MsxCharset::Japanese, "\u{F0B1}.BIN")
+        );
     }
 
     #[test]

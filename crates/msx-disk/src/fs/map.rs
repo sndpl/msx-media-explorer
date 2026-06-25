@@ -178,11 +178,71 @@ fn is_data_cluster(fat_type: FatType, entry: u16) -> bool {
     }
 }
 
+/// The meaning of a FAT next-pointer when walking a cluster chain. Used by the
+/// integrity analysis ([`crate::stats`]) to distinguish a normal continuation
+/// from a structurally invalid pointer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Pointer {
+    /// A continuation cluster within range: the chain advances here.
+    Next(u16),
+    /// An end-of-chain marker (`0xFF8..` / `0xFFF8..`): the current cluster is
+    /// the last one of the chain.
+    End,
+    /// A bad-cluster marker (`0xFF7` / `0xFFF7`).
+    Bad,
+    /// A reserved value (`0xFF0..=0xFF6` / `0xFFF0..=0xFFF6`): not free, not a
+    /// data cluster, and not a terminator — intentional, but not chain data.
+    Reserved,
+    /// A free (unallocated) entry — value `0`.
+    Free,
+    /// A non-free value that is neither a recognized terminator nor a cluster
+    /// within `2..2 + cluster_count`: structurally invalid for this volume.
+    OutOfRange(u16),
+}
+
+/// Classify a raw FAT `entry` value for a volume with `cluster_count` data
+/// clusters, reusing the same FAT12/FAT16 thresholds as chain-walking.
+pub(crate) fn classify_pointer(fat_type: FatType, entry: u16, cluster_count: usize) -> Pointer {
+    if entry == 0 {
+        return Pointer::Free;
+    }
+    if is_data_cluster(fat_type, entry) {
+        if (entry as usize) < 2 + cluster_count {
+            Pointer::Next(entry)
+        } else {
+            Pointer::OutOfRange(entry)
+        }
+    } else {
+        // Non-data, non-free: bad marker, reserved range, or end-of-chain.
+        let (bad, reserved_lo) = match fat_type {
+            FatType::Fat12 => (0xFF7, 0xFF0),
+            FatType::Fat16 => (0xFFF7, 0xFFF0),
+        };
+        if entry == bad {
+            Pointer::Bad
+        } else if entry >= reserved_lo && entry < bad {
+            Pointer::Reserved
+        } else {
+            Pointer::End
+        }
+    }
+}
+
 /// A boot-sector-repaired copy of `data`, so the BPB is always valid.
 fn repaired(data: &[u8]) -> Option<Vec<u8>> {
     let mut buf = data.to_vec();
     super::boot::repair_boot_sector(&mut buf).ok()?;
     Some(buf)
+}
+
+/// Boot-repair `data` and parse its BPB and FAT width in one step, or `None` if
+/// it has no recognizable FAT BPB even after repair. The returned buffer starts
+/// at the volume's boot sector, so every `map` primitive applies to it.
+pub(crate) fn parse_volume(data: &[u8]) -> Option<(Vec<u8>, Bpb, FatType)> {
+    let buf = repaired(data)?;
+    let bpb = Bpb::parse(&buf)?;
+    let fat_type = bpb.fat_type(buf.len() / SECTOR_SIZE);
+    Some((buf, bpb, fat_type))
 }
 
 /// Classify every sector of the disk.
@@ -289,6 +349,27 @@ pub fn file_sectors(data: &[u8], path: &str) -> Vec<usize> {
     cluster_chain_sectors(&buf, &bpb, fat_type, first)
 }
 
+/// Walk a cluster chain and return the cluster numbers it visits, in order.
+pub(crate) fn cluster_chain_clusters(
+    buf: &[u8],
+    bpb: &Bpb,
+    fat_type: FatType,
+    first: u16,
+) -> Vec<u16> {
+    let fat_start_byte = bpb.fat_start() * SECTOR_SIZE;
+    let sector_count = buf.len() / SECTOR_SIZE;
+    let max_clusters = sector_count / bpb.sectors_per_cluster + 2;
+    let mut clusters = Vec::new();
+    let mut cluster = first as usize;
+    let mut guard = 0;
+    while is_data_cluster(fat_type, cluster as u16) && guard < max_clusters {
+        clusters.push(cluster as u16);
+        cluster = fat_entry(buf, fat_start_byte, fat_type, cluster) as usize;
+        guard += 1;
+    }
+    clusters
+}
+
 /// Walk a cluster chain and return all of its sectors.
 pub(crate) fn cluster_chain_sectors(
     buf: &[u8],
@@ -296,21 +377,15 @@ pub(crate) fn cluster_chain_sectors(
     fat_type: FatType,
     first: u16,
 ) -> Vec<usize> {
-    let fat_start_byte = bpb.fat_start() * SECTOR_SIZE;
     let sector_count = buf.len() / SECTOR_SIZE;
-    let max_clusters = sector_count / bpb.sectors_per_cluster + 2;
     let mut sectors = Vec::new();
-    let mut cluster = first as usize;
-    let mut guard = 0;
-    while is_data_cluster(fat_type, cluster as u16) && guard < max_clusters {
-        let base = bpb.cluster_first_sector(cluster);
+    for cluster in cluster_chain_clusters(buf, bpb, fat_type, first) {
+        let base = bpb.cluster_first_sector(cluster as usize);
         for s in base..base + bpb.sectors_per_cluster {
             if s < sector_count {
                 sectors.push(s);
             }
         }
-        cluster = fat_entry(buf, fat_start_byte, fat_type, cluster) as usize;
-        guard += 1;
     }
     sectors
 }

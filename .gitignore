@@ -5,6 +5,8 @@ Cargo.lock.orig
 
 # Local agent/editor state.
 /.claude/
+# Semantic-search embeddings cache (regenerated locally by the indexing tool).
+/.embeddings.cache.json
 
 # Root-level binary disk/tape fixtures (some are copyrighted) — kept local, not
 # committed. Rust integration tests live under crates/*/tests and skip when the

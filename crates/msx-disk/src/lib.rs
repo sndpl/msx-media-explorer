@@ -14,8 +14,10 @@ pub mod fs;
 pub mod image;
 pub mod recoil;
 pub mod search;
+pub mod stats;
 pub mod tape;
 pub mod tsx;
+pub mod verify;
 pub mod view;
 
 pub use archive::{ArchiveEntry, Method};
@@ -23,3 +25,5 @@ pub use charset::MsxCharset;
 pub use error::{Error, Result};
 pub use fs::{DirEntry, DiskFs};
 pub use image::{DiskImage, ImageFormat};
+pub use stats::{DiskStats, FatIntegrity};
+pub use verify::Checksums;

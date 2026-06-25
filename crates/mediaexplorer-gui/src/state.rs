@@ -1,5 +1,6 @@
 //! GUI-side state for a currently-open disk.
 
+use std::cell::OnceCell;
 use std::path::{Path, PathBuf};
 
 use std::collections::HashMap;
@@ -23,6 +24,9 @@ enum Backing {
     Partitioned { volumes: Vec<Volume> },
 }
 
+/// How many largest files the Stats view lists.
+const LARGEST_FILES: usize = 12;
+
 /// Everything the UI needs about the open disk, computed once on load.
 pub struct LoadedDisk {
     pub path: Option<PathBuf>,
@@ -32,6 +36,13 @@ pub struct LoadedDisk {
     pub tree: Vec<DirEntry>,
     image: DiskImage,
     backing: Backing,
+    /// Lazily-computed whole-image checksums (the SHA-1 of a large HD image is
+    /// too slow to compute eagerly on every open).
+    image_checksums: OnceCell<msx_disk::Checksums>,
+    /// Lazily-computed whole-disk statistics (single-volume floppies only).
+    stats: OnceCell<Option<msx_disk::DiskStats>>,
+    /// Lazily-computed per-partition statistics, one cell per volume.
+    volume_stats: Vec<OnceCell<msx_disk::DiskStats>>,
 }
 
 impl LoadedDisk {
@@ -61,6 +72,9 @@ impl LoadedDisk {
             tree,
             image,
             backing: Backing::Floppy { fs },
+            image_checksums: OnceCell::new(),
+            stats: OnceCell::new(),
+            volume_stats: Vec::new(),
         })
     }
 
@@ -97,6 +111,7 @@ impl LoadedDisk {
                 "partitioned image has no readable FAT partitions".into(),
             ));
         }
+        let volume_stats = volumes.iter().map(|_| OnceCell::new()).collect();
         Ok(LoadedDisk {
             path,
             format: image.format(),
@@ -106,6 +121,9 @@ impl LoadedDisk {
             tree,
             image,
             backing: Backing::Partitioned { volumes },
+            image_checksums: OnceCell::new(),
+            stats: OnceCell::new(),
+            volume_stats,
         })
     }
 
@@ -206,6 +224,45 @@ impl LoadedDisk {
             return None;
         }
         msx_disk::fs::map::fs_geometry(self.image.data())
+    }
+
+    /// CRC32 + SHA-1 of the whole disk image, computed once and cached.
+    pub fn checksums(&self) -> &msx_disk::Checksums {
+        self.image_checksums
+            .get_or_init(|| msx_disk::verify::image_checksums(self.image.data()))
+    }
+
+    /// Whole-disk statistics for a single-volume floppy, computed once and
+    /// cached. `None` for partitioned hard disks (use [`LoadedDisk::volume_stats`]).
+    pub fn stats(&self) -> Option<&msx_disk::DiskStats> {
+        if self.is_partitioned() {
+            return None;
+        }
+        self.stats
+            .get_or_init(|| msx_disk::stats::disk_stats(self.image.data(), LARGEST_FILES))
+            .as_ref()
+    }
+
+    /// The number of partitions on a hard-disk image (0 for a floppy).
+    pub fn partition_count(&self) -> usize {
+        match &self.backing {
+            Backing::Partitioned { volumes } => volumes.len(),
+            Backing::Floppy { .. } => 0,
+        }
+    }
+
+    /// Statistics for partition `i` of a hard-disk image, computed once and
+    /// cached. `None` for a floppy or an out-of-range index.
+    pub fn volume_stats(&self, i: usize) -> Option<&msx_disk::DiskStats> {
+        let Backing::Partitioned { volumes } = &self.backing else {
+            return None;
+        };
+        let vol = volumes.get(i)?;
+        Some(
+            self.volume_stats
+                .get(i)?
+                .get_or_init(|| vol.stats(LARGEST_FILES)),
+        )
     }
 
     /// The sectors occupied by a file (its cluster chain), in whole-image sector
@@ -524,6 +581,41 @@ mod tests {
         assert!(disk.delete(&["P1/ANY".to_string()]).is_err());
         assert!(disk.rename("P1/A", "P1/B").is_err());
         assert!(disk.write_sector(0, &[0u8; 512]).is_err());
+    }
+
+    #[test]
+    fn blank_disk_exposes_stats_and_checksums() {
+        let image = DiskImage::open_bytes(ImageFormat::Dsk, vec![0u8; 720 * 1024]).expect("image");
+        let disk = LoadedDisk::from_image(image, None).expect("mount");
+        // The cached whole-image checksums equal a direct computation.
+        assert_eq!(
+            *disk.checksums(),
+            msx_disk::verify::image_checksums(disk.data())
+        );
+        // A blank floppy reports zero files and a clean filesystem.
+        let stats = disk.stats().expect("stats");
+        assert_eq!(stats.file_count, 0);
+        assert!(stats.integrity.is_clean());
+        // Floppies have no partitions.
+        assert_eq!(disk.partition_count(), 0);
+        assert!(disk.volume_stats(0).is_none());
+    }
+
+    #[test]
+    fn hd_image_exposes_per_partition_stats() {
+        let Some(path) = hd_fixture() else {
+            eprintln!("skipping: hd.dsk fixture not present");
+            return;
+        };
+        let disk = LoadedDisk::open(&path).expect("open hd.dsk");
+        // Whole-disk stats are unavailable for partitioned images.
+        assert!(disk.stats().is_none());
+        assert_eq!(disk.partition_count(), 4);
+        // Each partition has its own statistics.
+        for i in 0..disk.partition_count() {
+            assert!(disk.volume_stats(i).is_some(), "partition {i} stats");
+        }
+        assert!(disk.volume_stats(99).is_none());
     }
 
     #[test]

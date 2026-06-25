@@ -131,6 +131,26 @@ impl Volume {
         Some(bytes)
     }
 
+    /// CRC32 + SHA-1 of the file at `path`, or `None` if it does not resolve.
+    pub fn file_checksums(&self, path: &str) -> Option<crate::verify::Checksums> {
+        self.read_file(path)
+            .map(|bytes| crate::verify::Checksums::of(&bytes))
+    }
+
+    /// Read-only statistics for this volume: counts, per-extension breakdown,
+    /// largest files, fragmentation, and FAT-chain integrity. Unlike the
+    /// whole-image `disk_stats`, this works for hard-disk partitions.
+    pub fn stats(&self, largest_n: usize) -> crate::stats::DiskStats {
+        crate::stats::stats_from_parts(
+            &self.data,
+            &self.bpb,
+            self.fat_type,
+            &self.fs_geometry(),
+            &self.tree(),
+            largest_n,
+        )
+    }
+
     /// The absolute sectors (in the whole image) occupied by `path`'s data.
     pub fn file_sectors_absolute(&self, path: &str) -> Vec<usize> {
         let Some((first, _, is_dir)) = self.resolve_entry(path) else {

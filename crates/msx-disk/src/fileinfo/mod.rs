@@ -7,10 +7,12 @@
 
 pub mod bload;
 pub mod extensions;
+pub mod fcb;
 pub mod graphics;
 pub mod music;
 
 pub use bload::BloadHeader;
+pub use fcb::FcbHeader;
 pub use graphics::GraphicsInfo;
 pub use music::MusicInfo;
 

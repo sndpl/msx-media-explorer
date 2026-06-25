@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use msx_disk::fs::map::{self, SectorKind};
 use msx_disk::fs::partition;
 use msx_disk::fs::{FatType, Volume};
-use msx_disk::{cas, fs::write, view::basic, view::disasm, DirEntry, DiskFs, DiskImage, ImageFormat};
+use msx_disk::{
+    cas, fs::write, view::basic, view::disasm, DirEntry, DiskFs, DiskImage, ImageFormat,
+};
 
 /// Resolve a fixture path under the workspace-root `tests/` directory, or
 /// `None` if it does not exist.
@@ -227,6 +229,39 @@ fn dmk_analyze_reports_real_track_layout() {
     );
 }
 
+#[test]
+fn single_sided_dmk_with_garbage_bpb_mounts_and_lists_files() {
+    // Brainstorm is a single-sided (360KB) game whose DMK header nonetheless
+    // declares two sides: all sectors are recorded on head 0, side 1 is
+    // unformatted, and the boot sector is a custom loader whose BPB carries a
+    // bogus total_sectors. openMSX reads it fine because it serves sectors by
+    // their recorded C/H/R and MSX-DOS only ever requests head 0. We must:
+    //   1. detect the disk is single-sided from the data, not trust the header,
+    //      so the FAT/root dir land at the right LBAs (a 360KB image), and
+    //   2. reject the implausibly small BPB so the canonical 360KB BPB is
+    //      synthesized.
+    let path = skip_if_absent!("Brainstorm (1993)(Syntax Error)(DMK).DMK");
+    let image = DiskImage::open(&path).expect("open dmk");
+    assert_eq!(image.format(), ImageFormat::Dmk);
+    assert_eq!(
+        image.data().len(),
+        368_640,
+        "single-sided disk must normalize to 360KB, not a 720KB interleave"
+    );
+
+    let fs = DiskFs::from_image(&image).expect("mount single-sided dmk");
+    let tree = fs.tree().expect("tree");
+    assert!(
+        tree.iter().any(|e| e.name == "AUTOEXEC.BAS"),
+        "expected AUTOEXEC.BAS among: {:?}",
+        tree.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    assert!(
+        tree.iter().filter(|e| e.name.starts_with("BS.")).count() >= 10,
+        "expected the BS.* data files"
+    );
+}
+
 /// Decode every decodable member of an archive and confirm each one's length
 /// and CRC-16 match the values recorded in its header. A CRC match is strong
 /// evidence the decompressor is byte-for-byte correct.
@@ -433,6 +468,74 @@ fn plain_dsk_fixtures_mount_and_read_first_file() {
         if let Some(file) = tree.iter().find(|e| !e.is_dir) {
             let bytes = fs.read_file(&file.path).expect("read file");
             assert_eq!(bytes.len() as u64, file.size, "{} size mismatch", file.path);
+        }
+    }
+}
+
+#[test]
+fn msxdos2_disk_stats_are_sane_and_clean() {
+    let path = skip_if_absent!("MSX-DOS2 TOOLS.dsk");
+    let image = DiskImage::open(&path).expect("open");
+    let data = image.data();
+
+    let stats = msx_disk::stats::disk_stats(data, 5).expect("stats");
+    assert!(stats.file_count > 0, "a real system disk has files");
+    assert!(stats.dir_count > 0, "it has the TOOLS subdirectory");
+    // Used + free is consistent and bounded by the total.
+    assert!(stats.used_bytes + stats.free_bytes <= stats.total_bytes);
+    // The free figure must agree with the standalone geometry helper.
+    let geo = map::fs_geometry(data).expect("geometry");
+    assert_eq!(stats.free_bytes, geo.free_bytes());
+    // A well-formed system disk has no lost/cross-linked/bad clusters.
+    assert!(
+        stats.integrity.is_clean(),
+        "unexpected integrity findings: {:?}",
+        stats.integrity
+    );
+    // The largest-files list is capped and sorted.
+    assert!(stats.largest_files.len() <= 5);
+    assert!(stats
+        .largest_files
+        .windows(2)
+        .all(|w| w[0].size >= w[1].size));
+}
+
+#[test]
+fn checksums_match_manual_hash_of_file_bytes() {
+    let path = skip_if_absent!("MSX-DOS2 TOOLS.dsk");
+    let fs = DiskFs::from_image(&DiskImage::open(&path).expect("open")).expect("mount");
+    let tree = fs.tree().expect("tree");
+    let file = tree
+        .iter()
+        .flat_map(DirEntry::walk)
+        .find(|e| !e.is_dir)
+        .expect("a file");
+
+    // file_checksums must equal hashing the read-back bytes directly.
+    let bytes = fs.read_file(&file.path).expect("read");
+    assert_eq!(
+        msx_disk::verify::file_checksums(&fs, &file.path).expect("checksums"),
+        msx_disk::Checksums::of(&bytes)
+    );
+}
+
+#[test]
+fn hd_partitions_report_per_volume_stats() {
+    // Proves the stats/integrity analysis works on the read-only HD path, which
+    // the whole-image `disk_stats` cannot reach.
+    let path = skip_if_absent!("hd.dsk");
+    let image = DiskImage::open(&path).expect("open hd.dsk");
+    let parts = partition::parse_partition_table(image.data()).expect("partition table");
+
+    for entry in &parts {
+        let vol = Volume::from_partition(&image, entry).expect("mount partition");
+        let stats = vol.stats(5);
+        let geo = vol.fs_geometry();
+        assert_eq!(stats.free_bytes, geo.free_bytes());
+        assert!(stats.used_bytes + stats.free_bytes <= stats.total_bytes);
+        // A per-file checksum resolves for at least the first file.
+        if let Some(file) = vol.tree().iter().flat_map(|e| e.walk()).find(|e| !e.is_dir) {
+            assert!(vol.file_checksums(&file.path).is_some());
         }
     }
 }
