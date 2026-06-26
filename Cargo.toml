@@ -6,7 +6,7 @@ members = ["crates/msx-disk", "crates/mediaexplorer-gui"]
 version = "0.1.0"
 edition = "2021"
 license = "GPL-2.0-or-later"
-repository = "https://github.com/sandy/mediaexplorer"
+repository = "https://github.com/sndpl/msx-media-explorer"
 authors = ["Sandy Pleyte"]
 
 [workspace.lints.clippy]
