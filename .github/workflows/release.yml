@@ -92,8 +92,13 @@ jobs:
           lipo -archs "target/release/${BIN_NAME}"
       - name: Build .app bundle
         run: |
+          # cargo-packager resolves a relative --out-dir against the package's
+          # manifest dir (crates/mediaexplorer-gui/), not the workspace root, so
+          # `--out-dir dist` would land in crates/mediaexplorer-gui/dist/ while
+          # the codesign/dmg/upload steps below look in the repo-root dist/.
+          # Anchor both paths absolutely so the bundle lands where they expect.
           cargo packager --release -p mediaexplorer-gui \
-            --formats app --out-dir dist --binaries-dir target/release
+            --formats app --out-dir "$PWD/dist" --binaries-dir "$PWD/target/release"
       - name: Ad-hoc sign and seal the bundle
         run: |
           APP="dist/MSX Media Explorer.app"
