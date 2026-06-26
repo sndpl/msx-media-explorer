@@ -269,7 +269,12 @@ pub struct MediaExplorerApp {
     sector_hex: HexUiState,
     /// Whether the data inspector panel is shown beneath the hex views.
     show_inspector: bool,
+    /// Whether the About window is open.
+    show_about: bool,
 }
+
+/// Application version (from Cargo.toml), shown in the toolbar and About window.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Largest file (bytes) offered for in-app hex editing, to keep the editor
 /// responsive.
@@ -319,6 +324,7 @@ impl Default for MediaExplorerApp {
             hex: HexUiState::default(),
             sector_hex: HexUiState::default(),
             show_inspector: false,
+            show_about: false,
         }
     }
 }
@@ -559,6 +565,20 @@ impl MediaExplorerApp {
                 ui.separator();
                 ui.weak("read-only");
             }
+            // Always-visible version, parked at the right edge; click for the
+            // About window.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let clicked = ui
+                    .add(
+                        egui::Label::new(egui::RichText::new(format!("v{VERSION}")).weak())
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text("About MSX Media Explorer")
+                    .clicked();
+                if clicked {
+                    self.show_about = true;
+                }
+            });
         });
         if self.disk.is_some() || self.tape.is_some() {
             ui.horizontal(|ui| {
@@ -1455,6 +1475,41 @@ impl MediaExplorerApp {
             self.apply_rename();
         } else if cancel {
             self.rename_target = None;
+        }
+    }
+
+    /// The About window: app name, version, repo, and license. Cross-platform,
+    /// so the version is reachable the same way on every OS (the native macOS
+    /// "About" panel only fills in icon/version for the packaged `.app`).
+    fn about_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_about {
+            return;
+        }
+        let mut open = true;
+        egui::Window::new("About")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(4.0);
+                    ui.heading("MSX Media Explorer");
+                    ui.label(egui::RichText::new(format!("Version {VERSION}")).weak());
+                    ui.add_space(8.0);
+                    ui.label("Browse and edit MSX disk and tape images.");
+                    ui.add_space(8.0);
+                    ui.hyperlink_to(
+                        "github.com/sndpl/msx-media-explorer",
+                        "https://github.com/sndpl/msx-media-explorer",
+                    );
+                    ui.add_space(4.0);
+                    ui.small("Licensed under GPL-2.0-or-later");
+                    ui.add_space(4.0);
+                });
+            });
+        if !open {
+            self.show_about = false;
         }
     }
 
@@ -3651,6 +3706,7 @@ impl eframe::App for MediaExplorerApp {
 
         self.delete_confirmation(ui.ctx());
         self.rename_dialog(ui.ctx());
+        self.about_dialog(ui.ctx());
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.process_drag_out(frame);
