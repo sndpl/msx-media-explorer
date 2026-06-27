@@ -19,13 +19,27 @@ pub fn ascii_char(b: u8, charset: MsxCharset) -> char {
     }
 }
 
-/// Layout options for a hex dump.
+/// Layout options for a hex dump. The display toggles mirror the GUI's View
+/// menu so exported (clipboard) dumps match what is shown on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HexConfig {
     /// Bytes shown per row (clamped to at least 1).
     pub bytes_per_row: usize,
     /// Value added to each row's offset to form its displayed address.
     pub base_address: usize,
+    /// Show the address gutter.
+    pub show_line_numbers: bool,
+    /// Address gutter base: `true` = hexadecimal, `false` = decimal.
+    pub line_number_hex: bool,
+    /// Show the hexadecimal byte columns.
+    pub show_hex: bool,
+    /// Show the plain-text (ASCII) gutter.
+    pub show_ascii: bool,
+    /// Bytes per group: a single space separates groups, `None` packs bytes
+    /// contiguously, and `Some(1)` is the classic one-space-per-byte dump.
+    pub grouping: Option<usize>,
+    /// Render `0x00` bytes as blanks in the hex and ASCII columns.
+    pub hide_null_bytes: bool,
 }
 
 impl Default for HexConfig {
@@ -33,6 +47,12 @@ impl Default for HexConfig {
         HexConfig {
             bytes_per_row: 16,
             base_address: 0,
+            show_line_numbers: true,
+            line_number_hex: true,
+            show_hex: true,
+            show_ascii: true,
+            grouping: Some(1),
+            hide_null_bytes: false,
         }
     }
 }
@@ -64,23 +84,49 @@ pub fn rows(data: &[u8], cfg: HexConfig, charset: MsxCharset) -> impl Iterator<I
     })
 }
 
-/// Render a full hex dump to a string (used for clipboard export).
+/// Render a full hex dump to a string (used for clipboard export). Honors the
+/// display toggles in `cfg` so the export matches the on-screen view.
 pub fn dump_to_string(data: &[u8], cfg: HexConfig, charset: MsxCharset) -> String {
     use std::fmt::Write;
     let bpr = cfg.bytes_per_row.max(1);
-    let mut out = String::new();
+    let group = cfg.grouping.filter(|&n| n >= 1);
+    // ~3 hex chars + 1 ASCII char per byte, plus per-row line-number/newline.
+    let mut out = String::with_capacity(data.len() * 4 + 64);
     for row in rows(data, cfg, charset) {
-        let _ = write!(out, "{:06X}  ", row.address);
-        for col in 0..bpr {
-            match row.bytes.get(col) {
-                Some(b) => {
-                    let _ = write!(out, "{b:02X} ");
-                }
-                None => out.push_str("   "),
+        if cfg.show_line_numbers {
+            if cfg.line_number_hex {
+                let _ = write!(out, "{:06X}  ", row.address);
+            } else {
+                let _ = write!(out, "{:06}  ", row.address);
             }
         }
-        out.push(' ');
-        out.push_str(&row.ascii);
+        if cfg.show_hex {
+            for col in 0..bpr {
+                // A single space precedes each group boundary (ungrouped: none).
+                if col > 0 && group.is_some_and(|n| col % n == 0) {
+                    out.push(' ');
+                }
+                match row.bytes.get(col) {
+                    Some(&b) if cfg.hide_null_bytes && b == 0 => out.push_str("  "),
+                    Some(&b) => {
+                        let _ = write!(out, "{b:02X}");
+                    }
+                    None => out.push_str("  "),
+                }
+            }
+        }
+        if cfg.show_ascii {
+            if cfg.show_hex {
+                out.push(' ');
+            }
+            for &b in &row.bytes {
+                if cfg.hide_null_bytes && b == 0 {
+                    out.push(' ');
+                } else {
+                    out.push(ascii_char(b, charset));
+                }
+            }
+        }
         out.push('\n');
     }
     out
@@ -113,6 +159,7 @@ mod tests {
         let cfg = HexConfig {
             bytes_per_row: 8,
             base_address: 0x100,
+            ..HexConfig::default()
         };
         let rows: Vec<_> = rows(&data, cfg, INTL).collect();
         assert_eq!(rows.len(), 3); // 8 + 8 + 4
@@ -124,13 +171,78 @@ mod tests {
     #[test]
     fn dump_to_string_formats_first_row() {
         let data = b"ABC";
-        let cfg = HexConfig {
-            bytes_per_row: 16,
-            base_address: 0,
-        };
+        let cfg = HexConfig::default();
         let dump = dump_to_string(data, cfg, INTL);
         let first = dump.lines().next().unwrap();
         assert!(first.starts_with("000000  41 42 43 "));
         assert!(first.trim_end().ends_with("ABC"));
+    }
+
+    #[test]
+    fn dump_honors_hidden_regions() {
+        // Hex only: no gutter, no ascii.
+        let cfg = HexConfig {
+            bytes_per_row: 16,
+            show_line_numbers: false,
+            show_ascii: false,
+            ..HexConfig::default()
+        };
+        let first = dump_to_string(b"AB", cfg, INTL)
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        assert_eq!(first.trim_end(), "41 42");
+    }
+
+    #[test]
+    fn dump_decimal_addresses() {
+        let cfg = HexConfig {
+            line_number_hex: false,
+            ..HexConfig::default()
+        };
+        let first = dump_to_string(b"A", cfg, INTL)
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        assert!(first.starts_with("000000  41 "));
+    }
+
+    #[test]
+    fn dump_groups_and_hides_nulls() {
+        let cfg = HexConfig {
+            bytes_per_row: 8,
+            grouping: Some(4),
+            hide_null_bytes: true,
+            show_ascii: false,
+            show_line_numbers: false,
+            ..HexConfig::default()
+        };
+        let data = [0x11u8, 0x00, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77];
+        let first = dump_to_string(&data, cfg, INTL)
+            .lines()
+            .next()
+            .unwrap()
+            .to_string();
+        // Groups of 4 contiguous bytes, one space between groups; null blanked.
+        assert_eq!(first, "11  2233 44556677");
+    }
+
+    #[test]
+    fn dump_ungrouped_packs_contiguously() {
+        let cfg = HexConfig {
+            grouping: None,
+            show_ascii: false,
+            show_line_numbers: false,
+            ..HexConfig::default()
+        };
+        let first = dump_to_string(&[0xAA, 0x01, 0xFF], cfg, INTL)
+            .lines()
+            .next()
+            .unwrap()
+            .trim_end()
+            .to_string();
+        assert_eq!(first, "AA01FF");
     }
 }

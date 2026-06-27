@@ -15,17 +15,17 @@
 //! real FAT/root/data regions on the disk.
 
 use crate::error::{Error, Result};
-use crate::image::geometry::{SECTOR_SIZE, SIZE_360K, SIZE_720K};
+use crate::image::geometry::{DiskFormat, SECTOR_SIZE, SIZE_360K, SIZE_720K};
 
 /// Canonical BIOS Parameter Block field values for a standard MSX disk.
-struct Bpb {
+pub(crate) struct Bpb {
     sectors_per_cluster: u8,
     reserved_sectors: u16,
     num_fats: u8,
     root_entries: u16,
-    total_sectors: u16,
-    media: u8,
-    sectors_per_fat: u16,
+    pub(crate) total_sectors: u16,
+    pub(crate) media: u8,
+    pub(crate) sectors_per_fat: u16,
     sectors_per_track: u16,
     heads: u16,
 }
@@ -43,7 +43,7 @@ const BPB_720K: Bpb = Bpb {
     heads: 2,
 };
 
-/// Standard single-sided 360KB MSX layout (media descriptor 0xF8).
+/// Standard single-sided 360KB MSX layout (media descriptor 0xF8, 3.5" 1DD).
 const BPB_360K: Bpb = Bpb {
     sectors_per_cluster: 2,
     reserved_sectors: 1,
@@ -55,6 +55,54 @@ const BPB_360K: Bpb = Bpb {
     sectors_per_track: 9,
     heads: 1,
 };
+
+/// 5.25" single-sided 180KB layout (media descriptor 0xFC, 40 tracks).
+const BPB_180K: Bpb = Bpb {
+    sectors_per_cluster: 1,
+    reserved_sectors: 1,
+    num_fats: 2,
+    root_entries: 64,
+    total_sectors: 360,
+    media: 0xFC,
+    sectors_per_fat: 2,
+    sectors_per_track: 9,
+    heads: 1,
+};
+
+/// 5.25" double-sided 360KB layout (media descriptor 0xFD, 40 tracks). Same
+/// byte size as [`BPB_360K`] but a distinct media descriptor and head count.
+const BPB_360K_DS: Bpb = Bpb {
+    sectors_per_cluster: 2,
+    reserved_sectors: 1,
+    num_fats: 2,
+    root_entries: 112,
+    total_sectors: 720,
+    media: 0xFD,
+    sectors_per_fat: 2,
+    sectors_per_track: 9,
+    heads: 2,
+};
+
+/// The canonical BPB for a selectable disk format.
+pub(crate) fn canonical_bpb(format: DiskFormat) -> &'static Bpb {
+    match format {
+        DiskFormat::Ss360 => &BPB_360K,
+        DiskFormat::Ds720 => &BPB_720K,
+        DiskFormat::Ss180 => &BPB_180K,
+        DiskFormat::Ds360 => &BPB_360K_DS,
+    }
+}
+
+/// Write `bpb` into `data`'s boot sector and finalize it (boot signature plus
+/// the DOS-1 field zeroing). Used to format a freshly created blank disk.
+pub(crate) fn format_boot_sector(data: &mut [u8], bpb: &Bpb) -> Result<()> {
+    if data.len() < SECTOR_SIZE {
+        return Err(Error::Malformed("image smaller than one sector".into()));
+    }
+    write_bpb(data, bpb);
+    finalize_boot_sector(data);
+    Ok(())
+}
 
 /// Make `data`'s boot sector acceptable to a strict FAT parser, in place.
 pub(crate) fn repair_boot_sector(data: &mut [u8]) -> Result<()> {
@@ -73,22 +121,26 @@ pub(crate) fn repair_boot_sector(data: &mut [u8]) -> Result<()> {
         };
         write_bpb(data, canonical);
     }
+    finalize_boot_sector(data);
+    Ok(())
+}
 
-    // MSX disks use the short DOS-1 BPB: the Z80 boot program starts around
-    // offset 30, so the bytes a PC parser reads as hidden_sectors,
-    // total_sectors_32, and the extended-signature/volume-label fields are
-    // actually boot code. Zero them so they do not look like a (bogus) 32-bit
-    // sector count or a garbage volume label. total_sectors_16 carries the real
-    // count for every MSX floppy.
+/// Normalize the boot-sector tail so a strict PC FAT parser accepts the disk.
+///
+/// MSX disks use the short DOS-1 BPB: the Z80 boot program starts around
+/// offset 30, so the bytes a PC parser reads as hidden_sectors,
+/// total_sectors_32, and the extended-signature/volume-label fields are
+/// actually boot code. Zero them so they do not look like a (bogus) 32-bit
+/// sector count or a garbage volume label. total_sectors_16 carries the real
+/// count for every MSX floppy. The 0x55AA signature is mandatory for fatfs;
+/// MSX disks frequently omit it.
+fn finalize_boot_sector(data: &mut [u8]) {
     data[28..36].fill(0); // hidden_sectors + total_sectors_32
     data[36] = 0; // drive number
     data[37] = 0; // reserved
     data[38] = 0; // extended boot signature (!= 0x29 -> label fields ignored)
-
-    // The PC boot signature is mandatory for fatfs; MSX disks frequently omit it.
     data[510] = 0x55;
     data[511] = 0xAA;
-    Ok(())
 }
 
 fn rd_u16(data: &[u8], off: usize) -> u16 {
@@ -96,7 +148,7 @@ fn rd_u16(data: &[u8], off: usize) -> u16 {
 }
 
 /// Whether the on-disk BPB is already self-consistent enough for fatfs.
-fn existing_bpb_is_valid(data: &[u8]) -> bool {
+pub(crate) fn existing_bpb_is_valid(data: &[u8]) -> bool {
     let bytes_per_sector = rd_u16(data, 11);
     let sectors_per_cluster = data[13];
     let reserved = rd_u16(data, 14);

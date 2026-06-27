@@ -188,6 +188,13 @@ impl LoadedDisk {
         self.image.sector(idx).map(<[u8]>::to_vec)
     }
 
+    /// A borrow of sector `idx`'s 512 bytes, if in range. Preferred over
+    /// [`sector_bytes`](Self::sector_bytes) on the per-frame render path, where
+    /// copying the sector every frame is wasteful.
+    pub fn sector_slice(&self, idx: usize) -> Option<&[u8]> {
+        self.image.sector(idx)
+    }
+
     /// Overwrite a raw sector and persist the change to the source image.
     pub fn write_sector(&mut self, idx: usize, bytes: &[u8]) -> msx_disk::Result<()> {
         if self.is_partitioned() {
@@ -317,6 +324,39 @@ impl LoadedDisk {
             .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
             .collect();
         let updated = write::add_files(self.image.data(), &refs)?;
+        self.write_back(updated)
+    }
+
+    /// Detect a boot-sector/image-size mismatch that can be safely repaired.
+    /// Limited to raw, writable single-volume images (`.dsk`/`.msx`), where
+    /// resizing the file and relabelling the boot sector are both safe.
+    pub fn size_mismatch(&self) -> Option<msx_disk::fs::sizefix::SizeMismatch> {
+        if self.is_partitioned() || self.path.is_none() || !self.image.is_writable() {
+            return None;
+        }
+        if !matches!(self.format, ImageFormat::Dsk | ImageFormat::Msx) {
+            return None;
+        }
+        msx_disk::fs::sizefix::detect(self.image.data())
+    }
+
+    /// Apply a geometry repair and write the result back to the source file.
+    pub fn apply_size_fix(
+        &mut self,
+        mismatch: &msx_disk::fs::sizefix::SizeMismatch,
+    ) -> msx_disk::Result<()> {
+        let fixed = msx_disk::fs::sizefix::repair(self.image.data(), mismatch);
+        self.write_back(fixed)
+    }
+
+    /// Create a directory at a slash-separated path (parent must already exist).
+    pub fn create_dir(&mut self, path: &str) -> msx_disk::Result<()> {
+        if self.is_partitioned() {
+            return Err(Error::Unsupported(
+                "hard-disk partitions are read-only".into(),
+            ));
+        }
+        let updated = write::create_dir(self.image.data(), path)?;
         self.write_back(updated)
     }
 
@@ -501,6 +541,27 @@ mod tests {
     }
 
     #[test]
+    fn size_fix_truncates_single_sided_disk_in_720_container() {
+        use msx_disk::image::geometry::{DiskFormat, SIZE_360K, SIZE_720K};
+        // A real 360KB disk padded into a 720KB container, written to a temp file.
+        let mut bytes = msx_disk::fs::write::create_blank(DiskFormat::Ss360).expect("blank 360");
+        bytes.resize(SIZE_720K, 0);
+        let tmp = std::env::temp_dir().join("mediaexplorer_sizefix_test.dsk");
+        std::fs::write(&tmp, &bytes).expect("write temp");
+
+        let mut disk = LoadedDisk::open(&tmp).expect("open");
+        let m = disk.size_mismatch().expect("mismatch detected");
+        assert_eq!(m.real_bytes, SIZE_360K);
+        disk.apply_size_fix(&m).expect("apply");
+
+        // The file on disk is now exactly 360KB and free of further mismatch.
+        let reopened = LoadedDisk::open(&tmp).expect("reopen");
+        assert_eq!(reopened.data().len(), SIZE_360K);
+        assert!(reopened.size_mismatch().is_none());
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
     fn humanize_bytes_picks_units() {
         assert_eq!(humanize_bytes(0), "0.00 B");
         assert_eq!(humanize_bytes(512), "512.00 B");
@@ -673,6 +734,14 @@ mod tests {
         disk.delete(&["PHASE2.TXT".to_string()]).expect("delete");
         let reopened = LoadedDisk::open(&tmp).expect("reopen2");
         assert!(reopened.read_file("PHASE2.TXT").is_err());
+
+        // Create a subdirectory and add a file into it, then reopen to confirm.
+        let mut disk = reopened;
+        disk.create_dir("NEWDIR").expect("create dir");
+        disk.add_files(&[("NEWDIR/INSIDE.TXT".to_string(), b"in".to_vec())])
+            .expect("add into subdir");
+        let reopened = LoadedDisk::open(&tmp).expect("reopen3");
+        assert_eq!(reopened.read_file("NEWDIR/INSIDE.TXT").unwrap(), b"in");
 
         let _ = std::fs::remove_file(&tmp);
     }

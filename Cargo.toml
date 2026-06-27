@@ -5,13 +5,36 @@ members = ["crates/msx-disk", "crates/mediaexplorer-gui"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# Highest MSRV in the tree is egui/eframe 0.34 (1.92); keep this in sync if they bump.
+rust-version = "1.92"
 license = "GPL-2.0-or-later"
 repository = "https://github.com/sndpl/msx-media-explorer"
 authors = ["Sandy Pleyte"]
 
+# Dependencies shared by more than one crate are pinned here so the versions
+# cannot drift apart; crates opt in with `image.workspace = true`.
+[workspace.dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+
 [workspace.lints.clippy]
 all = "warn"
+# Allocation/perf guards the tree already satisfies (kept as regression guards).
+# The cast lints (cast_possible_truncation/cast_lossless) are intentionally not
+# enabled: their hits are dominated by the RECOIL GPL port and deliberate
+# mask-then-narrow parsing, none of them genuine truncation bugs.
+cloned_instead_of_copied = "warn"
+inefficient_to_string = "warn"
+flat_map_option = "warn"
 
 [profile.release]
-lto = "thin"
+# Desktop binary: maximize optimization and shrink the shipped artifact. No
+# `panic = "abort"` — boot-sector repair, reencode, and malformed-image parsing
+# rely on graceful error returns rather than aborting.
+lto = "fat"
+codegen-units = 1
 strip = true
+
+# Optimize dependencies (egui/eframe/image) even in dev builds so the GUI is
+# usable while keeping incremental rebuilds of our own crates fast.
+[profile.dev.package."*"]
+opt-level = 3

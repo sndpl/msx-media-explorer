@@ -84,17 +84,20 @@ pub fn locate<'a>(name: &str, bytes: &'a [u8]) -> CodeImage<'a> {
 /// Disassemble `code` as Z80/R800, with the first byte at `origin`. A leading
 /// comment block records the origin and (when known) the execution address.
 pub fn disassemble(code: &[u8], origin: u16, exec: Option<u16>) -> String {
-    let mut out = String::new();
+    // Each line is roughly "XXXX  HH HH ...  MNEMONIC\n"; pre-size to avoid
+    // reallocations as the listing grows over a large code window.
+    let mut out = String::with_capacity(code.len() * 12 + 32);
     let _ = writeln!(out, "; origin 0x{origin:04X}");
     if let Some(e) = exec {
         let _ = writeln!(out, "; exec   0x{e:04X}");
     }
     let mut pos = 0usize;
     let mut pc = origin;
+    let mut hex = String::new();
     while pos < code.len() {
         let (len, text) = decode(&code[pos..], pc);
         let end = (pos + len).min(code.len());
-        let mut hex = String::new();
+        hex.clear();
         for b in &code[pos..end] {
             let _ = write!(hex, "{b:02X} ");
         }

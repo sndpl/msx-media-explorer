@@ -378,8 +378,9 @@ pub(crate) fn cluster_chain_sectors(
     first: u16,
 ) -> Vec<usize> {
     let sector_count = buf.len() / SECTOR_SIZE;
-    let mut sectors = Vec::new();
-    for cluster in cluster_chain_clusters(buf, bpb, fat_type, first) {
+    let clusters = cluster_chain_clusters(buf, bpb, fat_type, first);
+    let mut sectors = Vec::with_capacity(clusters.len() * bpb.sectors_per_cluster);
+    for cluster in clusters {
         let base = bpb.cluster_first_sector(cluster as usize);
         for s in base..base + bpb.sectors_per_cluster {
             if s < sector_count {

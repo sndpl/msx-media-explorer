@@ -8,6 +8,8 @@
 /// Bytes per sector on every supported MSX disk.
 pub const SECTOR_SIZE: usize = 512;
 
+/// Raw size of a 5.25" single-sided 180KB disk (40 tracks).
+pub const SIZE_180K: usize = 184_320;
 /// Raw size of a single-sided 360KB disk.
 pub const SIZE_360K: usize = 368_640;
 /// Raw size of a double-sided 720KB disk.
@@ -36,6 +38,20 @@ impl Geometry {
     pub const DS_720K: Geometry = Geometry {
         sides: 2,
         tracks: 80,
+        sectors_per_track: 9,
+    };
+
+    /// 5.25" single-sided 180KB MSX disk (1 side, 40 tracks, 9 sectors).
+    pub const SS_180K: Geometry = Geometry {
+        sides: 1,
+        tracks: 40,
+        sectors_per_track: 9,
+    };
+
+    /// 5.25" double-sided 360KB MSX disk (2 sides, 40 tracks, 9 sectors).
+    pub const DS_360K_525: Geometry = Geometry {
+        sides: 2,
+        tracks: 40,
         sectors_per_track: 9,
     };
 
@@ -91,9 +107,80 @@ impl Geometry {
     }
 }
 
+/// A standard MSX floppy format selectable when creating a new blank disk.
+///
+/// Each variant pins both the physical geometry and the media descriptor, so
+/// the two 360KB formats (3.5" single-sided vs 5.25" double-sided) stay
+/// distinct even though they are the same byte size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiskFormat {
+    /// 3.5" single-sided, double density — 360KB (1 side, 80 tracks, media F8).
+    Ss360,
+    /// 3.5" double-sided, double density — 720KB (2 sides, 80 tracks, media F9).
+    Ds720,
+    /// 5.25" single-sided, double density — 180KB (1 side, 40 tracks, media FC).
+    Ss180,
+    /// 5.25" double-sided, double density — 360KB (2 sides, 40 tracks, media FD).
+    Ds360,
+}
+
+impl DiskFormat {
+    /// Every format, in the order shown in the New Disk chooser.
+    pub const ALL: [DiskFormat; 4] = [
+        DiskFormat::Ss360,
+        DiskFormat::Ds720,
+        DiskFormat::Ss180,
+        DiskFormat::Ds360,
+    ];
+
+    /// Physical geometry of the format.
+    pub const fn geometry(self) -> Geometry {
+        match self {
+            DiskFormat::Ss360 => Geometry::SS_360K,
+            DiskFormat::Ds720 => Geometry::DS_720K,
+            DiskFormat::Ss180 => Geometry::SS_180K,
+            DiskFormat::Ds360 => Geometry::DS_360K_525,
+        }
+    }
+
+    /// Total image size in bytes.
+    pub const fn total_bytes(self) -> usize {
+        self.geometry().total_bytes()
+    }
+
+    /// Human-readable name for the New Disk chooser.
+    pub const fn label(self) -> &'static str {
+        match self {
+            DiskFormat::Ss360 => "3.5\" Single Sided, 360 kB (1DD)",
+            DiskFormat::Ds720 => "3.5\" Double Sided, 720 kB (2DD)",
+            DiskFormat::Ss180 => "5.25\" Single Sided, 180 kB (SS,DD)",
+            DiskFormat::Ds360 => "5.25\" Double Sided, 360 kB (DS,DD)",
+        }
+    }
+
+    /// Suggested file name when saving a freshly created disk.
+    pub const fn default_file_name(self) -> &'static str {
+        match self {
+            DiskFormat::Ss360 => "blank-360-ss.dsk",
+            DiskFormat::Ds720 => "blank-720.dsk",
+            DiskFormat::Ss180 => "blank-180.dsk",
+            DiskFormat::Ds360 => "blank-360-ds.dsk",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn disk_format_sizes_match_geometry() {
+        assert_eq!(DiskFormat::Ss360.total_bytes(), SIZE_360K);
+        assert_eq!(DiskFormat::Ds720.total_bytes(), SIZE_720K);
+        assert_eq!(DiskFormat::Ss180.total_bytes(), SIZE_180K);
+        // The 5.25" double-sided disk is the same size as the 3.5" single-sided.
+        assert_eq!(DiskFormat::Ds360.total_bytes(), SIZE_360K);
+    }
 
     #[test]
     fn chs_of_lba_double_sided_interleaves_sides_within_a_track() {

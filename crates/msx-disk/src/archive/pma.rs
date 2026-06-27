@@ -725,7 +725,10 @@ impl<'a> Pm1<'a> {
     }
 
     fn read_byte_decode_index(&mut self) -> Option<u32> {
-        let tree = self.byte_decode_tree.as_ref().unwrap();
+        // The tree is set by `read_start_header` before the decode loop, so this
+        // is reachable only with `Some`. Propagate rather than panic so a future
+        // caller that decodes before the header fails gracefully on bad input.
+        let tree = self.byte_decode_tree.as_ref()?;
         if tree[0] == 0 {
             return Some(0);
         }

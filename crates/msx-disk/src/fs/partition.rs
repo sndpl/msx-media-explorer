@@ -33,7 +33,10 @@ pub struct PartitionEntry {
 /// The byte slice of the partition starting at `lba_start`, clamped to the
 /// image's bounds, or `None` if the start is past the end of the image.
 fn partition_slice<'a>(data: &'a [u8], entry: &PartitionEntry) -> Option<&'a [u8]> {
-    let start = entry.lba_start as usize * SECTOR_SIZE;
+    // `lba_start` comes straight from an attacker-controlled partition table, so
+    // the byte offset must use `checked_mul`: on a 32-bit `usize` target the
+    // product can overflow. Mirrors `Volume::from_image_slice`.
+    let start = (entry.lba_start as usize).checked_mul(SECTOR_SIZE)?;
     if start >= data.len() {
         return None;
     }
@@ -180,6 +183,29 @@ mod tests {
         // Only the original valid partition at lba 1 survives.
         assert_eq!(parts.len(), 1);
         assert_eq!(parts[0].lba_start, 1);
+    }
+
+    #[test]
+    fn drops_partition_whose_lba_start_is_out_of_range() {
+        // An `lba_start` past the end of the image (here the u32 maximum) must be
+        // dropped gracefully, never panic. The byte offset `lba_start * 512`
+        // overflows `usize` on 32-bit targets, so the multiply is checked.
+        let mut buf = make_partitioned(&[1]);
+        write_entry(&mut buf, 1, 0x01, u32::MAX, 1);
+        let parts = parse_partition_table(&buf).unwrap();
+        // Only the in-bounds partition at lba 1 survives.
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].lba_start, 1);
+
+        // The out-of-range entry yields no slice rather than panicking.
+        let rogue = PartitionEntry {
+            index: 1,
+            status: 0,
+            type_byte: 0x01,
+            lba_start: u32::MAX,
+            sector_count: 1,
+        };
+        assert!(partition_slice(&buf, &rogue).is_none());
     }
 
     #[test]

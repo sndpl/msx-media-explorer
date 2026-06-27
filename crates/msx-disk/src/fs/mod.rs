@@ -10,6 +10,7 @@ pub mod dos;
 pub mod entry;
 pub mod map;
 pub mod partition;
+pub mod sizefix;
 pub mod volume;
 pub mod write;
 

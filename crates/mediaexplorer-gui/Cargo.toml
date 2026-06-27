@@ -3,6 +3,7 @@ name = "mediaexplorer-gui"
 description = "Cross-platform GUI for browsing and editing MSX disk and tape images"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -16,16 +17,33 @@ workspace = true
 
 [dependencies]
 arboard = { version = "3.6.1", features = ["image-data"] }
-eframe = "0.34.3"
+eframe = { version = "0.34.3", features = ["persistence"] }
 egui = "0.34.3"
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image.workspace = true
 msx-disk = { path = "../msx-disk" }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
 
 # Native drag-out to the OS file manager (macOS + Windows only; Linux falls
 # back to the Extract dialog).
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 drag = "2.1.1"
+
+# macOS-only: native menu bar (muda) plus the app menu / About-panel name and
+# icon at startup. The objc2 crates are already in the dependency tree via
+# winit; versions track it.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = "0.19"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSResponder",
+    "NSImage",
+] }
+objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSProcessInfo"] }
 
 # cargo-packager: turns the compiled binary into a real desktop bundle
 # (.app/.dmg on macOS). The binary is built separately (CI lipos the two

@@ -114,7 +114,18 @@ pub fn add_files(normalized: &[u8], files: &[(&str, &[u8])]) -> Result<Vec<u8>> 
     })
 }
 
-/// Delete files (or empty directories) by their slash-separated paths.
+/// Create a directory at `path` (slash-separated). Any parent directories in
+/// `path` must already exist; only the final component is created.
+pub fn create_dir(normalized: &[u8], path: &str) -> Result<Vec<u8>> {
+    transaction(normalized, |root| {
+        root.create_dir(path)?;
+        Ok(())
+    })
+}
+
+/// Delete files (or empty directories) by their slash-separated paths. To
+/// remove a non-empty directory, list its contents deepest-first followed by
+/// the directory itself, so each directory is empty by the time it is removed.
 pub fn delete(normalized: &[u8], paths: &[&str]) -> Result<Vec<u8>> {
     transaction(normalized, |root| {
         for path in paths {
@@ -129,23 +140,20 @@ pub fn rename(normalized: &[u8], old_path: &str, new_path: &str) -> Result<Vec<u
     transaction(normalized, |root| root.rename(old_path, root, new_path))
 }
 
-/// Create a blank, freshly-formatted MSX FAT12 disk image.
+/// Create a blank, freshly-formatted MSX FAT12 disk image in the given format.
 ///
-/// `double_sided` selects 720KB (media 0xF9) versus 360KB (media 0xF8). The
-/// canonical MSX boot sector / BPB is written so the disk is readable by both
-/// MSX-DOS 1 (which assumes the standard layout) and MSX-DOS 2.
-pub fn create_blank(double_sided: bool) -> Result<Vec<u8>> {
-    use crate::image::geometry::{SIZE_360K, SIZE_720K};
+/// The format pins the geometry and media descriptor (so the two 360KB formats
+/// stay distinct), and the canonical MSX boot sector / BPB is written so the
+/// disk is readable by both MSX-DOS 1 (which derives geometry from the media
+/// descriptor) and MSX-DOS 2.
+pub fn create_blank(format: crate::image::geometry::DiskFormat) -> Result<Vec<u8>> {
+    let bpb = super::boot::canonical_bpb(format);
+    let media = bpb.media;
+    let sectors_per_fat = bpb.sectors_per_fat as usize;
 
-    let (size, media, sectors_per_fat) = if double_sided {
-        (SIZE_720K, 0xF9u8, 3usize)
-    } else {
-        (SIZE_360K, 0xF8u8, 2usize)
-    };
-
-    // A zeroed standard-size image gets the canonical BPB + boot signature.
-    let mut buf = vec![0u8; size];
-    super::boot::repair_boot_sector(&mut buf)?;
+    // A zeroed image gets the canonical BPB + boot signature for the format.
+    let mut buf = vec![0u8; format.total_bytes()];
+    super::boot::format_boot_sector(&mut buf, bpb)?;
 
     // Initialize both FATs: entry 0 is the media descriptor, entry 1 the
     // end-of-chain marker (the remaining 8 bits of the 12-bit pair).
@@ -184,6 +192,50 @@ mod tests {
         let out = add_files(&disk, &[("HELLO.TXT", b"hi there")]).unwrap();
         let fs = DiskFs::mount(out).unwrap();
         assert_eq!(fs.read_file("HELLO.TXT").unwrap(), b"hi there");
+    }
+
+    #[test]
+    fn create_dir_then_add_file_into_it() {
+        let disk = blank_disk();
+        let with_dir = create_dir(&disk, "TOOLS").unwrap();
+        // A file can be added inside the new directory by its slash path.
+        let out = add_files(&with_dir, &[("TOOLS/ASM.COM", b"code")]).unwrap();
+        let fs = DiskFs::mount(out).unwrap();
+        assert_eq!(fs.read_file("TOOLS/ASM.COM").unwrap(), b"code");
+        let tree = fs.tree().unwrap();
+        let tools = tree.iter().find(|e| e.name == "TOOLS").expect("TOOLS dir");
+        assert!(tools.is_dir);
+    }
+
+    #[test]
+    fn create_nested_subdirectory() {
+        let disk = blank_disk();
+        let a = create_dir(&disk, "GAMES").unwrap();
+        let b = create_dir(&a, "GAMES/RPG").unwrap();
+        let fs = DiskFs::mount(b).unwrap();
+        let tree = fs.tree().unwrap();
+        let games = tree.iter().find(|e| e.name == "GAMES").unwrap();
+        assert!(games.children.iter().any(|c| c.name == "RPG" && c.is_dir));
+    }
+
+    #[test]
+    fn recursive_remove_via_postorder_paths() {
+        // Build TOOLS/{A.TXT, SUB/B.TXT}, then remove the whole tree by deleting
+        // deepest paths first (the order the GUI computes) ending with TOOLS.
+        let disk = blank_disk();
+        let d1 = create_dir(&disk, "TOOLS").unwrap();
+        let d2 = create_dir(&d1, "TOOLS/SUB").unwrap();
+        let with = add_files(&d2, &[("TOOLS/A.TXT", b"a"), ("TOOLS/SUB/B.TXT", b"b")]).unwrap();
+        let order = [
+            "TOOLS/SUB/B.TXT".to_string(),
+            "TOOLS/A.TXT".to_string(),
+            "TOOLS/SUB".to_string(),
+            "TOOLS".to_string(),
+        ];
+        let refs: Vec<&str> = order.iter().map(String::as_str).collect();
+        let out = delete(&with, &refs).unwrap();
+        let fs = DiskFs::mount(out).unwrap();
+        assert!(fs.tree().unwrap().iter().all(|e| e.name != "TOOLS"));
     }
 
     #[test]
@@ -238,17 +290,38 @@ mod tests {
 
     #[test]
     fn create_blank_makes_empty_usable_disk() {
-        for (double_sided, size) in [(true, SIZE_720K), (false, 368_640)] {
-            let blank = create_blank(double_sided).unwrap();
-            assert_eq!(blank.len(), size);
-            let fs = DiskFs::mount(blank.clone()).unwrap();
-            assert!(fs.tree().unwrap().is_empty(), "new disk should be empty");
+        use crate::image::geometry::DiskFormat;
+        for format in DiskFormat::ALL {
+            let blank = create_blank(format).unwrap();
+            assert_eq!(blank.len(), format.total_bytes(), "{format:?} size");
+            let fs = DiskFs::mount(blank.clone())
+                .unwrap_or_else(|e| panic!("{format:?} should mount: {e}"));
+            assert!(
+                fs.tree().unwrap().is_empty(),
+                "new {format:?} disk should be empty"
+            );
 
             // And it accepts a file.
             let out = add_files(&blank, &[("READY.TXT", b"ok")]).unwrap();
             let fs = DiskFs::mount(out).unwrap();
-            assert_eq!(fs.read_file("READY.TXT").unwrap(), b"ok");
+            assert_eq!(fs.read_file("READY.TXT").unwrap(), b"ok", "{format:?}");
         }
+    }
+
+    #[test]
+    fn create_blank_writes_the_formats_media_descriptor() {
+        use crate::image::geometry::DiskFormat;
+        // Media byte lives at the start of the first FAT (reserved sector 1).
+        let media = |f| create_blank(f).unwrap()[SECTOR_SIZE];
+        assert_eq!(media(DiskFormat::Ss360), 0xF8);
+        assert_eq!(media(DiskFormat::Ds720), 0xF9);
+        assert_eq!(media(DiskFormat::Ss180), 0xFC);
+        assert_eq!(media(DiskFormat::Ds360), 0xFD);
+        // The two 360KB formats are the same size but differ on disk.
+        assert_ne!(
+            create_blank(DiskFormat::Ss360).unwrap(),
+            create_blank(DiskFormat::Ds360).unwrap()
+        );
     }
 
     #[test]

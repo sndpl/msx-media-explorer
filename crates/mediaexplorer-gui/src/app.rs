@@ -1,11 +1,12 @@
 //! Top-level application state and the `eframe::App` implementation.
 
+use std::cell::{OnceCell, RefCell};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use msx_disk::fs::map::SectorKind;
 use msx_disk::image::dmk::{self, Density, DmkAnalysis, DmkTrackInfo};
-use msx_disk::image::geometry::{Geometry, SECTOR_SIZE};
+use msx_disk::image::geometry::{DiskFormat, Geometry, SECTOR_SIZE, SIZE_360K, SIZE_720K};
 use msx_disk::recoil::{self, FnCompanions};
 use msx_disk::search;
 use msx_disk::tape::TapeBlock;
@@ -15,7 +16,26 @@ use msx_disk::view::hex::{ascii_char, dump_to_string, HexConfig};
 use msx_disk::view::text::{self, ControlMode};
 use msx_disk::{charset, DirEntry, ImageFormat, MsxCharset};
 
+use crate::hexlayout::{HexLayout, HexRegion};
+use crate::settings::{ByteGrouping, HexViewOptions, Settings};
 use crate::state::{humanize_bytes, LoadedDisk, LoadedTape};
+use crate::tree_nav::{self, NavKey, TreeNav};
+
+/// Path key for the synthetic disk-root row: the empty string, distinct from
+/// every real entry path and used as the "add to root" target.
+const ROOT_PATH: &str = "";
+
+/// Storage key under which [`Settings`] are persisted by eframe.
+const SETTINGS_KEY: &str = "settings";
+
+/// A standard MSX disk size as a human label for the geometry-mismatch popup.
+fn size_label(bytes: usize) -> String {
+    match bytes {
+        SIZE_360K => "360 kB (single-sided)".to_string(),
+        SIZE_720K => "720 kB (double-sided)".to_string(),
+        _ => format!("{} kB", bytes / 1024),
+    }
+}
 
 /// Register GNU Unifont as a fallback font so decoded MSX glyphs (kana, accented
 /// Latin, box-drawing, ...) render instead of tofu. egui's built-in fonts cover
@@ -94,6 +114,58 @@ struct FileContent {
     bytes: Vec<u8>,
     /// CRC32 + SHA-1 of the bytes, computed once here (not per frame).
     checksums: msx_disk::Checksums,
+    /// Content-derived file info for the Info pane, decoded on first view and
+    /// reused across frames (not re-parsed every repaint).
+    info: OnceCell<msx_disk::fileinfo::FileInfo>,
+    /// The last rendered Text/Basic/Disasm listing, keyed by what it depends on.
+    /// egui repaints many times per second; without this each repaint would
+    /// re-detokenize/disassemble the whole file.
+    rendered: RefCell<Option<(RenderKey, RenderedView)>>,
+}
+
+/// What a cached [`RenderedView`] depends on; a change recomputes the listing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct RenderKey {
+    mode: ViewMode,
+    charset: MsxCharset,
+    show_all: bool,
+}
+
+/// A decoded content listing plus an optional "showing first N kB" notice,
+/// cached so it is produced once per [`RenderKey`] rather than every frame.
+struct RenderedView {
+    text: String,
+    notice: Option<String>,
+}
+
+impl FileContent {
+    /// The content-derived file info, decoded once and cached.
+    fn file_info(&self) -> &msx_disk::fileinfo::FileInfo {
+        self.info
+            .get_or_init(|| msx_disk::fileinfo::describe(&self.path, &self.bytes))
+    }
+
+    /// Draw a text listing, recomputing it via `produce` only when `key` changes
+    /// and otherwise reusing the cached string. Keeps immediate-mode repaints
+    /// from re-decoding the whole file.
+    fn show_listing(
+        &self,
+        ui: &mut egui::Ui,
+        key: RenderKey,
+        produce: impl FnOnce() -> RenderedView,
+    ) {
+        let mut cache = self.rendered.borrow_mut();
+        let stale = match cache.as_ref() {
+            Some((k, _)) => *k != key,
+            None => true,
+        };
+        if stale {
+            *cache = Some((key, produce()));
+        }
+        if let Some((_, view)) = cache.as_ref() {
+            draw_listing(ui, view);
+        }
+    }
 }
 
 /// Cached member listing for the selected archive file, computed once when the
@@ -119,6 +191,13 @@ enum RowAction {
     Rename(String),
     Delete(String),
     Extract(String),
+    /// Add host files into this directory (carries the target dir path; "" is
+    /// the disk root).
+    AddFiles(String),
+    /// Create a new directory inside this directory (carries the parent path).
+    AddDir(String),
+    /// Remove this directory (carries the directory path).
+    RemoveDir(String),
 }
 
 /// What the user did to a tree row this frame, collected by the row renderers
@@ -127,10 +206,17 @@ enum RowAction {
 struct RowEvents {
     /// A row was clicked to view it; the bool toggles multi-select (Cmd/Ctrl).
     clicked: Option<(String, bool)>,
+    /// A directory header was clicked to toggle its expanded/collapsed state.
+    toggle_dir: Option<String>,
+    /// A row (file or directory) became the keyboard cursor via a click.
+    cursor_to: Option<String>,
     /// A row began an OS drag-out (the dragged row's path).
     drag_started: Option<String>,
     /// A context-menu action was chosen on a row.
     action: Option<RowAction>,
+    /// Screen rect of each rendered row paired with the directory a file
+    /// dropped on it should be added to, for spatial drag-and-drop targeting.
+    drop_targets: Vec<(egui::Rect, String)>,
 }
 
 /// A rename in progress: the file being renamed, the new name being typed (as a
@@ -140,6 +226,13 @@ struct RenameTarget {
     path: String,
     name: String,
     charset: MsxCharset,
+}
+
+/// A new-directory dialog in progress: the parent directory it will be created
+/// in ("" = disk root) and the name being typed.
+struct NewDirTarget {
+    parent: String,
+    name: String,
 }
 
 /// A named byte offset the user can jump back to in the hex view.
@@ -163,6 +256,9 @@ struct HexUiState {
     bookmarks: Vec<Bookmark>,
     /// The byte where the current click-drag began.
     drag_anchor: Option<usize>,
+    /// Which column the active selection was made in; decides whether
+    /// Cmd/Ctrl+C copies the hex bytes or their ASCII rendering.
+    region: HexRegion,
 }
 
 impl HexUiState {
@@ -185,12 +281,17 @@ struct HexSelection {
 /// A pointer gesture recognized in the hex view, applied by the caller to its
 /// [`HexUiState`].
 enum HexGesture {
-    /// A click-drag began at this byte.
-    DragStart(usize),
+    /// A click-drag began at this byte, in the given column.
+    DragStart { byte: usize, region: HexRegion },
     /// A click-drag extended to this byte.
     DragTo(usize),
-    /// A click landed on this byte; `shift` extends the selection from the cursor.
-    Click { byte: usize, shift: bool },
+    /// A click landed on this byte; `shift` extends the selection from the
+    /// cursor. `region` records which column was clicked.
+    Click {
+        byte: usize,
+        shift: bool,
+        region: HexRegion,
+    },
 }
 
 /// Root application state.
@@ -209,7 +310,6 @@ pub struct MediaExplorerApp {
     /// Parsed member list for the selected archive file, when one is selected.
     archive: Option<ArchiveListing>,
     view_mode: ViewMode,
-    bytes_per_row: usize,
     text_show_all: bool,
     /// Cached screen texture, keyed by the file path and forced format it was
     /// rendered from (so changing either invalidates it).
@@ -271,10 +371,56 @@ pub struct MediaExplorerApp {
     show_inspector: bool,
     /// Whether the About window is open.
     show_about: bool,
+    /// Whether the "New disk" type-chooser popup is open.
+    show_new_disk: bool,
+    /// Cached app-icon texture for the About window, decoded on first open.
+    about_icon: Option<egui::TextureHandle>,
+    /// Persisted settings: recent files and hex-view display options.
+    settings: Settings,
+    /// Native macOS menu handles, built once at startup. `None` until the menu
+    /// is created (and always on non-macOS, which uses an in-window menu bar).
+    #[cfg(target_os = "macos")]
+    mac_menu: Option<crate::macos::MacMenu>,
+    /// Highlighted tree row (file or directory) for keyboard navigation. Kept
+    /// separate from [`selected`](Self::selected), which is always a file.
+    cursor: Option<String>,
+    /// Directory paths the user has collapsed in the tree; empty means all
+    /// expanded. This is the source of truth for the tree's open/closed state.
+    collapsed: BTreeSet<String>,
+    /// One-shot request to scroll the cursor row into view after a key move.
+    scroll_to_cursor: bool,
+    /// New-directory dialog state, when the user is naming a directory to add.
+    new_dir: Option<NewDirTarget>,
+    /// A detected boot-sector/image-size mismatch awaiting the user's decision.
+    size_fix: Option<msx_disk::fs::sizefix::SizeMismatch>,
+    /// Last frame's tree-row rects with their add-target directories, used to
+    /// resolve which folder a drag-and-drop landed on.
+    drop_targets: Vec<(egui::Rect, String)>,
 }
 
 /// Application version (from Cargo.toml), shown in the toolbar and About window.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Short git hash this binary was built from; empty when built without a git
+/// checkout. Set by `build.rs`.
+const GIT_HASH: &str = match option_env!("GIT_HASH") {
+    Some(hash) => hash,
+    None => "",
+};
+
+/// Commit date (`YYYY-MM-DD`) of the build; empty when built without a git
+/// checkout. Set by `build.rs`.
+const BUILD_DATE: &str = match option_env!("BUILD_DATE") {
+    Some(date) => date,
+    None => "",
+};
+
+/// App icon (256x256 PNG): decoded lazily for the in-app About window, and on
+/// macOS also used as the application/About-panel icon (see `macos` module).
+pub(crate) const ICON_PNG: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/icons/128x128@2x.png"
+));
 
 /// Largest file (bytes) offered for in-app hex editing, to keep the editor
 /// responsive.
@@ -292,7 +438,6 @@ impl Default for MediaExplorerApp {
             content: None,
             archive: None,
             view_mode: ViewMode::Hex,
-            bytes_per_row: 16,
             text_show_all: false,
             screen_tex: None,
             forced_format: None,
@@ -325,11 +470,38 @@ impl Default for MediaExplorerApp {
             sector_hex: HexUiState::default(),
             show_inspector: false,
             show_about: false,
+            show_new_disk: false,
+            about_icon: None,
+            settings: Settings::default(),
+            #[cfg(target_os = "macos")]
+            mac_menu: None,
+            cursor: None,
+            collapsed: BTreeSet::new(),
+            scroll_to_cursor: false,
+            new_dir: None,
+            size_fix: None,
+            drop_targets: Vec::new(),
         }
     }
 }
 
 impl MediaExplorerApp {
+    /// Build the app, restoring persisted settings and (on macOS) installing
+    /// the native menu bar.
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let mut app = Self::default();
+        if let Some(storage) = cc.storage {
+            if let Some(settings) = eframe::get_value::<Settings>(storage, SETTINGS_KEY) {
+                app.settings = settings;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            app.mac_menu = Some(crate::macos::build_menu(&cc.egui_ctx, &app.settings));
+        }
+        app
+    }
+
     fn open_path(&mut self, path: &Path) {
         if is_tape(path) {
             self.open_tape(path);
@@ -347,6 +519,12 @@ impl MediaExplorerApp {
         self.disk_fs_geometry = None;
         self.selected = None;
         self.selection.clear();
+        self.cursor = None;
+        self.collapsed.clear();
+        self.scroll_to_cursor = false;
+        self.new_dir = None;
+        self.size_fix = None;
+        self.drop_targets.clear();
         self.content = None;
         self.archive = None;
         self.current_sector = 0;
@@ -375,6 +553,9 @@ impl MediaExplorerApp {
                 self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
                 self.disk_fs_geometry = self.disk.as_ref().and_then(LoadedDisk::fs_geometry);
                 self.autodetect_charset();
+                // Flag a boot-sector/image-size mismatch for the user to repair.
+                self.size_fix = self.disk.as_ref().and_then(LoadedDisk::size_mismatch);
+                self.record_recent(path);
             }
             Err(e) => self.status = format!("Failed to open {}: {e}", path.display()),
         }
@@ -409,6 +590,7 @@ impl MediaExplorerApp {
                     tape.file_count()
                 );
                 self.tape = Some(tape);
+                self.record_recent(path);
             }
             Err(e) => self.status = format!("Failed to open {}: {e}", path.display()),
         }
@@ -463,6 +645,8 @@ impl MediaExplorerApp {
             path: path.clone(),
             bytes,
             checksums,
+            info: OnceCell::new(),
+            rendered: RefCell::new(None),
         });
         self.selected = Some(path);
     }
@@ -509,7 +693,13 @@ impl MediaExplorerApp {
             }
         }
         if self.disk_writable() {
-            self.add_paths(&paths);
+            // Spatial drop: add into whichever folder row the pointer is over
+            // (a file row → its folder, the "/" root or empty space → root).
+            let pos = ctx.input(|i| i.pointer.hover_pos().or_else(|| i.pointer.interact_pos()));
+            let target = pos
+                .and_then(|p| drop_target_at(&self.drop_targets, p))
+                .unwrap_or_default();
+            self.add_paths_into(&paths, &target);
         } else {
             self.open_path(&paths[0]);
         }
@@ -517,25 +707,6 @@ impl MediaExplorerApp {
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if ui.button("Open…").clicked() {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("MSX disk images", DISK_IMAGE_EXTS)
-                    .add_filter("MSX tape images", TAPE_EXTS)
-                    .pick_file()
-                {
-                    self.open_path(&path);
-                }
-            }
-            ui.menu_button("New…", |ui| {
-                if ui.button("720 kB (double-sided)").clicked() {
-                    self.new_disk(true);
-                    ui.close();
-                }
-                if ui.button("360 kB (single-sided)").clicked() {
-                    self.new_disk(false);
-                    ui.close();
-                }
-            });
             if self.disk.is_some() {
                 if ui.button("Save as .dsk…").clicked() {
                     self.save_as_dsk();
@@ -544,10 +715,8 @@ impl MediaExplorerApp {
                     self.save_as_xsa();
                 }
             }
-            let writable = self.disk_writable();
-            if writable && ui.button("Add files…").clicked() {
-                self.add_files_dialog();
-            }
+            // Adding files / directories lives in the tree's right-click menu
+            // (right-click the "/" root row to add to the disk root).
             if let Some(disk) = &self.disk {
                 ui.separator();
                 ui.label(disk.title());
@@ -629,34 +798,59 @@ impl MediaExplorerApp {
             });
             ui.separator();
         }
-        let writable = self.disk_writable();
         let charset = self.charset;
         let mut events = RowEvents::default();
-        if let Some(disk) = &self.disk {
-            if disk.tree.is_empty() {
-                ui.weak(empty_fat_message());
-            } else {
+        // Scope `ctx` so its immutable borrows of `self` are released before the
+        // event handling below mutates `self.cursor` / `self.collapsed`.
+        {
+            let ctx = TreeRender {
+                selection: &self.selection,
+                collapsed: &self.collapsed,
+                cursor: self.cursor.as_deref(),
+                scroll_to_cursor: self.scroll_to_cursor,
+                writable: self.disk_writable(),
+                charset,
+            };
+            if let Some(disk) = &self.disk {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        render_entries(
-                            ui,
-                            &disk.tree,
-                            &self.selection,
-                            writable,
-                            charset,
-                            &mut events,
-                        );
+                        if disk.is_partitioned() {
+                            // An HD's partition nodes are the roots; no "/" row.
+                            render_entries(ui, &disk.tree, &ctx, &mut events);
+                        } else {
+                            // Single-volume disk: a "/" root row holds the tree,
+                            // so files/dirs can be added to the root too.
+                            render_tree_with_root(ui, &disk.tree, &ctx, &mut events);
+                        }
                     });
+            } else if let Some(tape) = &self.tape {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        render_tape_files(ui, tape, &ctx, &mut events);
+                    });
+            } else {
+                ui.weak("No disk open.");
             }
-        } else if let Some(tape) = &self.tape {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    render_tape_files(ui, tape, &self.selection, &mut events);
-                });
-        } else {
-            ui.weak("No disk open.");
+        }
+        // The cursor scroll is a one-shot; clear it once the tree has drawn.
+        self.scroll_to_cursor = false;
+        // Keep this frame's row rects for resolving the next drag-and-drop.
+        self.drop_targets = std::mem::take(&mut events.drop_targets);
+        if let Some(path) = events.toggle_dir {
+            if !self.collapsed.remove(&path) {
+                self.collapsed.insert(path);
+            }
+        }
+        if let Some(path) = events.cursor_to {
+            // A clicked directory (or the "/" root) clears the file viewer and
+            // only highlights the folder; a clicked file is loaded below.
+            if path == ROOT_PATH || self.entry_for_path(&path).is_some_and(|e| e.is_dir) {
+                self.focus_directory(path);
+            } else {
+                self.cursor = Some(path);
+            }
         }
         if let Some((path, toggle)) = events.clicked {
             self.select_file(path, toggle);
@@ -679,6 +873,14 @@ impl MediaExplorerApp {
                     let paths = self.paths_for_row(&path);
                     self.extract_paths(&paths);
                 }
+                RowAction::AddFiles(target) => self.add_files_into(&target),
+                RowAction::AddDir(parent) => {
+                    self.new_dir = Some(NewDirTarget {
+                        parent,
+                        name: String::new(),
+                    });
+                }
+                RowAction::RemoveDir(path) => self.remove_directory(&path),
             }
         }
         // On macOS/Windows, a dragged row hands its file(s) to the OS drag.
@@ -690,18 +892,146 @@ impl MediaExplorerApp {
         let _ = &events.drag_started;
     }
 
+    /// The tree rows currently on screen, in top-to-bottom order, for keyboard
+    /// navigation. A disk yields its (possibly collapsed) directory tree; a tape
+    /// yields its flat file list.
+    fn visible_tree_rows(&self) -> Vec<tree_nav::VisibleRow> {
+        if let Some(disk) = &self.disk {
+            // Non-partitioned disks get a synthetic "/" root row; an HD's
+            // partition nodes are themselves the roots, so no extra row.
+            let root = (!disk.is_partitioned()).then_some(ROOT_PATH);
+            tree_nav::flatten_visible(&disk.tree, &self.collapsed, root)
+        } else if let Some(tape) = &self.tape {
+            tape.entries()
+                .map(|(key, _)| tree_nav::VisibleRow {
+                    path: key.to_string(),
+                    is_dir: false,
+                    depth: 0,
+                    parent: None,
+                    collapsible: false,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Drive the tree with the arrow keys while the Files or Stats view is up:
+    /// Up/Down move the highlight one row (loading a file as it lands on one),
+    /// Left/Right collapse/expand directories or step to the parent/first child.
+    fn handle_tree_keys(&mut self, ctx: &egui::Context) {
+        if !matches!(self.app_view, AppView::Files | AppView::Stats) {
+            return;
+        }
+        // A modal dialog or a text field (the Find box, rename) owns the
+        // keyboard; don't steal arrow keys from them. `wants_keyboard_input` is
+        // true only for text entry, so a merely-focused row (which egui focuses
+        // on click) does not block navigation.
+        if self.rename_target.is_some()
+            || self.confirm_delete.is_some()
+            || self.new_dir.is_some()
+            || self.size_fix.is_some()
+        {
+            return;
+        }
+        if ctx.egui_wants_keyboard_input() {
+            return;
+        }
+        // Consume the arrow key so the scroll area doesn't also scroll on it.
+        let key = ctx.input_mut(|i| {
+            for (k, nav) in [
+                (egui::Key::ArrowDown, NavKey::Down),
+                (egui::Key::ArrowUp, NavKey::Up),
+                (egui::Key::ArrowLeft, NavKey::Left),
+                (egui::Key::ArrowRight, NavKey::Right),
+            ] {
+                if i.consume_key(egui::Modifiers::NONE, k) {
+                    return Some(nav);
+                }
+            }
+            None
+        });
+        let Some(key) = key else {
+            return;
+        };
+        // Drop any lingering focus ring left on a previously-clicked row, so the
+        // blue cursor is the single "where am I" indicator.
+        if let Some(id) = ctx.memory(|m| m.focused()) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        }
+
+        let rows = self.visible_tree_rows();
+        match tree_nav::navigate(&rows, self.cursor.as_deref(), &self.collapsed, key) {
+            TreeNav::MoveTo(path) => {
+                let is_file = rows.iter().any(|r| r.path == path && !r.is_dir);
+                self.scroll_to_cursor = true;
+                if is_file {
+                    // Load-on-highlight: landing on a file previews it like a click.
+                    self.select_file(path.clone(), false);
+                    self.cursor = Some(path);
+                } else {
+                    self.focus_directory(path);
+                }
+            }
+            TreeNav::SetCollapsed(path, collapsed) => {
+                if collapsed {
+                    self.collapsed.insert(path);
+                } else {
+                    self.collapsed.remove(&path);
+                }
+                self.scroll_to_cursor = true;
+            }
+            TreeNav::Nothing => {}
+        }
+    }
+
     /// The directory entry for the currently selected file, when it lives on a
     /// disk (tape files have no `DirEntry`, so this returns `None`).
     fn selected_entry(&self) -> Option<&DirEntry> {
         let sel = self.selected.as_deref()?;
-        let disk = self.disk.as_ref()?;
-        disk.tree
+        self.entry_for_path(sel)
+    }
+
+    /// Find a tree entry (file or directory) by its full path; disk only.
+    fn entry_for_path(&self, path: &str) -> Option<&DirEntry> {
+        self.disk
+            .as_ref()?
+            .tree
             .iter()
             .flat_map(DirEntry::walk)
-            .find(|e| e.path == sel)
+            .find(|e| e.path == path)
+    }
+
+    /// The directory the keyboard cursor sits on, if any. Drives the Info pane
+    /// (showing folder stats instead of file contents).
+    fn cursor_dir(&self) -> Option<&DirEntry> {
+        let cursor = self.cursor.as_deref()?;
+        self.entry_for_path(cursor).filter(|e| e.is_dir)
+    }
+
+    /// Move the cursor onto a directory: clear the file viewer so no file row
+    /// stays highlighted and the Info pane describes the folder instead.
+    fn focus_directory(&mut self, path: String) {
+        self.selection.clear();
+        self.selected = None;
+        self.content = None;
+        self.archive = None;
+        self.cursor = Some(path);
     }
 
     fn viewer_panel(&mut self, ui: &mut egui::Ui) {
+        // The "/" root row has no DirEntry; show whole-disk stats for it.
+        if self.cursor.as_deref() == Some(ROOT_PATH) {
+            if let Some(disk) = &self.disk {
+                render_root_info(ui, &disk.tree);
+                return;
+            }
+        }
+        // A directory has no file content or per-file tabs; show its info pane.
+        if let Some(dir) = self.cursor_dir() {
+            render_directory_info(ui, dir, self.charset);
+            return;
+        }
         let writable = self.disk_writable();
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.view_mode, ViewMode::Info, "Info");
@@ -724,10 +1054,7 @@ impl MediaExplorerApp {
                             self.hex_edit = None;
                         }
                     } else {
-                        ui.label("Bytes/row:");
-                        for n in [8usize, 16, 24, 32] {
-                            ui.selectable_value(&mut self.bytes_per_row, n, n.to_string());
-                        }
+                        // Bytes-per-row now lives in the View menu.
                         let editable = writable
                             && self
                                 .content
@@ -750,23 +1077,6 @@ impl MediaExplorerApp {
                             self.goto_hex_offset();
                         }
                         ui.checkbox(&mut self.show_inspector, "Inspector");
-                        let has_sel = self.hex.selection.is_some();
-                        if ui
-                            .add_enabled(has_sel, egui::Button::new("Copy hex"))
-                            .clicked()
-                        {
-                            if let Some(t) = self.selected_hex_text(false) {
-                                self.copy_text_to_clipboard(t);
-                            }
-                        }
-                        if ui
-                            .add_enabled(has_sel, egui::Button::new("Copy ASCII"))
-                            .clicked()
-                        {
-                            if let Some(t) = self.selected_hex_text(true) {
-                                self.copy_text_to_clipboard(t);
-                            }
-                        }
                         self.hex_bookmarks_menu(ui);
                     }
                 }
@@ -779,18 +1089,14 @@ impl MediaExplorerApp {
                 | ViewMode::Info
                 | ViewMode::Archive => {}
             }
-            if self.content.is_some() && self.view_mode != ViewMode::Archive {
+            // The Screen view exposes Copy image / Save PNG as right-click
+            // options on the image itself, so it carries no toolbar copy button.
+            if self.content.is_some()
+                && !matches!(self.view_mode, ViewMode::Archive | ViewMode::Screen)
+            {
                 ui.separator();
-                let copy_label = if self.view_mode == ViewMode::Screen {
-                    "Copy image"
-                } else {
-                    "Copy"
-                };
-                if ui.button(copy_label).clicked() {
+                if ui.button("Copy").clicked() {
                     self.copy_current_view();
-                }
-                if self.view_mode == ViewMode::Screen && ui.button("Save PNG…").clicked() {
-                    self.save_screen_png();
                 }
             }
         });
@@ -850,11 +1156,12 @@ impl MediaExplorerApp {
             // outside the shared borrow of `self.content`.
             let mut cache = self.screen_tex.take();
             let mut show_picker = false;
+            let mut action = None;
             match (self.disk.as_ref(), self.content.as_ref()) {
                 (Some(disk), Some(content)) => {
                     let path = content.path.clone();
                     let companions = FnCompanions(|ext: &str| disk.companion(&path, ext));
-                    let shown = render_screen(
+                    let render = render_screen(
                         ui,
                         &mut cache,
                         &content.path,
@@ -865,7 +1172,8 @@ impl MediaExplorerApp {
                     // Fallback-only: offer the format picker when decoding fails,
                     // and keep it visible while a manual format is active so a
                     // wrong guess can be corrected.
-                    show_picker = !shown || self.forced_format.is_some();
+                    show_picker = !render.shown || self.forced_format.is_some();
+                    action = render.action;
                 }
                 _ => {
                     ui.weak("Select a file to view its contents.");
@@ -875,6 +1183,14 @@ impl MediaExplorerApp {
             if show_picker {
                 self.screen_format_picker(ui);
             }
+            // The image's right-click menu is built while `self.content`/`disk`
+            // are borrowed above; run any chosen action now that those borrows
+            // (and the texture cache) have been released.
+            match action {
+                Some(ScreenAction::CopyImage) => self.copy_current_view(),
+                Some(ScreenAction::SavePng) => self.save_screen_png(),
+                None => {}
+            }
             return;
         }
 
@@ -882,7 +1198,7 @@ impl MediaExplorerApp {
         let highlight = self
             .search_matches
             .get(self.search_pos)
-            .map(|&o| o / self.bytes_per_row.max(1));
+            .map(|&o| o / self.settings.hex.bytes_per_row.max(1));
 
         if self.view_mode == ViewMode::Hex {
             // The hex view needs `&mut self` (selection state + inspector panel),
@@ -891,22 +1207,48 @@ impl MediaExplorerApp {
             return;
         }
 
+        let charset = self.charset;
+        let show_all = self.text_show_all;
+        let mode = self.view_mode;
         match &self.content {
             None => {
                 ui.weak("Select a file to view its contents.");
             }
-            Some(content) => match self.view_mode {
+            Some(content) => match mode {
                 ViewMode::Info => render_info(
                     ui,
                     &content.path,
                     &content.bytes,
                     self.selected_entry(),
-                    self.charset,
+                    charset,
                     &content.checksums,
+                    content.file_info(),
                 ),
-                ViewMode::Text => render_text(ui, &content.bytes, self.text_show_all, self.charset),
-                ViewMode::Basic => render_basic(ui, &content.bytes, self.charset),
-                ViewMode::Disasm => render_disasm(ui, &content.path, &content.bytes),
+                ViewMode::Text => {
+                    let key = RenderKey {
+                        mode,
+                        charset,
+                        show_all,
+                    };
+                    content
+                        .show_listing(ui, key, || produce_text(&content.bytes, show_all, charset));
+                }
+                ViewMode::Basic => {
+                    let key = RenderKey {
+                        mode,
+                        charset,
+                        show_all,
+                    };
+                    content.show_listing(ui, key, || produce_basic(&content.bytes, charset));
+                }
+                ViewMode::Disasm => {
+                    let key = RenderKey {
+                        mode,
+                        charset,
+                        show_all,
+                    };
+                    content.show_listing(ui, key, || produce_disasm(&content.path, &content.bytes));
+                }
                 ViewMode::Screen | ViewMode::Archive | ViewMode::Hex => {
                     unreachable!("handled above")
                 }
@@ -923,7 +1265,7 @@ impl MediaExplorerApp {
             return;
         }
         let charset = self.charset;
-        let bpr = self.bytes_per_row.max(1);
+        let bpr = self.settings.hex.bytes_per_row.max(1);
         if self.show_inspector {
             let origin = self
                 .hex
@@ -940,12 +1282,25 @@ impl MediaExplorerApp {
             cursor: self.hex.cursor,
             selection: self.hex.selection,
         };
+        let opts = self.settings.hex;
         let gesture = {
             let bytes = &self.content.as_ref().unwrap().bytes;
-            render_hex(ui, bytes, bpr, scroll_to, highlight, charset, sel)
+            render_hex(ui, bytes, bpr, scroll_to, highlight, charset, sel, &opts)
         };
         if let Some(g) = gesture {
             apply_hex_gesture(&mut self.hex, g);
+        }
+        // Cmd/Ctrl+C copies the byte selection, in the representation of the
+        // column it was made in (hex digits vs ASCII). Skipped while a text box
+        // (Go to / Find) holds the keyboard, so its own copy still works.
+        if self.hex.selection.is_some()
+            && !ui.ctx().egui_wants_keyboard_input()
+            && copy_event_pending(ui.ctx())
+        {
+            let ascii = self.hex.region == HexRegion::Ascii;
+            if let Some(text) = self.selected_hex_text(ascii) {
+                self.copy_text_to_clipboard(text);
+            }
         }
     }
 
@@ -962,7 +1317,7 @@ impl MediaExplorerApp {
         }
         self.hex.cursor = Some(off);
         self.hex.selection = None;
-        self.pending_scroll_row = Some(off / self.bytes_per_row.max(1));
+        self.pending_scroll_row = Some(off / self.settings.hex.bytes_per_row.max(1));
         self.status = format!("Jumped to 0x{off:06X}");
     }
 
@@ -978,7 +1333,7 @@ impl MediaExplorerApp {
     /// The selected bytes of the current sector, as a hex or ASCII string.
     fn sector_selection_text(&self, ascii: bool) -> Option<String> {
         let (lo, hi) = self.sector_hex.selection?;
-        let bytes = self.disk.as_ref()?.sector_bytes(self.current_sector)?;
+        let bytes = self.disk.as_ref()?.sector_slice(self.current_sector)?;
         let hi = hi.min(bytes.len().saturating_sub(1));
         let slice = bytes.get(lo..=hi)?;
         Some(format_selected_bytes(slice, ascii, self.charset))
@@ -1019,7 +1374,7 @@ impl MediaExplorerApp {
             if let Some(off) = goto {
                 self.hex.cursor = Some(off);
                 self.hex.selection = None;
-                self.pending_scroll_row = Some(off / self.bytes_per_row.max(1));
+                self.pending_scroll_row = Some(off / self.settings.hex.bytes_per_row.max(1));
             }
             if let Some(i) = remove {
                 self.hex.bookmarks.remove(i);
@@ -1221,7 +1576,7 @@ impl MediaExplorerApp {
 
     fn jump_to_current_match(&mut self) {
         if let Some(&offset) = self.search_matches.get(self.search_pos) {
-            self.pending_scroll_row = Some(offset / self.bytes_per_row.max(1));
+            self.pending_scroll_row = Some(offset / self.settings.hex.bytes_per_row.max(1));
         }
     }
 
@@ -1249,25 +1604,232 @@ impl MediaExplorerApp {
         }
     }
 
-    fn new_disk(&mut self, double_sided: bool) {
-        let bytes = match msx_disk::fs::write::create_blank(double_sided) {
+    fn new_disk(&mut self, format: DiskFormat) {
+        let bytes = match msx_disk::fs::write::create_blank(format) {
             Ok(b) => b,
             Err(e) => {
                 self.status = format!("Could not create disk: {e}");
                 return;
             }
         };
-        let default = if double_sided {
-            "blank720.dsk"
-        } else {
-            "blank360.dsk"
-        };
+        let default = format.default_file_name();
         if let Some(path) = rfd::FileDialog::new().set_file_name(default).save_file() {
             match std::fs::write(&path, &bytes) {
                 Ok(()) => self.open_path(&path),
                 Err(e) => self.status = format!("Failed to write {}: {e}", path.display()),
             }
         }
+    }
+
+    /// Open the system file picker for a disk or tape image.
+    fn open_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("MSX disk images", DISK_IMAGE_EXTS)
+            .add_filter("MSX tape images", TAPE_EXTS)
+            .pick_file()
+        {
+            self.open_path(&path);
+        }
+    }
+
+    /// Record a successfully opened image in the recent-files list and refresh
+    /// the native Recent submenu.
+    fn record_recent(&mut self, path: &Path) {
+        self.settings.push_recent(path);
+        self.refresh_recent_menu();
+    }
+
+    /// Open the recent-files entry at `index`, pruning it if it has since gone
+    /// missing.
+    fn open_recent(&mut self, index: usize) {
+        let Some(path) = self.settings.recent.get(index).cloned() else {
+            return;
+        };
+        if path.exists() {
+            self.open_path(&path);
+        } else {
+            self.status = format!("File no longer exists: {}", path.display());
+            self.settings.recent.retain(|p| p != &path);
+            self.refresh_recent_menu();
+        }
+    }
+
+    /// Forget all recent files.
+    fn clear_recent(&mut self) {
+        self.settings.clear_recent();
+        self.refresh_recent_menu();
+    }
+
+    /// Rebuild the native Recent submenu from the current list (no-op when the
+    /// native menu is absent).
+    fn refresh_recent_menu(&mut self) {
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = self.mac_menu.as_mut() {
+            menu.rebuild_recent(&self.settings.recent);
+        }
+    }
+
+    /// Close the open disk/tape, returning to the empty state.
+    fn close_document(&mut self) {
+        self.reset_document();
+        self.status = "Open a disk image (or drag one in) to get started.".to_string();
+        self.search_query.clear();
+        self.search_matches.clear();
+        self.search_pos = 0;
+    }
+
+    /// The "New disk" format chooser: pick one of the standard MSX floppy
+    /// formats, then fall through to [`new_disk`](Self::new_disk) (save dialog
+    /// + open).
+    fn new_disk_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_new_disk {
+            return;
+        }
+        let mut choice: Option<DiskFormat> = None;
+        let mut cancel = false;
+        egui::Window::new("New disk")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Create a new, empty MSX disk image:");
+                ui.add_space(8.0);
+                for format in DiskFormat::ALL {
+                    if ui.button(format.label()).clicked() {
+                        choice = Some(format);
+                    }
+                }
+                ui.add_space(8.0);
+                cancel = ui.button("Cancel").clicked();
+            });
+        if let Some(format) = choice {
+            self.show_new_disk = false;
+            self.new_disk(format);
+        } else if cancel {
+            self.show_new_disk = false;
+        }
+    }
+
+    /// Act on a native macOS menu item, by its id, then reflect any toggle
+    /// changes back into the menu's checkmarks.
+    #[cfg(target_os = "macos")]
+    fn handle_menu_event(&mut self, id: &str) {
+        match id {
+            "app.about" => self.show_about = true,
+            "file.new" => self.show_new_disk = true,
+            "file.open" => self.open_dialog(),
+            "file.close" => self.close_document(),
+            "recent.clear" => self.clear_recent(),
+            "view.line_numbers" => self.settings.hex.show_line_numbers ^= true,
+            "view.hex" => self.settings.hex.show_hex ^= true,
+            "view.ascii" => self.settings.hex.show_ascii ^= true,
+            "view.status_bar" => self.settings.show_status_bar ^= true,
+            "view.columns" => self.settings.hex.show_columns ^= true,
+            "view.hide_nulls" => self.settings.hex.hide_null_bytes ^= true,
+            "view.lnf.hex" => self.settings.hex.line_number_hex = true,
+            "view.lnf.dec" => self.settings.hex.line_number_hex = false,
+            "view.group.none" => self.settings.hex.grouping = ByteGrouping::None,
+            _ if id.starts_with("recent.") => {
+                if let Some(i) = id.strip_prefix("recent.").and_then(|n| n.parse().ok()) {
+                    self.open_recent(i);
+                }
+            }
+            _ if id.starts_with("view.bpr.") => {
+                if let Some(n) = id.strip_prefix("view.bpr.").and_then(|n| n.parse().ok()) {
+                    self.settings.hex.bytes_per_row = n;
+                }
+            }
+            _ if id.starts_with("view.group.") => {
+                if let Some(n) = id.strip_prefix("view.group.").and_then(|n| n.parse().ok()) {
+                    self.settings.hex.grouping = ByteGrouping::Of(n);
+                }
+            }
+            _ => {}
+        }
+        if let Some(menu) = self.mac_menu.as_ref() {
+            menu.sync_checks(&self.settings);
+        }
+    }
+
+    /// In-window menu bar for platforms without a native one (non-macOS). Drives
+    /// the same settings and actions as the native menu.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    fn menu_bar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.menu_button("File", |ui| {
+                if ui.button("New disk…").clicked() {
+                    self.show_new_disk = true;
+                    ui.close();
+                }
+                if ui.button("Open disk/tape image…").clicked() {
+                    self.open_dialog();
+                    ui.close();
+                }
+                ui.menu_button("Open Recent", |ui| {
+                    if self.settings.recent.is_empty() {
+                        ui.add_enabled(false, egui::Button::new("No Recent Files"));
+                    } else {
+                        // Collect the click during the borrow of `recent`, then act
+                        // after it ends — avoids cloning the list every frame.
+                        let mut chosen: Option<usize> = None;
+                        for (i, path) in self.settings.recent.iter().enumerate() {
+                            let label = path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+                            if ui.button(label).clicked() {
+                                chosen = Some(i);
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        let clear = ui.button("Clear Menu").clicked();
+                        if clear {
+                            ui.close();
+                        }
+                        if let Some(i) = chosen {
+                            self.open_recent(i);
+                        } else if clear {
+                            self.clear_recent();
+                        }
+                    }
+                });
+                ui.separator();
+                if ui.button("Close").clicked() {
+                    self.close_document();
+                    ui.close();
+                }
+            });
+            ui.menu_button("View", |ui| {
+                ui.checkbox(&mut self.settings.hex.show_line_numbers, "Line numbers");
+                ui.checkbox(&mut self.settings.hex.show_hex, "Hexadecimal");
+                ui.checkbox(&mut self.settings.hex.show_ascii, "Plain text");
+                ui.checkbox(&mut self.settings.show_status_bar, "Status bar");
+                ui.checkbox(&mut self.settings.hex.show_columns, "Columns");
+                ui.separator();
+                ui.menu_button("Bytes per row", |ui| {
+                    for n in crate::settings::ROW_SIZES {
+                        ui.radio_value(&mut self.settings.hex.bytes_per_row, n, n.to_string());
+                    }
+                });
+                ui.menu_button("Line number format", |ui| {
+                    ui.radio_value(&mut self.settings.hex.line_number_hex, false, "Decimal");
+                    ui.radio_value(&mut self.settings.hex.line_number_hex, true, "Hexadecimal");
+                });
+                ui.menu_button("Byte grouping", |ui| {
+                    ui.radio_value(&mut self.settings.hex.grouping, ByteGrouping::None, "None");
+                    for n in ByteGrouping::SIZES {
+                        ui.radio_value(
+                            &mut self.settings.hex.grouping,
+                            ByteGrouping::Of(n),
+                            n.to_string(),
+                        );
+                    }
+                });
+                ui.separator();
+                ui.checkbox(&mut self.settings.hex.hide_null_bytes, "Hide null bytes");
+            });
+        });
     }
 
     fn save_as_dsk(&mut self) {
@@ -1296,19 +1858,21 @@ impl MediaExplorerApp {
         }
     }
 
-    fn add_files_dialog(&mut self) {
+    /// Pick host files and add them into `target` ("" = disk root), from the
+    /// tree's "Add files here…" menu.
+    fn add_files_into(&mut self, target: &str) {
         if !self.disk_writable() {
             self.status = "This image is read-only (.xsa or no source file).".to_string();
             return;
         }
         if let Some(paths) = rfd::FileDialog::new().pick_files() {
-            self.add_paths(&paths);
+            self.add_paths_into(&paths, target);
         }
     }
 
-    /// Read each path from the filesystem and add it to the open disk under a
-    /// sanitized 8.3 name. Used by both the Add dialog and drag-in.
-    fn add_paths(&mut self, paths: &[PathBuf]) {
+    /// Read each host path and add it into `target` ("" = disk root) under a
+    /// sanitized 8.3 name. Used by the right-click menu and drag-in.
+    fn add_paths_into(&mut self, paths: &[PathBuf], target: &str) {
         if !self.disk_writable() {
             self.status = "This image is read-only (.xsa or no source file).".to_string();
             return;
@@ -1321,7 +1885,7 @@ impl MediaExplorerApp {
                         .file_name()
                         .map(|n| n.to_string_lossy().into_owned())
                         .unwrap_or_default();
-                    files.push((sanitize_msx_name(&raw), bytes));
+                    files.push((child_path(target, &sanitize_msx_name(&raw)), bytes));
                 }
                 Err(e) => {
                     self.status = format!("Could not read {}: {e}", path.display());
@@ -1331,7 +1895,44 @@ impl MediaExplorerApp {
         }
         let count = files.len();
         let result = self.disk.as_mut().unwrap().add_files(&files);
-        self.after_mutation(result, format!("Added {count} file(s)"));
+        let dest = if target.is_empty() { "/" } else { target };
+        self.after_mutation(result, format!("Added {count} file(s) to {dest}"));
+    }
+
+    /// Remove a directory: empty ones go immediately; non-empty ones open the
+    /// confirmation modal with the recursive (descendants-first) delete list.
+    fn remove_directory(&mut self, path: &str) {
+        let plan = self
+            .entry_for_path(path)
+            .map(|dir| (dir.children.is_empty(), removal_paths(dir)));
+        let Some((empty, paths)) = plan else {
+            return;
+        };
+        if empty {
+            let result = self.disk.as_mut().unwrap().delete(&[path.to_string()]);
+            self.after_mutation(result, format!("Removed {path}"));
+        } else {
+            self.confirm_delete = Some(paths);
+        }
+    }
+
+    /// Create the directory named in the new-directory dialog. The typed name is
+    /// normalized to an 8.3 display name and re-encoded to its on-disk (PUA) key,
+    /// mirroring [`apply_rename`](Self::apply_rename) so kana names round-trip.
+    fn apply_new_dir(&mut self) {
+        let Some(target) = self.new_dir.take() else {
+            return;
+        };
+        let charset = self.charset;
+        let display = sanitize_8_3(&target.name, |c| is_rename_char(c, charset));
+        if msx_name_stem(&display).is_empty() {
+            self.status = "Enter a directory name".to_string();
+            return;
+        }
+        let base = charset::encode_fs_name(charset, &display).unwrap_or_else(|| display.clone());
+        let path = child_path(&target.parent, &base);
+        let result = self.disk.as_mut().unwrap().create_dir(&path);
+        self.after_mutation(result, format!("Created directory {display}"));
     }
 
     fn apply_rename(&mut self) {
@@ -1407,7 +2008,7 @@ impl MediaExplorerApp {
                     let shown = charset::decode_fs_name(charset, path);
                     ui.label(format!("Delete \"{shown}\" from the disk?"));
                 } else {
-                    ui.label(format!("Delete these {} files from the disk?", paths.len()));
+                    ui.label(format!("Delete these {} items from the disk?", paths.len()));
                     egui::ScrollArea::vertical()
                         .max_height(160.0)
                         .show(ui, |ui| {
@@ -1478,6 +2079,130 @@ impl MediaExplorerApp {
         }
     }
 
+    /// Render the new-directory modal if one is pending (from the tree's
+    /// right-click "Add directory…").
+    fn new_dir_dialog(&mut self, ctx: &egui::Context) {
+        let charset = self.charset;
+        let Some(target) = self.new_dir.as_mut() else {
+            return;
+        };
+        let parent_label = if target.parent.is_empty() {
+            "/".to_string()
+        } else {
+            charset::decode_fs_name(charset, &target.parent)
+        };
+        let mut apply = false;
+        let mut cancel = false;
+        egui::Window::new("New directory")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("Create directory in {parent_label}:"));
+                let resp =
+                    ui.add(egui::TextEdit::singleline(&mut target.name).desired_width(160.0));
+                if resp.changed() {
+                    target.name = normalize_msx_input(&target.name, charset);
+                }
+                if ui.memory(|m| m.focused().is_none()) {
+                    resp.request_focus();
+                }
+                ui.small("8-character name, optional 3-character extension.");
+                let warn = ui.visuals().warn_fg_color;
+                ui.small(
+                    egui::RichText::new(
+                        "Subdirectories need MSX-DOS 2; MSX-DOS 1 cannot read them.",
+                    )
+                    .color(warn),
+                );
+                let valid = !msx_name_stem(&target.name).is_empty();
+                let enter =
+                    valid && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    apply = ui.add_enabled(valid, egui::Button::new("Create")).clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+                apply |= enter;
+            });
+        if apply {
+            self.apply_new_dir();
+        } else if cancel {
+            self.new_dir = None;
+        }
+    }
+
+    /// Render the boot-sector/image-size mismatch popup, if one was detected on
+    /// open. Applies the single safe, recommended repair on confirmation.
+    fn size_fix_dialog(&mut self, ctx: &egui::Context) {
+        use msx_disk::fs::sizefix::SizeFix;
+        let Some(m) = self.size_fix.as_ref() else {
+            return;
+        };
+        let real = size_label(m.real_bytes);
+        let action = match m.fix {
+            SizeFix::TruncateImage => format!(
+                "Shrink the image to {real} (the unused, all-zero tail is discarded) \
+                 and update the boot sector to match.",
+            ),
+            SizeFix::PadImage => format!(
+                "Pad the image up to {real} (it appears truncated) and update the \
+                 boot sector to match.",
+            ),
+            SizeFix::FixBootSector => format!(
+                "Correct the boot sector to {real}; the image file size is left \
+                 unchanged.",
+            ),
+        };
+        let mut apply = false;
+        let mut ignore = false;
+        egui::Window::new("Disk geometry mismatch")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                egui::Grid::new("size_fix_facts")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        ui.label("Boot sector declares:");
+                        ui.monospace(size_label(m.declared_bytes));
+                        ui.end_row();
+                        ui.label("Image file size:");
+                        ui.monospace(size_label(m.image_bytes));
+                        ui.end_row();
+                        ui.label("Real size (from layout):");
+                        ui.monospace(&real);
+                        ui.end_row();
+                    });
+                ui.add_space(6.0);
+                ui.label(action);
+                ui.small("This rewrites the image file on disk.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    apply = ui.button("Apply fix").clicked();
+                    ignore = ui.button("Ignore").clicked();
+                });
+            });
+        if apply {
+            self.apply_size_fix();
+        } else if ignore {
+            self.size_fix = None;
+        }
+    }
+
+    fn apply_size_fix(&mut self) {
+        let Some(m) = self.size_fix.take() else {
+            return;
+        };
+        let result = self.disk.as_mut().unwrap().apply_size_fix(&m);
+        self.after_mutation(
+            result,
+            format!("Fixed disk geometry to {}", size_label(m.real_bytes)),
+        );
+        // Re-check the (reloaded) disk; a successful repair leaves it consistent.
+        self.size_fix = self.disk.as_ref().and_then(LoadedDisk::size_mismatch);
+    }
+
     /// The About window: app name, version, repo, and license. Cross-platform,
     /// so the version is reachable the same way on every OS (the native macOS
     /// "About" panel only fills in icon/version for the packaged `.app`).
@@ -1485,6 +2210,10 @@ impl MediaExplorerApp {
         if !self.show_about {
             return;
         }
+        let icon = self
+            .about_icon
+            .get_or_insert_with(|| load_about_icon(ctx))
+            .clone();
         let mut open = true;
         egui::Window::new("About")
             .collapsible(false)
@@ -1493,19 +2222,27 @@ impl MediaExplorerApp {
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.add_space(4.0);
-                    ui.heading("MSX Media Explorer");
-                    ui.label(egui::RichText::new(format!("Version {VERSION}")).weak());
-                    ui.add_space(8.0);
-                    ui.label("Browse and edit MSX disk and tape images.");
-                    ui.add_space(8.0);
-                    ui.hyperlink_to(
-                        "github.com/sndpl/msx-media-explorer",
-                        "https://github.com/sndpl/msx-media-explorer",
+                    ui.add_space(12.0);
+                    ui.add(
+                        egui::Image::new(egui::load::SizedTexture::new(
+                            icon.id(),
+                            egui::vec2(96.0, 96.0),
+                        ))
+                        .corner_radius(egui::CornerRadius::same(20)),
                     );
-                    ui.add_space(4.0);
-                    ui.small("Licensed under GPL-2.0-or-later");
-                    ui.add_space(4.0);
+                    ui.add_space(12.0);
+                    ui.label(
+                        egui::RichText::new("MSX Media Explorer")
+                            .size(24.0)
+                            .strong(),
+                    );
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("Browse and edit MSX disk and tape images.").weak(),
+                    );
+                    ui.add_space(18.0);
+                    about_meta_grid(ui);
+                    ui.add_space(12.0);
                 });
             });
         if !open {
@@ -1787,14 +2524,9 @@ impl MediaExplorerApp {
                 self.selected_entry(),
                 &content.checksums,
             ),
-            ViewMode::Hex => dump_to_string(
-                &content.bytes,
-                HexConfig {
-                    bytes_per_row: self.bytes_per_row,
-                    base_address: 0,
-                },
-                self.charset,
-            ),
+            ViewMode::Hex => {
+                dump_to_string(&content.bytes, hex_config(&self.settings.hex), self.charset)
+            }
             ViewMode::Text => text::to_text(
                 &content.bytes,
                 if self.text_show_all {
@@ -1902,23 +2634,6 @@ impl MediaExplorerApp {
             if self.sector_edit.is_none() {
                 ui.separator();
                 ui.checkbox(&mut self.show_inspector, "Inspector");
-                let has_sel = self.sector_hex.selection.is_some();
-                if ui
-                    .add_enabled(has_sel, egui::Button::new("Copy hex"))
-                    .clicked()
-                {
-                    if let Some(t) = self.sector_selection_text(false) {
-                        self.copy_text_to_clipboard(t);
-                    }
-                }
-                if ui
-                    .add_enabled(has_sel, egui::Button::new("Copy ASCII"))
-                    .clicked()
-                {
-                    if let Some(t) = self.sector_selection_text(true) {
-                        self.copy_text_to_clipboard(t);
-                    }
-                }
             }
         });
         ui.horizontal(|ui| {
@@ -1963,7 +2678,7 @@ impl MediaExplorerApp {
         let bytes = self
             .disk
             .as_ref()
-            .and_then(|d| d.sector_bytes(self.current_sector));
+            .and_then(|d| d.sector_slice(self.current_sector));
         if let Some(bytes) = bytes {
             let scroll = self.sector_scroll_row.take();
             let highlight = self
@@ -1980,15 +2695,25 @@ impl MediaExplorerApp {
                 egui::Panel::bottom("sector_inspector")
                     .resizable(true)
                     .default_size(170.0)
-                    .show_inside(ui, |ui| render_inspector(ui, &bytes, origin, charset));
+                    .show_inside(ui, |ui| render_inspector(ui, bytes, origin, charset));
             }
             let sel = HexSelection {
                 cursor: self.sector_hex.cursor,
                 selection: self.sector_hex.selection,
             };
-            let gesture = render_hex(ui, &bytes, 16, scroll, highlight, self.charset, sel);
+            let opts = self.settings.hex;
+            let gesture = render_hex(ui, bytes, 16, scroll, highlight, self.charset, sel, &opts);
             if let Some(g) = gesture {
                 apply_hex_gesture(&mut self.sector_hex, g);
+            }
+            if self.sector_hex.selection.is_some()
+                && !ui.ctx().egui_wants_keyboard_input()
+                && copy_event_pending(ui.ctx())
+            {
+                let ascii = self.sector_hex.region == HexRegion::Ascii;
+                if let Some(text) = self.sector_selection_text(ascii) {
+                    self.copy_text_to_clipboard(text);
+                }
             }
         }
     }
@@ -2558,47 +3283,189 @@ fn empty_fat_message() -> &'static str {
      Use the Sectors or Map view to inspect its raw contents."
 }
 
-/// Recursively render the directory tree, recording a clicked file path.
+/// Read-only context threaded through [`render_entries`]: what is selected /
+/// collapsed / highlighted, plus the display settings. Keeps the recursive
+/// renderer to a few arguments.
+struct TreeRender<'a> {
+    selection: &'a BTreeSet<String>,
+    collapsed: &'a BTreeSet<String>,
+    /// The keyboard-cursor row's path, highlighted and scrolled into view.
+    cursor: Option<&'a str>,
+    /// One-shot: scroll the cursor row into view this frame.
+    scroll_to_cursor: bool,
+    writable: bool,
+    charset: MsxCharset,
+}
+
+/// A selectable tree row drawn with an explicit, stable `id` rather than egui's
+/// positional auto-id.
+///
+/// Each row's id is derived from its (unique) file path, so it stays attached
+/// to the same file as the tree reflows. Collapsing/expanding a directory
+/// shifts the rows below it; with positional ids a row's rect would inherit the
+/// id of whatever row previously sat there, tripping egui's debug
+/// `warn_if_rect_changes_id` overlay (a one-frame red border). A stable id
+/// keeps "same rect, new id" from happening. Mirrors `selectable_label`'s look.
+fn tree_row(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    selected: bool,
+    text: egui::RichText,
+    sense: egui::Sense,
+) -> egui::Response {
+    let padding = ui.spacing().button_padding;
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let mut desired = galley.size() + 2.0 * padding;
+    desired.y = desired.y.max(ui.spacing().interact_size.y);
+    let (_, rect) = ui.allocate_space(desired);
+    let response = ui.interact(rect, id, sense);
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        if selected || response.hovered() || response.has_focus() {
+            ui.painter().rect(
+                rect,
+                visuals.corner_radius,
+                visuals.weak_bg_fill,
+                visuals.bg_stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        let text_pos = egui::pos2(
+            rect.min.x + padding.x,
+            rect.center().y - 0.5 * galley.size().y,
+        );
+        ui.painter()
+            .galley(text_pos, galley, visuals.fg_stroke.color);
+    }
+    response
+}
+
+/// The shared "Add files here… / Add directory…" entries, targeting `dir`
+/// ("" = disk root). Used by file, directory, and root-row context menus.
+fn add_menu_items(ui: &mut egui::Ui, events: &mut RowEvents, dir: &str) {
+    if ui.button("Add files here…").clicked() {
+        events.action = Some(RowAction::AddFiles(dir.to_string()));
+        ui.close();
+    }
+    if ui.button("Add directory…").clicked() {
+        events.action = Some(RowAction::AddDir(dir.to_string()));
+        ui.close();
+    }
+}
+
+/// Render the disk's `/` root row followed by its (indented) contents. The root
+/// is selectable and a right-click/drop target for adding to the disk root, but
+/// not collapsible (a disk has one root), so it carries no expand triangle and
+/// is always shown expanded. An empty disk still shows `/` plus a hint.
+fn render_tree_with_root(
+    ui: &mut egui::Ui,
+    entries: &[DirEntry],
+    ctx: &TreeRender,
+    events: &mut RowEvents,
+) {
+    let is_cursor = ctx.cursor == Some(ROOT_PATH);
+    let id = ui.make_persistent_id(ROOT_PATH);
+    let header = egui::RichText::new("/").monospace();
+    let resp = tree_row(ui, id, is_cursor, header, egui::Sense::click());
+    events.drop_targets.push((resp.rect, ROOT_PATH.to_string()));
+    if is_cursor && ctx.scroll_to_cursor {
+        resp.scroll_to_me(Some(egui::Align::Center));
+    }
+    if resp.clicked() {
+        events.cursor_to = Some(ROOT_PATH.to_string());
+    }
+    if ctx.writable {
+        resp.context_menu(|ui| add_menu_items(ui, events, ROOT_PATH));
+    }
+    ui.indent(ROOT_PATH, |ui| {
+        if entries.is_empty() {
+            ui.weak(empty_fat_message());
+        } else {
+            render_entries(ui, entries, ctx, events);
+        }
+    });
+}
+
 fn render_entries(
     ui: &mut egui::Ui,
     entries: &[DirEntry],
-    selection: &BTreeSet<String>,
-    writable: bool,
-    charset: MsxCharset,
+    ctx: &TreeRender,
     events: &mut RowEvents,
 ) {
     for entry in entries {
+        let is_cursor = ctx.cursor == Some(entry.path.as_str());
+        // Stable, path-keyed id so the row keeps its identity across reflows.
+        let id = ui.make_persistent_id(&entry.path);
+        // Where a file dropped on (or "add" invoked from) this row should land:
+        // a directory targets itself, a file its parent folder.
+        let target = add_target_dir(&entry.path, entry.is_dir);
         if entry.is_dir {
-            // Monospace header with aligned date/attribute columns; an absent
-            // timestamp (e.g. synthetic partition nodes) renders blank.
-            let header: egui::WidgetText = egui::RichText::new(format!(
-                "\u{1F4C1} {:<12}  {:<16}  {}",
-                entry.display_name(charset),
+            // App-managed expansion (so the keyboard can drive it): a leading
+            // triangle shows the state, and clicking the header toggles it.
+            // Monospace header keeps the date/attribute columns aligned; an
+            // absent timestamp (e.g. synthetic partition nodes) renders blank.
+            let expanded = !ctx.collapsed.contains(&entry.path);
+            let arrow = if expanded { '\u{25BC}' } else { '\u{25B6}' };
+            let header = egui::RichText::new(format!(
+                "{arrow} \u{1F4C1} {:<12}  {:<16}  {}",
+                entry.display_name(ctx.charset),
                 format_timestamp(entry.modified),
                 format_attributes(entry.attributes)
             ))
-            .monospace()
-            .into();
-            egui::CollapsingHeader::new(header)
-                .default_open(true)
-                .show(ui, |ui| {
-                    render_entries(ui, &entry.children, selection, writable, charset, events);
+            .monospace();
+            let resp = tree_row(ui, id, is_cursor, header, egui::Sense::click());
+            events.drop_targets.push((resp.rect, target.clone()));
+            if is_cursor && ctx.scroll_to_cursor {
+                resp.scroll_to_me(Some(egui::Align::Center));
+            }
+            if resp.clicked() {
+                events.toggle_dir = Some(entry.path.clone());
+                events.cursor_to = Some(entry.path.clone());
+            }
+            if ctx.writable {
+                resp.context_menu(|ui| {
+                    add_menu_items(ui, events, &target);
+                    ui.separator();
+                    if ui.button("Rename…").clicked() {
+                        events.action = Some(RowAction::Rename(entry.path.clone()));
+                        ui.close();
+                    }
+                    if ui.button("Remove directory").clicked() {
+                        events.action = Some(RowAction::RemoveDir(entry.path.clone()));
+                        ui.close();
+                    }
                 });
+            }
+            if expanded {
+                ui.indent(&entry.path, |ui| {
+                    render_entries(ui, &entry.children, ctx, events);
+                });
+            }
         } else {
-            let is_selected = selection.contains(&entry.path);
-            let label = format_file_row(entry, charset);
-            let resp = ui
-                .selectable_label(is_selected, egui::RichText::new(label).monospace())
-                .interact(egui::Sense::click_and_drag());
+            let is_selected = is_cursor || ctx.selection.contains(&entry.path);
+            let label = egui::RichText::new(format_file_row(entry, ctx.charset)).monospace();
+            let resp = tree_row(ui, id, is_selected, label, egui::Sense::click_and_drag());
+            events.drop_targets.push((resp.rect, target.clone()));
+            if is_cursor && ctx.scroll_to_cursor {
+                resp.scroll_to_me(Some(egui::Align::Center));
+            }
             if resp.clicked() {
                 let toggle = ui.input(|i| i.modifiers.command);
                 events.clicked = Some((entry.path.clone(), toggle));
+                events.cursor_to = Some(entry.path.clone());
             }
             if resp.drag_started() {
                 events.drag_started = Some(entry.path.clone());
             }
             resp.context_menu(|ui| {
-                if writable {
+                if ctx.writable {
+                    add_menu_items(ui, events, &target);
+                    ui.separator();
                     if ui.button("Rename…").clicked() {
                         events.action = Some(RowAction::Rename(entry.path.clone()));
                         ui.close();
@@ -2623,7 +3490,7 @@ fn render_entries(
 fn render_tape_files(
     ui: &mut egui::Ui,
     tape: &LoadedTape,
-    selection: &BTreeSet<String>,
+    ctx: &TreeRender,
     events: &mut RowEvents,
 ) {
     if tape.file_count() == 0 {
@@ -2631,7 +3498,8 @@ fn render_tape_files(
         return;
     }
     for (key, file) in tape.entries() {
-        let is_selected = selection.contains(key);
+        let is_cursor = ctx.cursor == Some(key);
+        let is_selected = is_cursor || ctx.selection.contains(key);
         let label = format!(
             "{:<14} {:<7} {:>8}",
             key,
@@ -2641,9 +3509,13 @@ fn render_tape_files(
         let resp = ui
             .selectable_label(is_selected, egui::RichText::new(label).monospace())
             .interact(egui::Sense::click_and_drag());
+        if is_cursor && ctx.scroll_to_cursor {
+            resp.scroll_to_me(Some(egui::Align::Center));
+        }
         if resp.clicked() {
             let toggle = ui.input(|i| i.modifiers.command);
             events.clicked = Some((key.to_string(), toggle));
+            events.cursor_to = Some(key.to_string());
         }
         if resp.drag_started() {
             events.drag_started = Some(key.to_string());
@@ -2667,6 +3539,10 @@ fn render_tape_files(
 /// cells are hit-tested, so clicks and drags map to byte offsets. `scroll_to_row`
 /// and `highlight_row` keep the search behavior; `sel` paints the current
 /// selection and cursor.
+// A painting primitive: data, layout options, search-navigation and selection
+// are all distinct inputs, so the argument count is inherent rather than a
+// smell worth bundling into a struct.
+#[allow(clippy::too_many_arguments)]
 fn render_hex(
     ui: &mut egui::Ui,
     bytes: &[u8],
@@ -2675,6 +3551,7 @@ fn render_hex(
     highlight_row: Option<usize>,
     charset: MsxCharset,
     sel: HexSelection,
+    opts: &HexViewOptions,
 ) -> Option<HexGesture> {
     let bpr = bytes_per_row.max(1);
     let total_rows = bytes.len().div_ceil(bpr);
@@ -2689,9 +3566,41 @@ fn render_hex(
     let text_color = ui.visuals().text_color();
     let sel_color = ui.visuals().selection.bg_fill;
     let cursor_stroke = egui::Stroke::new(1.0, ui.visuals().strong_text_color());
-    // Columns: 6-digit address + 2 spaces, bpr*3 hex chars, 1 gap, bpr ascii.
-    let total_cols = 8 + bpr * 3 + 1 + bpr;
-    let content_width = total_cols as f32 * char_w;
+
+    let layout = HexLayout::new(opts, bpr, bytes.len());
+    let content_width = layout.total_cols() as f32 * char_w;
+    let cell_x = |origin_x: f32, col: usize| origin_x + col as f32 * char_w;
+
+    // Non-scrolling column-offset header.
+    if opts.show_columns {
+        let width = content_width.max(ui.available_width());
+        let (resp, painter) =
+            ui.allocate_painter(egui::vec2(width, row_height), egui::Sense::hover());
+        let mut buf = vec![' '; layout.total_cols()];
+        if layout.show_line_numbers() {
+            place(&mut buf, 0, "Offset");
+        }
+        if layout.show_hex() {
+            for col in 0..bpr {
+                if let Some(at) = layout.hex_cell_col(col) {
+                    let label = if opts.line_number_hex {
+                        format!("{:02X}", col & 0xFF)
+                    } else {
+                        format!("{:02}", col % 100)
+                    };
+                    place(&mut buf, at, &label);
+                }
+            }
+        }
+        let header: String = buf.into_iter().collect();
+        painter.text(
+            resp.rect.min,
+            egui::Align2::LEFT_TOP,
+            header,
+            font_id.clone(),
+            ui.visuals().weak_text_color(),
+        );
+    }
 
     let mut gesture = None;
     let mut area = egui::ScrollArea::vertical().auto_shrink([false, false]);
@@ -2708,8 +3617,6 @@ fn render_hex(
             egui::Sense::click_and_drag(),
         );
         let origin = resp.rect.min;
-        let hex_cell_x = |col: usize| origin.x + (8 + col * 3) as f32 * char_w;
-        let ascii_cell_x = |col: usize| origin.x + (8 + bpr * 3 + 1 + col) as f32 * char_w;
 
         for (i, row) in range.clone().enumerate() {
             let y = origin.y + i as f32 * row_height;
@@ -2734,46 +3641,73 @@ fn render_hex(
                     .selection
                     .is_some_and(|(lo, hi)| (lo..=hi).contains(&byte));
                 if selected {
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(hex_cell_x(col), y),
-                            egui::vec2(char_w * 2.0, row_height),
-                        ),
-                        0.0,
-                        sel_color,
-                    );
-                    painter.rect_filled(
-                        egui::Rect::from_min_size(
-                            egui::pos2(ascii_cell_x(col), y),
-                            egui::vec2(char_w, row_height),
-                        ),
-                        0.0,
-                        sel_color,
-                    );
+                    if let Some(c) = layout.hex_cell_col(col) {
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(cell_x(origin.x, c), y),
+                                egui::vec2(char_w * 2.0, row_height),
+                            ),
+                            0.0,
+                            sel_color,
+                        );
+                    }
+                    if let Some(c) = layout.ascii_cell_col(col) {
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(
+                                egui::pos2(cell_x(origin.x, c), y),
+                                egui::vec2(char_w, row_height),
+                            ),
+                            0.0,
+                            sel_color,
+                        );
+                    }
                 }
                 if sel.cursor == Some(byte) {
-                    painter.rect_stroke(
-                        egui::Rect::from_min_size(
-                            egui::pos2(hex_cell_x(col), y),
-                            egui::vec2(char_w * 2.0, row_height),
-                        ),
-                        0.0,
-                        cursor_stroke,
-                        egui::StrokeKind::Inside,
-                    );
+                    if let Some(c) = layout.hex_cell_col(col) {
+                        painter.rect_stroke(
+                            egui::Rect::from_min_size(
+                                egui::pos2(cell_x(origin.x, c), y),
+                                egui::vec2(char_w * 2.0, row_height),
+                            ),
+                            0.0,
+                            cursor_stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                 }
             }
 
-            // Build and paint the row text on top.
-            let mut line = format!("{offset:06X}  ");
-            for col in 0..bpr {
-                match chunk.get(col) {
-                    Some(b) => line.push_str(&format!("{b:02X} ")),
-                    None => line.push_str("   "),
+            // Build the row into a fixed-width char buffer so every glyph lands
+            // on the same character column the geometry uses for hit-testing.
+            let mut buf = vec![' '; layout.total_cols()];
+            if layout.show_line_numbers() {
+                place(&mut buf, 0, &layout.format_addr(offset));
+            }
+            if layout.show_hex() {
+                for (col, &b) in chunk.iter().enumerate() {
+                    if opts.hide_null_bytes && b == 0 {
+                        continue;
+                    }
+                    if let Some(at) = layout.hex_cell_col(col) {
+                        place(&mut buf, at, &format!("{b:02X}"));
+                    }
                 }
             }
-            line.push(' ');
-            line.extend(chunk.iter().map(|&b| ascii_char(b, charset)));
+            if layout.show_ascii() {
+                for (col, &b) in chunk.iter().enumerate() {
+                    let ch = if opts.hide_null_bytes && b == 0 {
+                        ' '
+                    } else {
+                        ascii_char(b, charset)
+                    };
+                    if let Some(at) = layout.ascii_cell_col(col) {
+                        if let Some(slot) = buf.get_mut(at) {
+                            *slot = ch;
+                        }
+                    }
+                }
+            }
+            let line: String = buf.into_iter().collect();
             painter.text(
                 egui::pos2(origin.x, y),
                 egui::Align2::LEFT_TOP,
@@ -2786,19 +3720,27 @@ fn render_hex(
         // Map a pointer interaction to a byte and a gesture.
         if let Some(pos) = resp.interact_pointer_pos() {
             let rel_row = ((pos.y - origin.y) / row_height).floor();
-            if rel_row >= 0.0 && (rel_row as usize) < visible {
+            let local_x = pos.x - origin.x;
+            if rel_row >= 0.0 && (rel_row as usize) < visible && char_w > 0.0 && local_x >= 0.0 {
                 let row = range.start + rel_row as usize;
-                if let Some(byte) = byte_at_x(pos.x - origin.x, char_w, bpr, row, bytes.len()) {
-                    gesture = if resp.drag_started() {
-                        Some(HexGesture::DragStart(byte))
-                    } else if resp.dragged() {
-                        Some(HexGesture::DragTo(byte))
-                    } else if resp.clicked() {
-                        let shift = ui.input(|i| i.modifiers.shift);
-                        Some(HexGesture::Click { byte, shift })
-                    } else {
-                        None
-                    };
+                if let Some((col, region)) = layout.byte_at_char((local_x / char_w) as usize) {
+                    let byte = row * bpr + col;
+                    if byte < bytes.len() {
+                        gesture = if resp.drag_started() {
+                            Some(HexGesture::DragStart { byte, region })
+                        } else if resp.dragged() {
+                            Some(HexGesture::DragTo(byte))
+                        } else if resp.clicked() {
+                            let shift = ui.input(|i| i.modifiers.shift);
+                            Some(HexGesture::Click {
+                                byte,
+                                shift,
+                                region,
+                            })
+                        } else {
+                            None
+                        };
+                    }
                 }
             }
         }
@@ -2806,29 +3748,28 @@ fn render_hex(
     gesture
 }
 
-/// Map a click x-offset (relative to the row's left edge) to a byte column,
-/// covering both the hex pair area and the ASCII gutter. `None` for the address
-/// gutter, the gap, or past the row's data.
-fn byte_at_x(local_x: f32, char_w: f32, bpr: usize, row: usize, len: usize) -> Option<usize> {
-    if char_w <= 0.0 || local_x < 0.0 {
-        return None;
+/// Overwrite characters in a monospace row buffer starting at character column
+/// `at`, clipping anything past the buffer's end.
+fn place(buf: &mut [char], at: usize, s: &str) {
+    for (i, c) in s.chars().enumerate() {
+        if let Some(slot) = buf.get_mut(at + i) {
+            *slot = c;
+        }
     }
-    let ch = (local_x / char_w) as usize;
-    let hex_start = 8;
-    let hex_end = 8 + bpr * 3;
-    let ascii_start = hex_end + 1;
-    let col = if ch >= ascii_start {
-        ch - ascii_start
-    } else if ch >= hex_start {
-        (ch - hex_start) / 3
-    } else {
-        return None;
-    };
-    if col >= bpr {
-        return None;
+}
+
+/// Build a clipboard [`HexConfig`] that mirrors the on-screen view options.
+fn hex_config(opts: &HexViewOptions) -> HexConfig {
+    HexConfig {
+        bytes_per_row: opts.bytes_per_row.max(1),
+        base_address: 0,
+        show_line_numbers: opts.show_line_numbers,
+        line_number_hex: opts.line_number_hex,
+        show_hex: opts.show_hex,
+        show_ascii: opts.show_ascii,
+        grouping: opts.grouping.size(),
+        hide_null_bytes: opts.hide_null_bytes,
     }
-    let byte = row * bpr + col;
-    (byte < len).then_some(byte)
 }
 
 /// Normalize two byte offsets into an inclusive `(lo, hi)` range.
@@ -2836,13 +3777,21 @@ fn normalize(a: usize, b: usize) -> (usize, usize) {
     (a.min(b), a.max(b))
 }
 
+/// Whether the platform copy shortcut (Cmd+C on macOS, Ctrl+C elsewhere) fired
+/// this frame. egui-winit emits [`egui::Event::Copy`] for it, so this matches
+/// the same gesture that copies selected text in a label or text field.
+fn copy_event_pending(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Copy)))
+}
+
 /// Apply a hex gesture to a view's interaction state.
 fn apply_hex_gesture(hs: &mut HexUiState, gesture: HexGesture) {
     match gesture {
-        HexGesture::DragStart(b) => {
-            hs.drag_anchor = Some(b);
-            hs.cursor = Some(b);
+        HexGesture::DragStart { byte, region } => {
+            hs.drag_anchor = Some(byte);
+            hs.cursor = Some(byte);
             hs.selection = None;
+            hs.region = region;
         }
         HexGesture::DragTo(b) => {
             if let Some(a) = hs.drag_anchor {
@@ -2850,7 +3799,11 @@ fn apply_hex_gesture(hs: &mut HexUiState, gesture: HexGesture) {
                 hs.cursor = Some(a.min(b));
             }
         }
-        HexGesture::Click { byte, shift } => {
+        HexGesture::Click {
+            byte,
+            shift,
+            region,
+        } => {
             if shift {
                 let anchor = hs.cursor.unwrap_or(byte);
                 hs.selection = Some(normalize(anchor, byte));
@@ -2859,6 +3812,7 @@ fn apply_hex_gesture(hs: &mut HexUiState, gesture: HexGesture) {
                 hs.selection = None;
             }
             hs.drag_anchor = None;
+            hs.region = region;
         }
     }
 }
@@ -3079,7 +4033,11 @@ fn render_disk_stats(
             "Ext", "Count", "Bytes", "Description"
         ));
         for e in &s.extensions {
-            let ext = if e.ext.is_empty() { "(none)" } else { &e.ext };
+            let ext = if e.ext.is_empty() {
+                "(none)".to_string()
+            } else {
+                display_ext(&e.ext)
+            };
             ui.monospace(format!(
                 "{:<7} {:>5} {:>12}  {}",
                 ext,
@@ -3127,6 +4085,30 @@ fn base_name(path: &str) -> String {
         .next()
         .unwrap_or("file")
         .to_string()
+}
+
+/// Placeholder for an extension character that cannot be shown in a column-
+/// aligned monospace table. ASCII `?` is guaranteed to be a single cell wide in
+/// the monospace font (matching the `.` the text view uses for control bytes),
+/// whereas control glyphs and wide/undecoded characters are not.
+const EXT_PLACEHOLDER: char = '?';
+
+/// A file extension made safe for a monospace, column-aligned table. Real MSX
+/// extensions are ASCII, but "strange" filenames can carry control bytes (e.g.
+/// SUB/FF) or undecoded high bytes whose glyphs render at an unpredictable
+/// width and break column alignment. Each such character is swapped one-for-one
+/// for [`EXT_PLACEHOLDER`], so the visible width matches the char count the
+/// padding was computed from.
+fn display_ext(ext: &str) -> String {
+    ext.chars()
+        .map(|c| {
+            if c.is_ascii_graphic() {
+                c
+            } else {
+                EXT_PLACEHOLDER
+            }
+        })
+        .collect()
 }
 
 /// Truncate `s` to at most `max` characters, marking elision with a trailing
@@ -3351,9 +4333,95 @@ fn screen_decode_failed_message(forced: Option<recoil::ImageFormat>) -> String {
     }
 }
 
+/// Decode the embedded app icon into a GPU texture for the About window. On the
+/// (unexpected) decode failure of our own bundled asset, falls back to a 1x1
+/// transparent pixel so the window still opens.
+fn load_about_icon(ctx: &egui::Context) -> egui::TextureHandle {
+    let color_image = image::load_from_memory(ICON_PNG)
+        .map(|img| {
+            let rgba = img.to_rgba8();
+            let (width, height) = rgba.dimensions();
+            egui::ColorImage::from_rgba_unmultiplied(
+                [width as usize, height as usize],
+                rgba.as_raw(),
+            )
+        })
+        .unwrap_or_else(|_| egui::ColorImage::new([1, 1], vec![egui::Color32::TRANSPARENT]));
+    ctx.load_texture("about_icon", color_image, egui::TextureOptions::LINEAR)
+}
+
+/// The Version / Built / Commit table in the About window. Labels are right-
+/// aligned in a muted colour against a monospace value column. Rows with no
+/// value (no git checkout) are omitted.
+fn about_meta_grid(ui: &mut egui::Ui) {
+    egui::Grid::new("about_meta")
+        .num_columns(2)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            meta_label(ui, "Version");
+            ui.label(egui::RichText::new(VERSION).monospace());
+            ui.end_row();
+
+            if !BUILD_DATE.is_empty() {
+                meta_label(ui, "Built");
+                ui.label(egui::RichText::new(BUILD_DATE).monospace());
+                ui.end_row();
+            }
+
+            if !GIT_HASH.is_empty() {
+                meta_label(ui, "Commit");
+                ui.label(egui::RichText::new(GIT_HASH).monospace());
+                ui.end_row();
+            }
+        });
+}
+
+/// A right-aligned, muted label cell for [`about_meta_grid`].
+fn meta_label(ui: &mut egui::Ui, text: &str) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(egui::RichText::new(text).weak());
+    });
+}
+
+/// An action chosen from the Screen view's right-click menu, run by the caller
+/// once the borrows the menu was built under have been released.
+#[derive(Clone, Copy)]
+enum ScreenAction {
+    CopyImage,
+    SavePng,
+}
+
+/// Outcome of [`render_screen`]: whether an image was shown (false on decode
+/// failure, so the caller can offer the format picker) and any action the user
+/// triggered from the image's right-click menu.
+struct ScreenRender {
+    shown: bool,
+    action: Option<ScreenAction>,
+}
+
+/// Display size for a decoded screen image: the native 2x nearest-neighbour
+/// zoom, shrunk uniformly so the whole image fits within `available`. Large
+/// pages (e.g. 512x1408 Dynamic Publisher pictures, or SCREEN 6 stamps) then
+/// fit the panel without the user having to resize the window, while small
+/// SCREEN 2 images are never enlarged past 2x.
+fn screen_display_size(texture: egui::Vec2, available: egui::Vec2) -> egui::Vec2 {
+    let native = texture * 2.0;
+    if native.x <= 0.0 || native.y <= 0.0 {
+        return native;
+    }
+    let scale = (available.x / native.x)
+        .min(available.y / native.y)
+        .clamp(0.0, 1.0);
+    native * scale
+}
+
+/// Vertical space (separator + picker row) reserved below the image when the
+/// format picker is shown, so a fit-to-height image does not crowd it out.
+const SCREEN_PICKER_HEADROOM: f32 = 40.0;
+
 /// Render a decoded MSX graphics image, caching the GPU texture by `(path,
-/// forced format)`. Returns whether an image was shown (false on decode
-/// failure, so the caller can offer the format picker).
+/// forced format)`. The image is shrunk to fit the panel and carries a
+/// right-click menu for copying or saving it.
 fn render_screen(
     ui: &mut egui::Ui,
     cache: &mut Option<(String, Option<recoil::ImageFormat>, egui::TextureHandle)>,
@@ -3361,7 +4429,7 @@ fn render_screen(
     bytes: &[u8],
     forced: Option<recoil::ImageFormat>,
     companions: &dyn recoil::CompanionFiles,
-) -> bool {
+) -> ScreenRender {
     let stale = cache
         .as_ref()
         .map(|(p, f, _)| p != path || *f != forced)
@@ -3378,18 +4446,28 @@ fn render_screen(
             } else {
                 ui.weak(msg);
             }
-            return false;
+            return ScreenRender {
+                shown: false,
+                action: None,
+            };
         };
         let image =
             egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.to_rgba());
         let texture = ui.ctx().load_texture(
             format!("screen:{path}"),
             image,
-            egui::TextureOptions::NEAREST,
+            // Nearest magnification keeps small pictures crisp when zoomed to
+            // 2x; linear minification smooths large pages as they are shrunk to
+            // fit the panel.
+            egui::TextureOptions {
+                minification: egui::TextureFilter::Linear,
+                ..egui::TextureOptions::NEAREST
+            },
         );
         *cache = Some((path.to_string(), forced, texture));
     }
 
+    let mut action = None;
     if let Some((_, _, texture)) = cache {
         // Confirm which forced format produced the image, so a successful manual
         // attempt is acknowledged (not just the initial extension-based decode).
@@ -3399,22 +4477,63 @@ fn render_screen(
                 format!("Decoded as {}.", fmt.label()),
             );
         }
+        let mut available = ui.available_size();
+        if forced.is_some() {
+            // The caller draws the format picker below the image in this case;
+            // leave room so a full-height image does not push it out of view.
+            available.y = (available.y - SCREEN_PICKER_HEADROOM).max(0.0);
+        }
         egui::ScrollArea::both().show(ui, |ui| {
-            let size = texture.size_vec2() * 2.0; // 2x nearest-neighbour zoom
-            ui.image(egui::load::SizedTexture::new(texture.id(), size));
+            let size = screen_display_size(texture.size_vec2(), available);
+            let image = egui::Image::new(egui::load::SizedTexture::new(texture.id(), size))
+                .sense(egui::Sense::click());
+            ui.add(image).context_menu(|ui| {
+                if ui.button("Copy image").clicked() {
+                    action = Some(ScreenAction::CopyImage);
+                    ui.close();
+                }
+                if ui.button("Save PNG…").clicked() {
+                    action = Some(ScreenAction::SavePng);
+                    ui.close();
+                }
+            });
         });
     }
-    cache.is_some()
+    ScreenRender {
+        shown: cache.is_some(),
+        action,
+    }
 }
 
 /// Detokenized MSX-BASIC listing.
-fn render_basic(ui: &mut egui::Ui, bytes: &[u8], charset: MsxCharset) {
-    let listing = basic::detokenize(bytes, charset);
+/// The "showing first N kB of M kB" notice for a truncated listing.
+fn size_notice(cap: usize, total: usize) -> String {
+    format!("Showing first {} kB of {} kB.", cap / 1024, total / 1024)
+}
+
+/// Draw a cached listing: the optional truncation notice, then the selectable
+/// monospace text. Shared by the Text/Basic/Disasm views.
+fn draw_listing(ui: &mut egui::Ui, view: &RenderedView) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.add(egui::Label::new(egui::RichText::new(listing).monospace()).wrap());
+            if let Some(notice) = &view.notice {
+                ui.weak(notice);
+            }
+            ui.add(
+                egui::Label::new(egui::RichText::new(view.text.as_str()).monospace())
+                    .selectable(true)
+                    .wrap(),
+            );
         });
+}
+
+/// Detokenized BASIC listing for the Basic view.
+fn produce_basic(bytes: &[u8], charset: MsxCharset) -> RenderedView {
+    RenderedView {
+        text: basic::detokenize(bytes, charset),
+        notice: None,
+    }
 }
 
 /// The most code we disassemble at once: the full Z80 16-bit address space.
@@ -3424,22 +4543,14 @@ const MAX_DISASM_BYTES: usize = 64 * 1024;
 
 /// Z80/R800 disassembly listing. The load address and code window come from the
 /// file's type and any BSAVE header (see [`disasm::locate`]).
-fn render_disasm(ui: &mut egui::Ui, path: &str, bytes: &[u8]) {
+fn produce_disasm(path: &str, bytes: &[u8]) -> RenderedView {
     let img = disasm::locate(path, bytes);
     let shown = &img.code[..img.code.len().min(MAX_DISASM_BYTES)];
-    let listing = disasm::disassemble(shown, img.origin, img.exec);
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if img.code.len() > MAX_DISASM_BYTES {
-                ui.weak(format!(
-                    "Showing first {} kB of {} kB.",
-                    MAX_DISASM_BYTES / 1024,
-                    img.code.len() / 1024
-                ));
-            }
-            ui.add(egui::Label::new(egui::RichText::new(listing).monospace()).wrap());
-        });
+    RenderedView {
+        text: disasm::disassemble(shown, img.origin, img.exec),
+        notice: (img.code.len() > MAX_DISASM_BYTES)
+            .then(|| size_notice(MAX_DISASM_BYTES, img.code.len())),
+    }
 }
 
 /// Plain-text rendering of the File Info view, for the Copy button.
@@ -3517,6 +4628,208 @@ fn info_display_name(entry: Option<&DirEntry>, path: &str, charset: MsxCharset) 
 }
 
 /// File Info view: filesystem facts plus content-derived format details.
+/// The directory an add operation targets, given the row it was invoked on: a
+/// directory (or the `/` root, whose path is empty) targets itself; a file
+/// targets its containing folder.
+fn add_target_dir(path: &str, is_dir: bool) -> String {
+    if is_dir {
+        path.to_string()
+    } else {
+        path.rsplit_once('/')
+            .map_or("", |(parent, _)| parent)
+            .to_string()
+    }
+}
+
+/// Join a directory and a child name into a slash path; the empty (root)
+/// directory yields the bare name.
+fn child_path(dir: &str, name: &str) -> String {
+    if dir.is_empty() {
+        name.to_string()
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// Paths to delete to remove `entry` and everything under it, ordered so each
+/// directory is emptied before it is removed (descendants first, `entry` last).
+fn removal_paths(entry: &DirEntry) -> Vec<String> {
+    let mut out = Vec::new();
+    push_removal_paths(entry, &mut out);
+    out
+}
+
+fn push_removal_paths(entry: &DirEntry, out: &mut Vec<String>) {
+    for child in &entry.children {
+        push_removal_paths(child, out);
+    }
+    out.push(entry.path.clone());
+}
+
+/// The drop-target directory for a pointer position: the `target` of the first
+/// recorded row rect that contains `pos`, or `None` if the drop missed them all.
+fn drop_target_at(targets: &[(egui::Rect, String)], pos: egui::Pos2) -> Option<String> {
+    targets
+        .iter()
+        .find(|(rect, _)| rect.contains(pos))
+        .map(|(_, target)| target.clone())
+}
+
+/// File and subdirectory tallies for a directory: immediate child counts plus
+/// recursive totals and the summed byte size of every descendant file.
+struct DirStats {
+    files: usize,
+    dirs: usize,
+    total_files: usize,
+    total_dirs: usize,
+    total_bytes: u64,
+}
+
+/// Count `dir`'s immediate and recursive contents. `walk()` yields `dir` first,
+/// so `skip(1)` leaves only its descendants.
+fn directory_stats(dir: &DirEntry) -> DirStats {
+    let files = dir.children.iter().filter(|e| !e.is_dir).count();
+    let dirs = dir.children.iter().filter(|e| e.is_dir).count();
+    let mut total_files = 0;
+    let mut total_dirs = 0;
+    let mut total_bytes = 0u64;
+    for e in dir.walk().skip(1) {
+        if e.is_dir {
+            total_dirs += 1;
+        } else {
+            total_files += 1;
+            total_bytes += e.size;
+        }
+    }
+    DirStats {
+        files,
+        dirs,
+        total_files,
+        total_dirs,
+        total_bytes,
+    }
+}
+
+/// The Info pane for a selected directory: its name/path/attributes and a
+/// content summary (immediate counts, plus recursive totals and size when it
+/// has subdirectories). Shown in place of the file viewer when the cursor is on
+/// a folder.
+/// The Info pane for the disk root (`/`): whole-disk file/subdirectory counts
+/// and total size. Shown when the `/` row is selected, which has no `DirEntry`.
+fn render_root_info(ui: &mut egui::Ui, entries: &[DirEntry]) {
+    let files = entries.iter().filter(|e| !e.is_dir).count();
+    let dirs = entries.iter().filter(|e| e.is_dir).count();
+    let mut total_files = 0;
+    let mut total_dirs = 0;
+    let mut total_bytes = 0u64;
+    for e in entries.iter().flat_map(DirEntry::walk) {
+        if e.is_dir {
+            total_dirs += 1;
+        } else {
+            total_files += 1;
+            total_bytes += e.size;
+        }
+    }
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.heading("Disk root");
+            egui::Grid::new("root_info").num_columns(2).show(ui, |ui| {
+                ui.label("Files:");
+                ui.monospace(files.to_string());
+                ui.end_row();
+                ui.label("Subdirectories:");
+                ui.monospace(dirs.to_string());
+                ui.end_row();
+                if total_dirs > 0 {
+                    ui.label("Files (incl. nested):");
+                    ui.monospace(total_files.to_string());
+                    ui.end_row();
+                    ui.label("Subdirectories (all):");
+                    ui.monospace(total_dirs.to_string());
+                    ui.end_row();
+                }
+                ui.label("Total size:");
+                ui.monospace(format!(
+                    "{} ({} bytes)",
+                    humanize_bytes(total_bytes),
+                    total_bytes
+                ));
+                ui.end_row();
+            });
+        });
+}
+
+fn render_directory_info(ui: &mut egui::Ui, dir: &DirEntry, charset: MsxCharset) {
+    let stats = directory_stats(dir);
+    let yes_no = |b: bool| if b { "yes" } else { "no" };
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.heading("Directory");
+            egui::Grid::new("dir_info").num_columns(2).show(ui, |ui| {
+                ui.label("Name:");
+                ui.monospace(dir.display_name(charset));
+                ui.end_row();
+                ui.label("Path:");
+                ui.monospace(charset::decode_fs_name(charset, &dir.path));
+                ui.end_row();
+                let ts = format_timestamp(dir.modified);
+                if !ts.is_empty() {
+                    ui.label("Modified:");
+                    ui.monospace(ts);
+                    ui.end_row();
+                }
+            });
+
+            let a = dir.attributes;
+            ui.add_space(4.0);
+            ui.label("Attributes");
+            egui::Grid::new("dir_attrs").num_columns(2).show(ui, |ui| {
+                for (name, set) in [
+                    ("Read-only", a.read_only),
+                    ("Hidden", a.hidden),
+                    ("System", a.system),
+                    ("Archive", a.archive),
+                ] {
+                    ui.label(format!("{name}:"));
+                    ui.monospace(yes_no(set));
+                    ui.end_row();
+                }
+            });
+
+            ui.add_space(8.0);
+            ui.heading("Contents");
+            egui::Grid::new("dir_contents")
+                .num_columns(2)
+                .show(ui, |ui| {
+                    ui.label("Files:");
+                    ui.monospace(stats.files.to_string());
+                    ui.end_row();
+                    ui.label("Subdirectories:");
+                    ui.monospace(stats.dirs.to_string());
+                    ui.end_row();
+                    // Recursive totals only add information when there are nested
+                    // folders; for a flat directory they equal the immediate counts.
+                    if stats.total_dirs > 0 {
+                        ui.label("Files (incl. nested):");
+                        ui.monospace(stats.total_files.to_string());
+                        ui.end_row();
+                        ui.label("Subdirectories (all):");
+                        ui.monospace(stats.total_dirs.to_string());
+                        ui.end_row();
+                    }
+                    ui.label("Total size:");
+                    ui.monospace(format!(
+                        "{} ({} bytes)",
+                        humanize_bytes(stats.total_bytes),
+                        stats.total_bytes
+                    ));
+                    ui.end_row();
+                });
+        });
+}
+
 fn render_info(
     ui: &mut egui::Ui,
     path: &str,
@@ -3524,8 +4837,8 @@ fn render_info(
     entry: Option<&DirEntry>,
     charset: MsxCharset,
     checksums: &msx_disk::Checksums,
+    info: &msx_disk::fileinfo::FileInfo,
 ) {
-    let info = msx_disk::fileinfo::describe(path, bytes);
     let yes_no = |b: bool| if b { "yes" } else { "no" };
 
     egui::ScrollArea::vertical()
@@ -3573,7 +4886,7 @@ fn render_info(
                 ui.label(desc);
             }
 
-            if let Some(b) = info.bload {
+            if let Some(b) = &info.bload {
                 ui.add_space(8.0);
                 ui.heading("Binary (BSAVE) header");
                 egui::Grid::new("info_bload").num_columns(2).show(ui, |ui| {
@@ -3648,42 +4961,53 @@ fn render_info(
 }
 
 /// Text view, capped to a sane size for responsiveness.
-fn render_text(ui: &mut egui::Ui, bytes: &[u8], show_all: bool, charset: MsxCharset) {
+fn produce_text(bytes: &[u8], show_all: bool, charset: MsxCharset) -> RenderedView {
     let shown = &bytes[..bytes.len().min(MAX_TEXT_BYTES)];
     let mode = if show_all {
         ControlMode::ShowAll
     } else {
         ControlMode::Dots
     };
-    let rendered = text::to_text(shown, mode, charset);
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if bytes.len() > MAX_TEXT_BYTES {
-                ui.weak(format!(
-                    "Showing first {} kB of {} kB.",
-                    MAX_TEXT_BYTES / 1024,
-                    bytes.len() / 1024
-                ));
-            }
-            ui.add(egui::Label::new(egui::RichText::new(rendered).monospace()).wrap());
-        });
+    RenderedView {
+        text: text::to_text(shown, mode, charset),
+        notice: (bytes.len() > MAX_TEXT_BYTES).then(|| size_notice(MAX_TEXT_BYTES, bytes.len())),
+    }
 }
 
 impl eframe::App for MediaExplorerApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, SETTINGS_KEY, &self.settings);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        // macOS: act on any native menu item activated since the last frame.
+        #[cfg(target_os = "macos")]
+        for id in crate::macos::take_menu_events() {
+            self.handle_menu_event(&id);
+        }
+
         self.handle_dropped_files(ui.ctx());
+        self.handle_tree_keys(ui.ctx());
+
+        // Non-macOS: an in-window menu bar driving the same actions/state (the
+        // native bar is used on macOS instead).
+        #[cfg(not(target_os = "macos"))]
+        egui::Panel::top("menubar").show_inside(ui, |ui| {
+            self.menu_bar(ui);
+        });
 
         egui::Panel::top("toolbar").show_inside(ui, |ui| {
             ui.add_space(4.0);
             self.toolbar(ui);
             ui.add_space(4.0);
         });
-        egui::Panel::bottom("status").show_inside(ui, |ui| {
-            ui.add_space(2.0);
-            self.status_bar(ui);
-            ui.add_space(2.0);
-        });
+        if self.settings.show_status_bar {
+            egui::Panel::bottom("status").show_inside(ui, |ui| {
+                ui.add_space(2.0);
+                self.status_bar(ui);
+                ui.add_space(2.0);
+            });
+        }
         let tree_width = files_panel_default_width(ui);
         egui::Panel::left("tree")
             .resizable(true)
@@ -3706,6 +5030,9 @@ impl eframe::App for MediaExplorerApp {
 
         self.delete_confirmation(ui.ctx());
         self.rename_dialog(ui.ctx());
+        self.new_dir_dialog(ui.ctx());
+        self.new_disk_dialog(ui.ctx());
+        self.size_fix_dialog(ui.ctx());
         self.about_dialog(ui.ctx());
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -3718,6 +5045,16 @@ impl eframe::App for MediaExplorerApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn about_icon_asset_decodes() {
+        // The About window decodes this embedded PNG on first open; guard
+        // against a broken or wrong asset being bundled.
+        let img = image::load_from_memory(ICON_PNG).expect("embedded icon is a valid PNG");
+        let (w, h) = image::GenericImageView::dimensions(&img);
+        assert_eq!(w, h, "app icon should be square");
+        assert!(w >= 128, "app icon should be reasonably hi-res, got {w}px");
+    }
 
     #[test]
     fn hex_edit_format_parse_roundtrip() {
@@ -3749,32 +5086,6 @@ mod tests {
     }
 
     #[test]
-    fn byte_at_x_maps_hex_and_ascii_columns() {
-        let cw = 8.0; // pixels per character
-        let bpr = 16;
-        // Address gutter (chars 0-7) maps to nothing.
-        assert_eq!(byte_at_x(0.0, cw, bpr, 0, 512), None);
-        // First hex pair starts at char 8.
-        assert_eq!(byte_at_x(8.0 * cw, cw, bpr, 0, 512), Some(0));
-        // Second hex pair starts at char 11 (8 + 3).
-        assert_eq!(byte_at_x(11.0 * cw, cw, bpr, 0, 512), Some(1));
-        // The gap char between hex and ASCII (char 8+48=56) maps to nothing.
-        assert_eq!(byte_at_x((8 + bpr * 3) as f32 * cw, cw, bpr, 0, 512), None);
-        // ASCII gutter starts at char 8 + 48 + 1 = 57 → column 0.
-        assert_eq!(
-            byte_at_x((8 + bpr * 3 + 1) as f32 * cw, cw, bpr, 0, 512),
-            Some(0)
-        );
-        // Row offset is applied: row 2, column 3 → byte 35.
-        assert_eq!(
-            byte_at_x((8 + 3 * 3) as f32 * cw, cw, bpr, 2, 512),
-            Some(35)
-        );
-        // Past the data length yields None.
-        assert_eq!(byte_at_x(8.0 * cw, cw, bpr, 100, 10), None);
-    }
-
-    #[test]
     fn normalize_orders_endpoints() {
         assert_eq!(normalize(5, 2), (2, 5));
         assert_eq!(normalize(2, 5), (2, 5));
@@ -3793,29 +5104,42 @@ mod tests {
     #[test]
     fn hex_gesture_updates_selection_state() {
         let mut hs = HexUiState::default();
-        // A plain click sets the cursor and clears any selection.
+        // A plain click sets the cursor, clears any selection, and records the
+        // column it landed in.
         apply_hex_gesture(
             &mut hs,
             HexGesture::Click {
                 byte: 4,
                 shift: false,
+                region: HexRegion::Hex,
             },
         );
         assert_eq!(hs.cursor, Some(4));
         assert_eq!(hs.selection, None);
-        // Shift-click extends from the cursor.
+        assert_eq!(hs.region, HexRegion::Hex);
+        // Shift-click extends from the cursor and updates the column.
         apply_hex_gesture(
             &mut hs,
             HexGesture::Click {
                 byte: 9,
                 shift: true,
+                region: HexRegion::Ascii,
             },
         );
         assert_eq!(hs.selection, Some((4, 9)));
-        // A drag selects from anchor to the dragged byte (normalized).
-        apply_hex_gesture(&mut hs, HexGesture::DragStart(20));
+        assert_eq!(hs.region, HexRegion::Ascii);
+        // A drag selects from anchor to the dragged byte (normalized) and keeps
+        // the column the drag began in.
+        apply_hex_gesture(
+            &mut hs,
+            HexGesture::DragStart {
+                byte: 20,
+                region: HexRegion::Ascii,
+            },
+        );
         apply_hex_gesture(&mut hs, HexGesture::DragTo(12));
         assert_eq!(hs.selection, Some((12, 20)));
+        assert_eq!(hs.region, HexRegion::Ascii);
     }
 
     #[test]
@@ -3883,6 +5207,153 @@ mod tests {
         let sane = sanitize_8_3(&display, |c| is_rename_char(c, MsxCharset::Japanese));
         let encoded = charset::encode_fs_name(MsxCharset::Japanese, &sane).unwrap();
         assert_eq!(encoded, key);
+    }
+
+    fn dir_entry(path: &str, is_dir: bool, size: u64, children: Vec<DirEntry>) -> DirEntry {
+        use msx_disk::fs::Attributes;
+        DirEntry {
+            name: path.rsplit('/').next().unwrap().to_string(),
+            path: path.to_string(),
+            is_dir,
+            size,
+            attributes: Attributes::default(),
+            modified: None,
+            children,
+        }
+    }
+
+    #[test]
+    fn add_target_dir_resolves_the_destination_folder() {
+        // Root row → root; a directory → itself; a file → its parent folder.
+        assert_eq!(add_target_dir(ROOT_PATH, true), "");
+        assert_eq!(add_target_dir("TOOLS", true), "TOOLS");
+        assert_eq!(add_target_dir("TOOLS/SUB", true), "TOOLS/SUB");
+        assert_eq!(add_target_dir("TOOLS/ASM.COM", false), "TOOLS");
+        // A root-level file has no parent folder, so it targets the root.
+        assert_eq!(add_target_dir("HELLO.BAS", false), "");
+    }
+
+    #[test]
+    fn child_path_joins_unless_at_root() {
+        assert_eq!(child_path("", "FILE.TXT"), "FILE.TXT");
+        assert_eq!(child_path("TOOLS", "ASM.COM"), "TOOLS/ASM.COM");
+        assert_eq!(child_path("A/B", "C.COM"), "A/B/C.COM");
+    }
+
+    #[test]
+    fn removal_paths_lists_descendants_before_their_folder() {
+        // TOOLS/ { A.TXT, SUB/ { B.TXT } }
+        let dir = dir_entry(
+            "TOOLS",
+            true,
+            0,
+            vec![
+                dir_entry("TOOLS/A.TXT", false, 1, vec![]),
+                dir_entry(
+                    "TOOLS/SUB",
+                    true,
+                    0,
+                    vec![dir_entry("TOOLS/SUB/B.TXT", false, 1, vec![])],
+                ),
+            ],
+        );
+        let order = removal_paths(&dir);
+        // Every entry appears after all of its descendants, and the folder last.
+        let pos = |p: &str| order.iter().position(|x| x == p).unwrap();
+        assert!(pos("TOOLS/SUB/B.TXT") < pos("TOOLS/SUB"));
+        assert!(pos("TOOLS/A.TXT") < pos("TOOLS"));
+        assert!(pos("TOOLS/SUB") < pos("TOOLS"));
+        assert_eq!(order.last().unwrap(), "TOOLS");
+        assert_eq!(order.len(), 4);
+    }
+
+    #[test]
+    fn drop_target_at_picks_the_row_under_the_pointer() {
+        let targets = vec![
+            (
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(100.0, 10.0)),
+                "".to_string(),
+            ),
+            (
+                egui::Rect::from_min_max(egui::pos2(0.0, 10.0), egui::pos2(100.0, 20.0)),
+                "TOOLS".to_string(),
+            ),
+        ];
+        assert_eq!(
+            drop_target_at(&targets, egui::pos2(50.0, 15.0)).as_deref(),
+            Some("TOOLS")
+        );
+        assert_eq!(
+            drop_target_at(&targets, egui::pos2(50.0, 5.0)).as_deref(),
+            Some("")
+        );
+        // A drop below every row hits nothing.
+        assert_eq!(drop_target_at(&targets, egui::pos2(50.0, 99.0)), None);
+    }
+
+    #[test]
+    fn directory_stats_counts_immediate_and_recursive() {
+        // KIDS/ { KID.COM(100), AKID.COM(200), SUB/ { C.COM(50) } }
+        let dir = dir_entry(
+            "KIDS",
+            true,
+            0,
+            vec![
+                dir_entry("KIDS/KID.COM", false, 100, vec![]),
+                dir_entry("KIDS/AKID.COM", false, 200, vec![]),
+                dir_entry(
+                    "KIDS/SUB",
+                    true,
+                    0,
+                    vec![dir_entry("KIDS/SUB/C.COM", false, 50, vec![])],
+                ),
+            ],
+        );
+        let s = directory_stats(&dir);
+        assert_eq!(s.files, 2, "immediate files");
+        assert_eq!(s.dirs, 1, "immediate subdirectories");
+        assert_eq!(s.total_files, 3, "files including nested");
+        assert_eq!(s.total_dirs, 1, "subdirectories including nested");
+        assert_eq!(s.total_bytes, 350, "recursive sum of file sizes");
+    }
+
+    #[test]
+    fn directory_stats_of_empty_directory_is_all_zero() {
+        let dir = dir_entry("EMPTY", true, 0, vec![]);
+        let s = directory_stats(&dir);
+        assert_eq!(
+            (s.files, s.dirs, s.total_files, s.total_dirs, s.total_bytes),
+            (0, 0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn focusing_a_directory_clears_the_file_selection() {
+        // The "both stay blue" bug: a previously selected file kept its
+        // highlight when the cursor moved onto a directory. Focusing a
+        // directory must drop the file selection so only the folder is shown.
+        let mut app = MediaExplorerApp {
+            selected: Some("KIDS/KID.COM".to_string()),
+            content: Some(FileContent {
+                path: "KIDS/KID.COM".to_string(),
+                bytes: vec![1, 2, 3],
+                checksums: msx_disk::Checksums::of(&[1, 2, 3]),
+                info: OnceCell::new(),
+                rendered: RefCell::new(None),
+            }),
+            ..Default::default()
+        };
+        app.selection.insert("KIDS/KID.COM".to_string());
+
+        app.focus_directory("KIDS".to_string());
+
+        assert_eq!(app.cursor.as_deref(), Some("KIDS"));
+        assert!(app.selection.is_empty(), "file selection cleared");
+        assert!(app.selected.is_none());
+        assert!(
+            app.content.is_none(),
+            "file viewer cleared for the dir info pane"
+        );
     }
 
     #[test]
@@ -3959,6 +5430,63 @@ mod tests {
             &recoil::NoCompanions
         )
         .is_none());
+    }
+
+    #[test]
+    fn display_ext_replaces_nonprintable_but_keeps_char_count() {
+        // Normal ASCII extensions pass through unchanged.
+        assert_eq!(display_ext("pct"), "pct");
+        assert_eq!(display_ext(""), "");
+
+        // A "strange" filename whose extension is C0 control bytes (SUB + FF +
+        // FF, as seen on real disks): each control char becomes the single-width
+        // placeholder, and crucially the char count is preserved so the
+        // monospace `{:<7}` column padding stays aligned. Every output char is a
+        // single ASCII cell, so nothing renders at an unexpected width.
+        let ctrl = "\u{001a}\u{000c}\u{000c}";
+        let shown = display_ext(ctrl);
+        assert_eq!(shown, "???");
+        assert_eq!(shown.chars().count(), ctrl.chars().count());
+        assert!(shown.chars().all(|c| c.is_ascii_graphic()));
+
+        // Mixed printable + control, and undecoded PUA high bytes, are sanitized
+        // too while leaving the printable parts intact.
+        assert_eq!(display_ext("a\u{001a}b"), "a?b");
+        assert_eq!(display_ext("\u{F081}"), "?");
+    }
+
+    #[test]
+    fn screen_display_size_caps_small_images_at_2x() {
+        // A 256x192 SCREEN 2 picture in a roomy panel: shown at native 2x, not
+        // enlarged to fill the space.
+        let size = screen_display_size(egui::vec2(256.0, 192.0), egui::vec2(2000.0, 2000.0));
+        assert_eq!(size, egui::vec2(512.0, 384.0));
+    }
+
+    #[test]
+    fn screen_display_size_shrinks_tall_pages_to_fit() {
+        // A 512x1408 Dynamic Publisher page (2x native = 1024x2816) shrunk to a
+        // 900px-tall panel: it fits within the panel and keeps its aspect ratio.
+        let available = egui::vec2(1000.0, 900.0);
+        let size = screen_display_size(egui::vec2(512.0, 1408.0), available);
+        assert!(size.x <= available.x + 0.01 && size.y <= available.y + 0.01);
+        // Height is the limiting dimension here, so it pins to the panel height.
+        assert!((size.y - 900.0).abs() < 0.01, "{size:?}");
+        let native = egui::vec2(512.0, 1408.0) * 2.0;
+        assert!(
+            (size.x / size.y - native.x / native.y).abs() < 1e-4,
+            "aspect ratio preserved: {size:?}"
+        );
+    }
+
+    #[test]
+    fn screen_display_size_handles_degenerate_inputs() {
+        // Zero available space collapses to zero rather than producing NaN.
+        let size = screen_display_size(egui::vec2(256.0, 192.0), egui::vec2(0.0, 0.0));
+        assert_eq!(size, egui::vec2(0.0, 0.0));
+        // A zero-size texture is returned unscaled (and never divides by zero).
+        let size = screen_display_size(egui::vec2(0.0, 0.0), egui::vec2(100.0, 100.0));
+        assert_eq!(size, egui::vec2(0.0, 0.0));
     }
 
     #[test]
