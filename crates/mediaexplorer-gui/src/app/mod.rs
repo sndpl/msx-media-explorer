@@ -519,6 +519,12 @@ impl eframe::App for MediaExplorerApp {
         for id in crate::macos::take_menu_events() {
             self.handle_menu_event(&id);
         }
+        // Keep the native Text Encoding menu's checks/enabled state in sync; the
+        // charset can change outside a menu event (auto-detect on disk load).
+        #[cfg(target_os = "macos")]
+        if let Some(menu) = self.mac_menu.as_ref() {
+            menu.sync_encoding(self.charset, self.charset_auto, self.disk.is_some());
+        }
 
         self.handle_dropped_files(ui.ctx());
         self.handle_tree_keys(ui.ctx());

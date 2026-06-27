@@ -16,6 +16,8 @@ use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{NSApplication, NSImage};
 use objc2_foundation::{NSData, NSProcessInfo, NSString};
 
+use msx_disk::MsxCharset;
+
 use crate::settings::{ByteGrouping, Settings, ROW_SIZES};
 
 /// egui context, stored so the menu handler can wake a repaint when the app is
@@ -65,6 +67,10 @@ pub struct MacMenu {
     recent_items: Vec<MenuItem>,
     /// Check items keyed by their menu id, for `sync_checks`.
     checks: Vec<(&'static str, CheckMenuItem)>,
+    /// The "Automatic" item in the Text Encoding menu.
+    encoding_auto: CheckMenuItem,
+    /// Per-charset Text Encoding items, in `MsxCharset::ALL` order.
+    encodings: Vec<CheckMenuItem>,
 }
 
 impl MacMenu {
@@ -72,6 +78,21 @@ impl MacMenu {
     pub fn sync_checks(&self, s: &Settings) {
         for (id, item) in &self.checks {
             item.set_checked(check_state(id, s));
+        }
+    }
+
+    /// Reflect the active charset into the Text Encoding menu. The charset only
+    /// applies to an open disk, so the items are disabled (greyed) when `enabled`
+    /// is false. "Automatic" is checked while auto-detect is on; otherwise the
+    /// pinned charset is checked (at most one check at a time, matching the egui
+    /// menu).
+    pub fn sync_encoding(&self, charset: MsxCharset, auto: bool, enabled: bool) {
+        self.encoding_auto.set_checked(auto);
+        self.encoding_auto.set_enabled(enabled);
+        for (i, item) in self.encodings.iter().enumerate() {
+            let is_active = MsxCharset::ALL.get(i) == Some(&charset);
+            item.set_checked(!auto && is_active);
+            item.set_enabled(enabled);
         }
     }
 
@@ -147,19 +168,23 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
     let mut checks: Vec<(&'static str, CheckMenuItem)> = Vec::new();
 
     // App menu (first submenu). About opens the in-app window, so it is a plain
-    // item rather than the system About panel.
+    // item rather than the system About panel. "Hide"/"Quit" get explicit labels:
+    // muda otherwise derives their app name from `NSRunningApplication`, which is
+    // the executable name ("mediaexplorer") for an unbundled dev binary.
     let app_menu = Submenu::new(crate::APP_NAME, true);
     let about = MenuItem::with_id("app.about", "About MSX Media Explorer", true, None);
+    let hide_label = format!("Hide {}", crate::APP_NAME);
+    let quit_label = format!("Quit {}", crate::APP_NAME);
     let _ = app_menu.append_items(&[
         &about,
         &PredefinedMenuItem::separator(),
         &PredefinedMenuItem::services(None),
         &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::hide(None),
+        &PredefinedMenuItem::hide(Some(&hide_label)),
         &PredefinedMenuItem::hide_others(None),
         &PredefinedMenuItem::show_all(None),
         &PredefinedMenuItem::separator(),
-        &PredefinedMenuItem::quit(None),
+        &PredefinedMenuItem::quit(Some(&quit_label)),
     ]);
 
     // File menu.
@@ -231,10 +256,29 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
         &hide_nulls,
     ]);
 
+    // Text Encoding menu. Built in the app's startup state (auto-detect on, no
+    // disk yet); `sync_encoding` keeps it current as documents open and the user
+    // picks a code page. Ids are `encoding.{i}`, `i` indexing `MsxCharset::ALL`.
+    let encoding = Submenu::new("Text Encoding", true);
+    let encoding_auto = CheckMenuItem::with_id("encoding.auto", "Automatic", false, true, None);
+    let _ = encoding.append_items(&[&encoding_auto, &PredefinedMenuItem::separator()]);
+    let mut encodings: Vec<CheckMenuItem> = Vec::new();
+    for (i, cs) in MsxCharset::ALL.iter().enumerate() {
+        let item = CheckMenuItem::with_id(
+            Box::leak(format!("encoding.{i}").into_boxed_str()),
+            cs.label(),
+            false,
+            false,
+            None,
+        );
+        let _ = encoding.append(&item);
+        encodings.push(item);
+    }
+
     // Window menu (macOS injects Minimize/Zoom/Bring All to Front).
     let window = Submenu::new("Window", true);
 
-    let _ = menu.append_items(&[&app_menu, &file, &view, &window]);
+    let _ = menu.append_items(&[&app_menu, &file, &view, &encoding, &window]);
     menu.init_for_nsapp();
     window.set_as_windows_menu_for_nsapp();
 
@@ -243,6 +287,8 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
         recent,
         recent_items: Vec::new(),
         checks,
+        encoding_auto,
+        encodings,
     };
     mac.rebuild_recent(&settings.recent);
     mac

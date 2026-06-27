@@ -14,8 +14,8 @@ mod tables;
 
 /// A single-byte MSX character set (code page).
 ///
-/// `#[non_exhaustive]` so more regions (Korean, Arabic, Russian, Brazilian,
-/// German) can be added later without breaking downstream `match`es.
+/// `#[non_exhaustive]` so more regions (e.g. German DIN, or per-machine Brazilian
+/// variants) can be added later without breaking downstream `match`es.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum MsxCharset {
@@ -24,17 +24,36 @@ pub enum MsxCharset {
     International,
     /// MSX Japanese: JIS X 0201 half-width katakana plus hiragana and graphics.
     Japanese,
+    /// MSX Russian: relocated graphics plus Cyrillic.
+    Russian,
+    /// MSX Korean: Hangul compatibility jamo plus precomposed Hangul syllables.
+    Korean,
+    /// MSX Arabic: Arabic-Indic digits and Arabic letters (unshaped, see table).
+    Arabic,
+    /// MSX Brazilian: the BRASCII/ABNT set (International plus Portuguese accents).
+    Brazilian,
 }
 
 impl MsxCharset {
-    /// All selectable charsets, in display order (for a UI dropdown).
-    pub const ALL: &'static [MsxCharset] = &[MsxCharset::International, MsxCharset::Japanese];
+    /// All selectable charsets, in display (menu) order.
+    pub const ALL: &'static [MsxCharset] = &[
+        MsxCharset::International,
+        MsxCharset::Japanese,
+        MsxCharset::Russian,
+        MsxCharset::Korean,
+        MsxCharset::Arabic,
+        MsxCharset::Brazilian,
+    ];
 
     /// Human-readable label for a charset selector.
     pub fn label(self) -> &'static str {
         match self {
             MsxCharset::International => "International",
             MsxCharset::Japanese => "Japanese (Kana)",
+            MsxCharset::Russian => "Russian",
+            MsxCharset::Korean => "Korean",
+            MsxCharset::Arabic => "Arabic",
+            MsxCharset::Brazilian => "Brazilian",
         }
     }
 }
@@ -51,6 +70,10 @@ pub fn decode_byte(charset: MsxCharset, b: u8) -> char {
     let table = match charset {
         MsxCharset::International => &tables::INTERNATIONAL_HIGH,
         MsxCharset::Japanese => &tables::JAPANESE_HIGH,
+        MsxCharset::Russian => &tables::RUSSIAN_HIGH,
+        MsxCharset::Korean => &tables::KOREAN_HIGH,
+        MsxCharset::Arabic => &tables::ARABIC_HIGH,
+        MsxCharset::Brazilian => &tables::BRAZILIAN_HIGH,
     };
     table[(b - 0x80) as usize]
 }
@@ -229,6 +252,57 @@ mod tests {
         assert_eq!(decode_byte(MsxCharset::Japanese, 0xDF), '\u{FF9F}');
         assert_eq!(decode_byte(MsxCharset::Japanese, 0x86), '\u{3092}');
         assert_eq!(decode_byte(MsxCharset::Japanese, 0xE0), '\u{305F}');
+    }
+
+    #[test]
+    fn russian_high_bytes_map_to_cyrillic() {
+        // 0xA0 = GREEK SMALL ALPHA (shared graphics), 0xC1 = а, 0xE1 = А,
+        // 0xBF = CURRENCY SIGN, 0xFF = cursor (full block).
+        assert_eq!(decode_byte(MsxCharset::Russian, 0xA0), '\u{03B1}');
+        assert_eq!(decode_byte(MsxCharset::Russian, 0xC1), '\u{0430}');
+        assert_eq!(decode_byte(MsxCharset::Russian, 0xE1), '\u{0410}');
+        assert_eq!(decode_byte(MsxCharset::Russian, 0xBF), '\u{00A4}');
+        assert_eq!(decode_byte(MsxCharset::Russian, 0xFF), '\u{2588}');
+    }
+
+    #[test]
+    fn korean_high_bytes_map_to_hangul() {
+        // 0x86 = HANGUL LETTER KIYEOK (jamo), 0xA7 = 고 (precomposed syllable),
+        // 0xFF = cursor; 0xFC..0xFE are undefined.
+        assert_eq!(decode_byte(MsxCharset::Korean, 0x86), '\u{3131}');
+        assert_eq!(decode_byte(MsxCharset::Korean, 0xA7), '\u{ACE0}');
+        assert_eq!(decode_byte(MsxCharset::Korean, 0xFC), '\u{FFFD}');
+        assert_eq!(decode_byte(MsxCharset::Korean, 0xFF), '\u{2588}');
+    }
+
+    #[test]
+    fn arabic_high_bytes_map_to_arabic() {
+        // 0x90 = ARABIC-INDIC DIGIT ZERO, 0xB0 = ARABIC LETTER SEEN,
+        // 0x80 = undefined (bidi control in source), 0xFF = cursor.
+        assert_eq!(decode_byte(MsxCharset::Arabic, 0x90), '\u{0660}');
+        assert_eq!(decode_byte(MsxCharset::Arabic, 0xB0), '\u{0633}');
+        assert_eq!(decode_byte(MsxCharset::Arabic, 0x80), '\u{FFFD}');
+        assert_eq!(decode_byte(MsxCharset::Arabic, 0xFF), '\u{2588}');
+    }
+
+    #[test]
+    fn brazilian_high_bytes_map_to_portuguese() {
+        // 0x84 = Á (vs ä in International), 0x9E = CRUZEIRO SIGN,
+        // 0xC0 = shared graphics, 0xFF = cursor.
+        assert_eq!(decode_byte(MsxCharset::Brazilian, 0x84), '\u{00C1}');
+        assert_eq!(decode_byte(MsxCharset::Brazilian, 0x9E), '\u{20A2}');
+        assert_eq!(decode_byte(MsxCharset::Brazilian, 0xC0), '\u{2582}');
+        assert_eq!(decode_byte(MsxCharset::Brazilian, 0xFF), '\u{2588}');
+    }
+
+    #[test]
+    fn every_charset_has_a_distinct_nonempty_label() {
+        let labels: Vec<&str> = MsxCharset::ALL.iter().map(|cs| cs.label()).collect();
+        assert!(labels.iter().all(|l| !l.is_empty()));
+        let mut unique = labels.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), labels.len(), "labels must be unique");
     }
 
     #[test]

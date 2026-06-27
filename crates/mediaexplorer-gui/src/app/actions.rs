@@ -195,6 +195,21 @@ impl MediaExplorerApp {
             "view.lnf.hex" => self.settings.hex.line_number_hex = true,
             "view.lnf.dec" => self.settings.hex.line_number_hex = false,
             "view.group.none" => self.settings.hex.grouping = ByteGrouping::None,
+            "encoding.auto" => {
+                self.charset_auto = true;
+                self.autodetect_charset();
+            }
+            _ if id.starts_with("encoding.") => {
+                if let Some(i) = id
+                    .strip_prefix("encoding.")
+                    .and_then(|n| n.parse::<usize>().ok())
+                {
+                    if let Some(&cs) = MsxCharset::ALL.get(i) {
+                        self.charset = cs;
+                        self.charset_auto = false;
+                    }
+                }
+            }
             _ if id.starts_with("recent.") => {
                 if let Some(i) = id.strip_prefix("recent.").and_then(|n| n.parse().ok()) {
                     self.open_recent(i);
@@ -294,6 +309,26 @@ impl MediaExplorerApp {
                 });
                 ui.separator();
                 ui.checkbox(&mut self.settings.hex.hide_null_bytes, "Hide null bytes");
+            });
+            ui.menu_button("Text Encoding", |ui| {
+                // The charset only applies to an open disk; mirror the old
+                // dropdown's "only when a disk is loaded" gating.
+                ui.add_enabled_ui(self.disk.is_some(), |ui| {
+                    if ui.radio(self.charset_auto, "Automatic").clicked() {
+                        self.charset_auto = true;
+                        self.autodetect_charset();
+                        ui.close();
+                    }
+                    ui.separator();
+                    for &cs in MsxCharset::ALL {
+                        let selected = !self.charset_auto && self.charset == cs;
+                        if ui.selectable_label(selected, cs.label()).clicked() {
+                            self.charset = cs;
+                            self.charset_auto = false;
+                            ui.close();
+                        }
+                    }
+                });
             });
         });
     }

@@ -63,23 +63,8 @@ impl MediaExplorerApp {
                 if self.tape.is_some() {
                     ui.selectable_value(&mut self.app_view, AppView::Blocks, "Blocks");
                 }
-                // Character-set selector: seeded by auto-detect on load, but the
-                // user can pin a different MSX code page here (re-decodes live).
-                if self.disk.is_some() {
-                    ui.separator();
-                    ui.label("Charset:");
-                    let prev = self.charset;
-                    egui::ComboBox::from_id_salt("charset")
-                        .selected_text(self.charset.label())
-                        .show_ui(ui, |ui| {
-                            for &cs in MsxCharset::ALL {
-                                ui.selectable_value(&mut self.charset, cs, cs.label());
-                            }
-                        });
-                    if self.charset != prev {
-                        self.charset_auto = false; // a manual choice pins the charset
-                    }
-                }
+                // The MSX code page used to decode names/text now lives in the
+                // "Text Encoding" menu (auto-detected on load; a manual pick pins it).
             });
         }
     }

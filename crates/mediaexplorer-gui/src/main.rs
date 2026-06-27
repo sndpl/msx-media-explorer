@@ -16,6 +16,42 @@ use app::MediaExplorerApp;
 /// About panel.
 const APP_NAME: &str = "MSX Media Explorer";
 
+/// Minimal `Info.plist` embedded directly in the executable. macOS reads the
+/// `__TEXT,__info_plist` section of an *unbundled* binary as its bundle info, so
+/// the dev binary reports the product name to the system. Without it the bold
+/// app-menu title and `NSRunningApplication::localizedName` (which drives muda's
+/// "Hide …"/"Quit …" labels) fall back to the executable file name,
+/// "mediaexplorer". A packaged `.app` ignores this and uses its on-disk
+/// `Info.plist` (kept in sync via `[package.metadata.packager]`). Keep the
+/// `CFBundleName` string equal to [`APP_NAME`].
+#[cfg(target_os = "macos")]
+const INFO_PLIST_XML: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>MSX Media Explorer</string>
+    <key>CFBundleDisplayName</key>
+    <string>MSX Media Explorer</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.sandy.mediaexplorer</string>
+</dict>
+</plist>
+"#;
+
+#[cfg(target_os = "macos")]
+#[used]
+#[link_section = "__TEXT,__info_plist"]
+static INFO_PLIST: [u8; INFO_PLIST_XML.len()] = {
+    let mut bytes = [0u8; INFO_PLIST_XML.len()];
+    let mut i = 0;
+    while i < INFO_PLIST_XML.len() {
+        bytes[i] = INFO_PLIST_XML[i];
+        i += 1;
+    }
+    bytes
+};
+
 fn main() -> eframe::Result<()> {
     // macOS: name the app menu / About panel before the event loop builds the
     // menu, so it reads "About MSX Media Explorer" rather than the executable
