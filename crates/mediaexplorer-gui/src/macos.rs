@@ -71,6 +71,9 @@ pub struct MacMenu {
     encoding_auto: CheckMenuItem,
     /// Per-charset Text Encoding items, in `MsxCharset::ALL` order.
     encodings: Vec<CheckMenuItem>,
+    /// "Save as .dsk…" / "Save as .xsa…", enabled per the open document.
+    save_dsk: MenuItem,
+    save_xsa: MenuItem,
 }
 
 impl MacMenu {
@@ -79,6 +82,13 @@ impl MacMenu {
         for (id, item) in &self.checks {
             item.set_checked(check_state(id, s));
         }
+    }
+
+    /// Enable/disable the "Save as …" items for the current document (save-as is
+    /// a format conversion, so each is offered only when it would change format).
+    pub fn sync_save_items(&self, can_dsk: bool, can_xsa: bool) {
+        self.save_dsk.set_enabled(can_dsk);
+        self.save_xsa.set_enabled(can_xsa);
     }
 
     /// Reflect the active charset into the Text Encoding menu. The charset only
@@ -187,9 +197,12 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
         &PredefinedMenuItem::quit(Some(&quit_label)),
     ]);
 
-    // File menu.
+    // File menu. The save-as items start disabled (no document yet) and are
+    // toggled per-document by `sync_save_items`.
     let file = Submenu::new("File", true);
     let recent = Submenu::new("Open Recent", true);
+    let save_dsk = MenuItem::with_id("file.save_dsk", "Save as .dsk…", false, None);
+    let save_xsa = MenuItem::with_id("file.save_xsa", "Save as .xsa…", false, None);
     let _ = file.append_items(&[
         &MenuItem::with_id("file.new", "New Disk…", true, Some(cmd(Code::KeyN))),
         &MenuItem::with_id(
@@ -199,6 +212,9 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
             Some(cmd(Code::KeyO)),
         ),
         &recent,
+        &PredefinedMenuItem::separator(),
+        &save_dsk,
+        &save_xsa,
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("file.close", "Close", true, Some(cmd(Code::KeyW))),
     ]);
@@ -289,6 +305,8 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
         checks,
         encoding_auto,
         encodings,
+        save_dsk,
+        save_xsa,
     };
     mac.rebuild_recent(&settings.recent);
     mac

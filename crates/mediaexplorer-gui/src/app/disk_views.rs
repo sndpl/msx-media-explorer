@@ -488,6 +488,10 @@ impl MediaExplorerApp {
                     ui.separator();
                     ui.label(format!("Vol: {label}"));
                 }
+                if !disk.writable() {
+                    ui.separator();
+                    ui.weak("read-only");
+                }
                 ui.separator();
                 ui.label(&self.status);
             });
@@ -498,6 +502,8 @@ impl MediaExplorerApp {
                 ui.label(format!("Files: {}", tape.file_count()));
                 ui.separator();
                 ui.label(format!("Data: {} bytes", tape.total_bytes()));
+                ui.separator();
+                ui.weak("read-only");
                 ui.separator();
                 ui.label(&self.status);
             });

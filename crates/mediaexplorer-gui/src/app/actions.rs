@@ -184,6 +184,8 @@ impl MediaExplorerApp {
             "app.about" => self.show_about = true,
             "file.new" => self.show_new_disk = true,
             "file.open" => self.open_dialog(),
+            "file.save_dsk" => self.save_as_dsk(),
+            "file.save_xsa" => self.save_as_xsa(),
             "file.close" => self.close_document(),
             "recent.clear" => self.clear_recent(),
             "view.line_numbers" => self.settings.hex.show_line_numbers ^= true,
@@ -276,6 +278,31 @@ impl MediaExplorerApp {
                     }
                 });
                 ui.separator();
+                // Save-as is format conversion, so each is only offered when it
+                // would change the format (and never for a partitioned HD image).
+                let can_dsk = self
+                    .disk
+                    .as_ref()
+                    .is_some_and(LoadedDisk::can_convert_to_dsk);
+                if ui
+                    .add_enabled(can_dsk, egui::Button::new("Save as .dsk…"))
+                    .clicked()
+                {
+                    self.save_as_dsk();
+                    ui.close();
+                }
+                let can_xsa = self
+                    .disk
+                    .as_ref()
+                    .is_some_and(LoadedDisk::can_convert_to_xsa);
+                if ui
+                    .add_enabled(can_xsa, egui::Button::new("Save as .xsa…"))
+                    .clicked()
+                {
+                    self.save_as_xsa();
+                    ui.close();
+                }
+                ui.separator();
                 if ui.button("Close").clicked() {
                     self.close_document();
                     ui.close();
@@ -329,6 +356,12 @@ impl MediaExplorerApp {
                         }
                     }
                 });
+            });
+            ui.menu_button("Help", |ui| {
+                if ui.button("About MSX Media Explorer").clicked() {
+                    self.show_about = true;
+                    ui.close();
+                }
             });
         });
     }

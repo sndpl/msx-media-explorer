@@ -173,6 +173,19 @@ impl LoadedDisk {
         msx_disk::image::xsa::compress(self.image.data())
     }
 
+    /// Whether exporting to `.dsk` is meaningful: a single-volume image whose
+    /// source is not already `.dsk`. Partitioned HD images (not a single floppy)
+    /// are excluded.
+    pub fn can_convert_to_dsk(&self) -> bool {
+        !self.is_partitioned() && !matches!(self.format, ImageFormat::Dsk)
+    }
+
+    /// Whether exporting to `.xsa` is meaningful: a single-volume image whose
+    /// source is not already `.xsa`.
+    pub fn can_convert_to_xsa(&self) -> bool {
+        !self.is_partitioned() && !matches!(self.format, ImageFormat::Xsa)
+    }
+
     /// The raw normalized sector data (for disk-wide search).
     pub fn data(&self) -> &[u8] {
         self.image.data()
@@ -559,6 +572,42 @@ mod tests {
         assert_eq!(reopened.data().len(), SIZE_360K);
         assert!(reopened.size_mismatch().is_none());
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn save_as_predicates_track_source_format() {
+        use msx_disk::image::geometry::DiskFormat;
+        // A plain .dsk is already in .dsk form, so "Save as .dsk" is pointless,
+        // but it can still be compressed to .xsa.
+        let bytes = msx_disk::fs::write::create_blank(DiskFormat::Ss360).expect("blank");
+        let dsk_path = std::env::temp_dir().join("mediaexplorer_saveas_test.dsk");
+        std::fs::write(&dsk_path, &bytes).expect("write dsk");
+        let dsk = LoadedDisk::open(&dsk_path).expect("open dsk");
+        assert!(!dsk.can_convert_to_dsk(), "already a .dsk");
+        assert!(dsk.can_convert_to_xsa(), ".dsk can be compressed to .xsa");
+
+        // Compress it to .xsa and reopen: the reverse now holds.
+        let xsa_path = std::env::temp_dir().join("mediaexplorer_saveas_test.xsa");
+        std::fs::write(&xsa_path, dsk.to_xsa_bytes()).expect("write xsa");
+        let xsa = LoadedDisk::open(&xsa_path).expect("open xsa");
+        assert!(xsa.can_convert_to_dsk(), ".xsa can be saved as .dsk");
+        assert!(!xsa.can_convert_to_xsa(), "already a .xsa");
+
+        let _ = std::fs::remove_file(&dsk_path);
+        let _ = std::fs::remove_file(&xsa_path);
+    }
+
+    #[test]
+    fn partitioned_hd_cannot_be_converted() {
+        let Some(path) = hd_fixture() else {
+            eprintln!("skipping: hd.dsk fixture not present");
+            return;
+        };
+        let disk = LoadedDisk::open(&path).expect("open hd.dsk");
+        assert!(disk.is_partitioned());
+        // A multi-partition HD image is not a single floppy; both exports off.
+        assert!(!disk.can_convert_to_dsk());
+        assert!(!disk.can_convert_to_xsa());
     }
 
     #[test]

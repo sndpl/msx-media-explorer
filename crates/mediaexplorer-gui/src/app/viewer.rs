@@ -42,11 +42,17 @@ impl MediaExplorerApp {
                                 .content
                                 .as_ref()
                                 .is_some_and(|c| c.bytes.len() <= MAX_HEX_EDIT_BYTES);
-                        if editable && ui.button("Edit hex").clicked() {
-                            let text = format_hex_for_edit(&self.content.as_ref().unwrap().bytes);
-                            self.hex_edit = Some(text);
+                        // The separator only divides "Edit hex" from "Go to:";
+                        // without the button it would double up with the one
+                        // after the view tabs.
+                        if editable {
+                            if ui.button("Edit hex").clicked() {
+                                let text =
+                                    format_hex_for_edit(&self.content.as_ref().unwrap().bytes);
+                                self.hex_edit = Some(text);
+                            }
+                            ui.separator();
                         }
-                        ui.separator();
                         ui.label("Go to:");
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut self.hex.goto_input)

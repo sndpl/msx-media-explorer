@@ -524,6 +524,14 @@ impl eframe::App for MediaExplorerApp {
         #[cfg(target_os = "macos")]
         if let Some(menu) = self.mac_menu.as_ref() {
             menu.sync_encoding(self.charset, self.charset_auto, self.disk.is_some());
+            menu.sync_save_items(
+                self.disk
+                    .as_ref()
+                    .is_some_and(LoadedDisk::can_convert_to_dsk),
+                self.disk
+                    .as_ref()
+                    .is_some_and(LoadedDisk::can_convert_to_xsa),
+            );
         }
 
         self.handle_dropped_files(ui.ctx());

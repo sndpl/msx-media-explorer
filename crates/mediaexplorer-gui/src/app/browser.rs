@@ -2,49 +2,10 @@ use super::*;
 
 impl MediaExplorerApp {
     pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            if self.disk.is_some() {
-                if ui.button("Save as .dsk…").clicked() {
-                    self.save_as_dsk();
-                }
-                if ui.button("Save as .xsa…").clicked() {
-                    self.save_as_xsa();
-                }
-            }
-            // Adding files / directories lives in the tree's right-click menu
-            // (right-click the "/" root row to add to the disk root).
-            if let Some(disk) = &self.disk {
-                ui.separator();
-                ui.label(disk.title());
-                if let Some(label) = &disk.label {
-                    ui.separator();
-                    ui.label(format!("Label: {label}"));
-                }
-                if !disk.writable() {
-                    ui.separator();
-                    ui.weak("read-only");
-                }
-            } else if let Some(tape) = &self.tape {
-                ui.separator();
-                ui.label(tape.title());
-                ui.separator();
-                ui.weak("read-only");
-            }
-            // Always-visible version, parked at the right edge; click for the
-            // About window.
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let clicked = ui
-                    .add(
-                        egui::Label::new(egui::RichText::new(format!("v{VERSION}")).weak())
-                            .sense(egui::Sense::click()),
-                    )
-                    .on_hover_text("About MSX Media Explorer")
-                    .clicked();
-                if clicked {
-                    self.show_about = true;
-                }
-            });
-        });
+        // The document name, volume label and read-only state live in the status
+        // bar; the version is on the About window (Help menu / app menu). "Save
+        // as" is in the File menu; adding files/directories is in the tree's
+        // right-click menu (right-click the "/" root row).
         if self.disk.is_some() || self.tape.is_some() {
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.app_view, AppView::Files, "Files");
