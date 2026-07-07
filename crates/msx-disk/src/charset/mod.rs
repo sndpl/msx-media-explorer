@@ -361,7 +361,7 @@ mod tests {
     #[test]
     fn encode_byte_round_trips_through_decode() {
         // For every defined cell, encoding the decoded glyph yields a byte that
-        // decodes back to the same glyph (robust to any duplicate glyphs).
+        // decodes back to the same glyph.
         for &cs in MsxCharset::ALL {
             for b in 0u8..=0xFF {
                 let c = decode_byte(cs, b);
@@ -371,6 +371,17 @@ mod tests {
                 }
                 let enc = encode_byte(cs, c).expect("defined glyph is encodable");
                 assert_eq!(decode_byte(cs, enc), c, "{cs:?} byte {b:#04X}");
+                // Byte-level: encoding must give the original byte back. The one
+                // sanctioned exception is the synthetic cursor cell at 0xFF,
+                // whose full-block glyph collides with a semigraphic cell in
+                // some sets (so renames re-encode it to that cell). Any other
+                // duplicate glyph is a table bug.
+                if enc != b {
+                    assert_eq!(
+                        b, 0xFF,
+                        "{cs:?} unexpected duplicate glyph at {b:#04X} ({c:?})"
+                    );
+                }
             }
         }
     }

@@ -23,7 +23,8 @@ const APP_NAME: &str = "MSX Media Explorer";
 /// "Hide …"/"Quit …" labels) fall back to the executable file name,
 /// "mediaexplorer". A packaged `.app` ignores this and uses its on-disk
 /// `Info.plist` (kept in sync via `[package.metadata.packager]`). Keep the
-/// `CFBundleName` string equal to [`APP_NAME`].
+/// `CFBundleName` string equal to [`APP_NAME`] and the `CFBundleIdentifier`
+/// equal to `identifier` in `[package.metadata.packager]` (Cargo.toml).
 #[cfg(target_os = "macos")]
 const INFO_PLIST_XML: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

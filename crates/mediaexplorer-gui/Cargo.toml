@@ -54,6 +54,8 @@ objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSProce
 #   cargo packager --release -p mediaexplorer-gui --formats app,dmg
 [package.metadata.packager]
 product-name = "MSX Media Explorer"
+# Keep in sync with the Info.plist embedded in src/main.rs (INFO_PLIST_XML),
+# which gives the unbundled dev binary the same name/identifier.
 identifier = "io.github.sandy.mediaexplorer"
 category = "Utility"
 binaries = [{ path = "mediaexplorer", main = true }]
