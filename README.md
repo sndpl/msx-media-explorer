@@ -12,7 +12,7 @@ successor to the classic Windows-only DskExplorer.
   raw-track `.dmk` disks, openMSX multi-partition hard-disk images, and `.cas` /
   `.tsx` cassette tapes.
 - Drop a disk or tape image on the window to open it.
-- Cross-platform: Linux, Windows, and macOS.
+- Cross-platform: Linux, Windows 10/11 (64-bit), and macOS.
 
 ### Browsing
 
@@ -194,6 +194,11 @@ The release `.dmg` is **ad-hoc signed, not notarized** (no paid Apple Developer
 account). It runs, but on first launch Gatekeeper flags it as coming from an
 unidentified developer: right-click the app and choose **Open** once, or run
 `xattr -dr com.apple.quarantine "/Applications/MSX Media Explorer.app"`.
+
+Note for dev builds: macOS 26 ("Tahoe") ignores the runtime Dock-icon API for
+bare executables, so `cargo run` shows the generic exec icon in the Dock. Run
+`scripts/macos-dev-app.sh` instead — it wraps the release binary in a minimal
+`.app` so the Dock shows the real icon (optionally pass an image path to open).
 
 ## License
 

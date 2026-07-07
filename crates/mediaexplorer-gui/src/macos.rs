@@ -35,6 +35,11 @@ pub fn set_app_name(name: &str) {
 
 /// Set the Dock application icon from PNG bytes. No-op if the bytes fail to
 /// decode or this is somehow called off the main thread.
+///
+/// Note: macOS 26 ("Tahoe") ignores this for bare (unbundled) executables —
+/// the Dock only honors a real `.app` bundle's `icon.icns` there (verified
+/// empirically; re-setting per frame changes nothing). Kept for older macOS.
+/// For a dev build with the proper Dock icon, use `scripts/macos-dev-app.sh`.
 pub fn set_app_icon(icon_png: &[u8]) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
