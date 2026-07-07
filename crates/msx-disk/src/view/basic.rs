@@ -188,9 +188,15 @@ impl Parser<'_> {
         }
     }
 
-    /// Consume a quoted string, including the trailing quote if present.
+    /// Consume a quoted string, including the trailing quote if present. An
+    /// unterminated string is legal in MSX-BASIC — the line's `0x00` terminator
+    /// ends it — so stop there (without consuming it) rather than swallowing
+    /// the following lines as string content.
     fn quoted(&mut self) {
         while let Some(b) = self.peek() {
+            if b == 0x00 {
+                return;
+            }
             self.pos += 1;
             self.out.push(decode_byte(self.charset, b));
             if b == 0x22 {
@@ -559,6 +565,22 @@ mod tests {
             detokenize(&prog, MsxCharset::Japanese),
             "10 DATA\u{306E}\u{FF8C}\u{FF67}\u{FF72}\u{FF99}\n"
         );
+    }
+
+    #[test]
+    fn unterminated_string_ends_at_line_end() {
+        // 10 PLAY "AB   — no closing quote, which is legal in MSX-BASIC (the
+        // line terminator ends the literal). The next line must not be
+        // swallowed as string content (the "GED3.BAS line 730" bug).
+        let mut prog = vec![0xFF];
+        prog.extend_from_slice(&[0x07, 0x80]); // link
+        prog.extend_from_slice(&10u16.to_le_bytes());
+        prog.extend_from_slice(&[0xC1, 0x20, 0x22, b'A', b'B', 0x00]);
+        prog.extend_from_slice(&[0x07, 0x80]); // link
+        prog.extend_from_slice(&20u16.to_le_bytes());
+        prog.extend_from_slice(&[0x81, 0x00]);
+        prog.extend_from_slice(&[0x00, 0x00]); // end-of-program link
+        assert_eq!(detokenize(&prog, INTL), "10 PLAY \"AB\n20 END\n");
     }
 
     #[test]

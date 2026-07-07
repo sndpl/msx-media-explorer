@@ -106,30 +106,40 @@ pub(crate) fn format_timestamp(ts: Option<msx_disk::fs::Timestamp>) -> String {
     }
 }
 
-/// Character width of a full file row from `format_file_row`:
-/// `name(14) + ' ' + size(8) + "  " + date(16) + "  " + attrs(4)` = 47. MSX 8.3
-/// names never exceed the 14-wide name field, so every row is exactly this wide.
+/// Monospace character width of a file row's name field, including the gap to
+/// the data columns. The columns are painted at this fixed pixel offset (see
+/// [`tree_row_cols`]) so a name whose glyphs fall back to a different font
+/// (kana names render through Unifont, whose advance differs from the primary
+/// monospace font) cannot shift them.
+pub(crate) const NAME_FIELD_CHARS: usize = 15;
+
+/// Character width of a full file row: `name(14) + ' ' + size(8) + "  " +
+/// date(16) + "  " + attrs(4)` = 47. MSX 8.3 names never exceed the 14-wide
+/// name field, so every row is exactly this wide.
 pub(crate) const FILE_ROW_CHARS: usize = 47;
 
 /// Default width for the file tree panel: wide enough that a full monospace file
 /// row fits on one line, plus room for the folder indent, scrollbar, and margins.
 pub(crate) fn files_panel_default_width(ui: &egui::Ui) -> f32 {
-    let font = egui::TextStyle::Monospace.resolve(ui.style());
-    let sample = "0".repeat(FILE_ROW_CHARS);
-    let galley = ui
-        .painter()
-        .layout_no_wrap(sample, font, egui::Color32::WHITE);
-    galley.rect.width() + 64.0
+    mono_width(ui, &"0".repeat(FILE_ROW_CHARS)) + 64.0
 }
 
-/// Build the label for a file row: name + size + date/time + attributes. The
-/// date/time and attribute columns are always shown (MSX-DOS 1 disks carry them
-/// too); an absent timestamp renders as a blank date column. The name is decoded
-/// for display under `charset`.
-pub(crate) fn format_file_row(entry: &DirEntry, charset: MsxCharset) -> String {
+/// Pixel width of `s` laid out in the monospace font (for fixed column offsets).
+fn mono_width(ui: &egui::Ui, s: &str) -> f32 {
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    ui.painter()
+        .layout_no_wrap(s.to_owned(), font, egui::Color32::WHITE)
+        .rect
+        .width()
+}
+
+/// Build a file row's data columns: size + date/time + attributes. The name is
+/// drawn separately (see [`tree_row_cols`]). The date/time and attribute
+/// columns are always shown (MSX-DOS 1 disks carry them too); an absent
+/// timestamp renders as a blank date column.
+pub(crate) fn file_row_columns(entry: &DirEntry) -> String {
     format!(
-        "{:<14} {:>8}  {:<16}  {}",
-        entry.display_name(charset),
+        "{:>8}  {:<16}  {}",
         entry.size,
         format_timestamp(entry.modified),
         format_attributes(entry.attributes)
@@ -175,14 +185,52 @@ pub(crate) fn tree_row(
     text: egui::RichText,
     sense: egui::Sense,
 ) -> egui::Response {
+    tree_row_cols(ui, id, selected, text, None, sense)
+}
+
+/// [`tree_row`] with the row split into a name part and a data-columns part
+/// painted at a fixed pixel offset (`cols` = offset from the text origin, and
+/// the columns text). Fixed pixel columns — rather than one space-padded
+/// string — keep the size/date/attribute columns aligned even when the name's
+/// glyphs come from a fallback font with a different advance width (kana
+/// filenames). The name is truncated at the column start so it can never run
+/// underneath the columns.
+pub(crate) fn tree_row_cols(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    selected: bool,
+    text: egui::RichText,
+    cols: Option<(f32, egui::RichText)>,
+    sense: egui::Sense,
+) -> egui::Response {
     let padding = ui.spacing().button_padding;
+    let (wrap, max_width) = match &cols {
+        Some((col_x, _)) => (egui::TextWrapMode::Truncate, *col_x),
+        None => (egui::TextWrapMode::Extend, f32::INFINITY),
+    };
     let galley = egui::WidgetText::from(text).into_galley(
         ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
+        Some(wrap),
+        max_width,
         egui::TextStyle::Button,
     );
-    let mut desired = galley.size() + 2.0 * padding;
+    let cols_galley = cols.map(|(col_x, text)| {
+        let g = egui::WidgetText::from(text).into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Button,
+        );
+        (col_x, g)
+    });
+    let content = match &cols_galley {
+        Some((col_x, g)) => egui::vec2(
+            (col_x + g.size().x).max(galley.size().x),
+            galley.size().y.max(g.size().y),
+        ),
+        None => galley.size(),
+    };
+    let mut desired = content + 2.0 * padding;
     desired.y = desired.y.max(ui.spacing().interact_size.y);
     let (_, rect) = ui.allocate_space(desired);
     let response = ui.interact(rect, id, sense);
@@ -203,6 +251,13 @@ pub(crate) fn tree_row(
         );
         ui.painter()
             .galley(text_pos, galley, visuals.fg_stroke.color);
+        if let Some((col_x, g)) = cols_galley {
+            let pos = egui::pos2(
+                rect.min.x + padding.x + col_x,
+                rect.center().y - 0.5 * g.size().y,
+            );
+            ui.painter().galley(pos, g, visuals.fg_stroke.color);
+        }
     }
     response
 }
@@ -269,18 +324,32 @@ pub(crate) fn render_entries(
         if entry.is_dir {
             // App-managed expansion (so the keyboard can drive it): a leading
             // triangle shows the state, and clicking the header toggles it.
-            // Monospace header keeps the date/attribute columns aligned; an
-            // absent timestamp (e.g. synthetic partition nodes) renders blank.
+            // The date/attribute columns are painted at a fixed pixel offset
+            // (measured from a constant sample prefix, so expanded/collapsed
+            // rows align too); an absent timestamp (e.g. synthetic partition
+            // nodes) renders blank.
             let expanded = !ctx.collapsed.contains(&entry.path);
             let arrow = if expanded { '\u{25BC}' } else { '\u{25B6}' };
             let header = egui::RichText::new(format!(
-                "{arrow} \u{1F4C1} {:<12}  {:<16}  {}",
-                entry.display_name(ctx.charset),
+                "{arrow} \u{1F4C1} {}",
+                entry.display_name(ctx.charset)
+            ))
+            .monospace();
+            let cols = egui::RichText::new(format!(
+                "{:<16}  {}",
                 format_timestamp(entry.modified),
                 format_attributes(entry.attributes)
             ))
             .monospace();
-            let resp = tree_row(ui, id, is_cursor, header, egui::Sense::click());
+            let col_x = mono_width(ui, &format!("\u{25BC} \u{1F4C1} {}", "0".repeat(14)));
+            let resp = tree_row_cols(
+                ui,
+                id,
+                is_cursor,
+                header,
+                Some((col_x, cols)),
+                egui::Sense::click(),
+            );
             events.drop_targets.push((resp.rect, target.clone()));
             if is_cursor && ctx.scroll_to_cursor {
                 resp.scroll_to_me(Some(egui::Align::Center));
@@ -310,8 +379,17 @@ pub(crate) fn render_entries(
             }
         } else {
             let is_selected = is_cursor || ctx.selection.contains(&entry.path);
-            let label = egui::RichText::new(format_file_row(entry, ctx.charset)).monospace();
-            let resp = tree_row(ui, id, is_selected, label, egui::Sense::click_and_drag());
+            let name = egui::RichText::new(entry.display_name(ctx.charset)).monospace();
+            let cols = egui::RichText::new(file_row_columns(entry)).monospace();
+            let col_x = mono_width(ui, &"0".repeat(NAME_FIELD_CHARS));
+            let resp = tree_row_cols(
+                ui,
+                id,
+                is_selected,
+                name,
+                Some((col_x, cols)),
+                egui::Sense::click_and_drag(),
+            );
             events.drop_targets.push((resp.rect, target.clone()));
             if is_cursor && ctx.scroll_to_cursor {
                 resp.scroll_to_me(Some(egui::Align::Center));

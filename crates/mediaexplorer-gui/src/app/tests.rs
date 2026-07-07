@@ -558,10 +558,10 @@ fn file_row_always_includes_date_and_attributes() {
             minute: 30,
         }),
     );
-    let row = format_file_row(&e, MsxCharset::International);
-    assert!(row.starts_with(&format!("{:<14} {:>8}", "GAME.COM", 1234u64)));
-    assert!(row.contains("1991-03-25 14:30"), "row: {row}");
-    assert!(row.trim_end().ends_with("---A"), "row: {row}");
+    let cols = file_row_columns(&e);
+    assert!(cols.starts_with(&format!("{:>8}", 1234u64)), "cols: {cols}");
+    assert!(cols.contains("1991-03-25 14:30"), "cols: {cols}");
+    assert!(cols.trim_end().ends_with("---A"), "cols: {cols}");
 }
 
 #[test]
@@ -609,8 +609,13 @@ fn file_row_width_matches_panel_sizing_constant() {
             minute: 59,
         }),
     );
-    let row = format_file_row(&e, MsxCharset::International);
-    assert_eq!(row.chars().count(), FILE_ROW_CHARS, "row: {row:?}");
+    // Name field + data columns together must equal the sizing constant.
+    let cols = file_row_columns(&e);
+    assert_eq!(
+        NAME_FIELD_CHARS + cols.chars().count(),
+        FILE_ROW_CHARS,
+        "cols: {cols:?}"
+    );
 }
 
 #[test]
@@ -624,9 +629,9 @@ fn empty_fat_message_names_fat_and_points_to_raw_views() {
 fn file_row_keeps_columns_when_timestamp_absent() {
     // No timestamp -> blank date column, but the attribute column remains.
     let e = file_entry("GAME.COM", 1234, msx_disk::fs::Attributes::default(), None);
-    let row = format_file_row(&e, MsxCharset::International);
-    assert!(row.starts_with(&format!("{:<14} {:>8}", "GAME.COM", 1234u64)));
-    assert!(row.trim_end().ends_with("----"), "row: {row}");
+    let cols = file_row_columns(&e);
+    assert!(cols.starts_with(&format!("{:>8}", 1234u64)), "cols: {cols}");
+    assert!(cols.trim_end().ends_with("----"), "cols: {cols}");
 }
 
 #[test]
