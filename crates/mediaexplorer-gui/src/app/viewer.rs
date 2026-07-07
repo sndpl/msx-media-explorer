@@ -1,5 +1,12 @@
 use super::*;
 
+/// Feature gates for the first, view-focused release: the hex editor and hex
+/// bookmarks are hidden, not removed (file editing ships in a later release).
+/// Flip these to bring the toolbar entries back — everything behind them stays
+/// compiled and tested.
+const SHOW_HEX_EDIT: bool = false;
+const SHOW_HEX_BOOKMARKS: bool = false;
+
 impl MediaExplorerApp {
     pub(crate) fn viewer_panel(&mut self, ui: &mut egui::Ui) {
         // The "/" root row has no DirEntry; show whole-disk stats for it.
@@ -37,7 +44,8 @@ impl MediaExplorerApp {
                         }
                     } else {
                         // Bytes-per-row now lives in the View menu.
-                        let editable = writable
+                        let editable = SHOW_HEX_EDIT
+                            && writable
                             && self
                                 .content
                                 .as_ref()
@@ -65,7 +73,9 @@ impl MediaExplorerApp {
                             self.goto_hex_offset();
                         }
                         ui.checkbox(&mut self.show_inspector, "Inspector");
-                        self.hex_bookmarks_menu(ui);
+                        if SHOW_HEX_BOOKMARKS {
+                            self.hex_bookmarks_menu(ui);
+                        }
                     }
                 }
                 ViewMode::Text => {
