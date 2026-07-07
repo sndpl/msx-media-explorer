@@ -148,8 +148,10 @@ pub(crate) fn render_hex(
                 }
             }
 
-            // Build the row into a fixed-width char buffer so every glyph lands
-            // on the same character column the geometry uses for hit-testing.
+            // Build the address + hex part into a fixed-width char buffer so
+            // every glyph lands on the character column the geometry uses for
+            // hit-testing; these are always single-width ASCII, so one text
+            // run is safe.
             let mut buf = vec![' '; layout.total_cols()];
             if layout.show_line_numbers() {
                 place(&mut buf, 0, &layout.format_addr(offset));
@@ -164,13 +166,31 @@ pub(crate) fn render_hex(
                     }
                 }
             }
-            if layout.show_ascii() {
-                for (col, &b) in chunk.iter().enumerate() {
-                    let ch = if opts.hide_null_bytes && b == 0 {
-                        ' '
-                    } else {
-                        ascii_char(b, charset)
-                    };
+            // The ASCII gutter: decoded high bytes (kana, semigraphics) come
+            // from the Unifont fallback whose advance differs from the primary
+            // monospace font, so putting them in the row's single text run
+            // would drift the glyphs off the cells the geometry (selection,
+            // click mapping) uses. Rows whose gutter is pure ASCII join the
+            // single run (the common, cheap case); others are painted one
+            // glyph per cell, shrinking glyphs wider than a cell to fit, so
+            // every row stays the same width.
+            let gutter: Vec<char> = if layout.show_ascii() {
+                chunk
+                    .iter()
+                    .map(|&b| {
+                        if opts.hide_null_bytes && b == 0 {
+                            ' '
+                        } else {
+                            ascii_char(b, charset)
+                        }
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let uniform = gutter.iter().all(char::is_ascii);
+            if uniform {
+                for (col, &ch) in gutter.iter().enumerate() {
                     if let Some(at) = layout.ascii_cell_col(col) {
                         if let Some(slot) = buf.get_mut(at) {
                             *slot = ch;
@@ -186,6 +206,34 @@ pub(crate) fn render_hex(
                 font_id.clone(),
                 text_color,
             );
+            if !uniform {
+                for (col, &ch) in gutter.iter().enumerate() {
+                    if ch == ' ' {
+                        continue;
+                    }
+                    let Some(at) = layout.ascii_cell_col(col) else {
+                        continue;
+                    };
+                    let x = cell_x(origin.x, at);
+                    let galley =
+                        painter.layout_no_wrap(ch.to_string(), font_id.clone(), text_color);
+                    if galley.rect.width() <= char_w * 1.02 {
+                        painter.galley(egui::pos2(x, y), galley, text_color);
+                    } else {
+                        let shrunk = egui::FontId::new(
+                            font_id.size * (char_w / galley.rect.width()),
+                            font_id.family.clone(),
+                        );
+                        painter.text(
+                            egui::pos2(x + 0.5 * char_w, y + 0.5 * row_height),
+                            egui::Align2::CENTER_CENTER,
+                            ch,
+                            shrunk,
+                            text_color,
+                        );
+                    }
+                }
+            }
         }
 
         // Map a pointer interaction to a byte and a gesture.
