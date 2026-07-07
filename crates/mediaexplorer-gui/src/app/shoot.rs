@@ -15,6 +15,8 @@
 //!   optionally switch the file viewer tab.
 //! - `MEDIAEXPLORER_SCREENSHOT_TAB=files|sectors|map|stats` — optionally
 //!   switch the top-level view.
+//! - `MEDIAEXPLORER_SCREENSHOT_FIND=<query>` — optionally run the file-viewer
+//!   Find with this query after the selection/view are applied.
 //!
 //! Combine with the disk-path CLI argument, e.g.:
 //! `MEDIAEXPLORER_SCREENSHOT=shot.png mediaexplorer game.dsk`
@@ -35,6 +37,7 @@ pub(crate) struct Shoot {
     select: Option<String>,
     view: Option<ViewMode>,
     tab: Option<AppView>,
+    find: Option<String>,
     frame: u32,
 }
 
@@ -50,11 +53,13 @@ impl Shoot {
         let tab = std::env::var("MEDIAEXPLORER_SCREENSHOT_TAB")
             .ok()
             .and_then(|v| parse_tab(&v));
+        let find = std::env::var("MEDIAEXPLORER_SCREENSHOT_FIND").ok();
         Some(Shoot {
             out,
             select,
             view,
             tab,
+            find,
             frame: 0,
         })
     }
@@ -94,7 +99,12 @@ impl MediaExplorerApp {
         ctx.request_repaint();
 
         if frame == APPLY_FRAME {
-            let (select, view, tab) = (shoot.select.clone(), shoot.view, shoot.tab);
+            let (select, view, tab, find) = (
+                shoot.select.clone(),
+                shoot.view,
+                shoot.tab,
+                shoot.find.clone(),
+            );
             if let Some(path) = select {
                 self.select_file(path, false);
             }
@@ -104,6 +114,10 @@ impl MediaExplorerApp {
             }
             if let Some(tab) = tab {
                 self.app_view = tab;
+            }
+            if let Some(query) = find {
+                self.search_query = query;
+                self.run_search();
             }
         } else if frame == SNAP_FRAME {
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));

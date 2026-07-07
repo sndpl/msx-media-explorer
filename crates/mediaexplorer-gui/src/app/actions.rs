@@ -1,7 +1,18 @@
 use super::*;
 
 impl MediaExplorerApp {
+    /// Run the Find for the current view: raw file bytes in the Hex view, the
+    /// rendered listing in Text/BASIC/Disasm (so matches land in what the user
+    /// is actually reading). The other views have no Find UI.
     pub(crate) fn run_search(&mut self) {
+        match self.view_mode {
+            ViewMode::Hex => self.run_hex_search(),
+            ViewMode::Text | ViewMode::Basic | ViewMode::Disasm => self.run_listing_search(),
+            ViewMode::Info | ViewMode::Screen | ViewMode::Archive => {}
+        }
+    }
+
+    fn run_hex_search(&mut self) {
         let Some(content) = &self.content else { return };
         let matches = if self.search_is_hex {
             match search::parse_hex(&self.search_query) {
@@ -14,7 +25,7 @@ impl MediaExplorerApp {
         } else {
             search::find_text(&content.bytes, &self.search_query, true)
         };
-
+        self.search_match_lines.clear();
         if matches.is_empty() {
             self.status = format!("No matches for \"{}\"", self.search_query);
             self.search_matches.clear();
@@ -23,8 +34,41 @@ impl MediaExplorerApp {
         self.status = format!("{} match(es)", matches.len());
         self.search_matches = matches;
         self.search_pos = 0;
-        self.view_mode = ViewMode::Hex;
         self.jump_to_current_match();
+    }
+
+    fn run_listing_search(&mut self) {
+        let Some(text) = self.current_listing_text() else {
+            return;
+        };
+        let matches = search::find_text(text.as_bytes(), &self.search_query, true);
+        if matches.is_empty() {
+            self.status = format!("No matches for \"{}\"", self.search_query);
+            self.search_matches.clear();
+            self.search_match_lines.clear();
+            return;
+        }
+        self.status = format!("{} match(es)", matches.len());
+        self.search_match_len = self.search_query.len();
+        self.search_match_lines = matches
+            .iter()
+            .map(|&o| text[..o].bytes().filter(|&b| b == b'\n').count())
+            .collect();
+        self.search_matches = matches;
+        self.search_pos = 0;
+        self.jump_to_current_match();
+    }
+
+    /// The text the current listing view renders, produced with the same
+    /// functions the viewer uses (so match offsets line up exactly).
+    fn current_listing_text(&self) -> Option<String> {
+        let content = self.content.as_ref()?;
+        Some(match self.view_mode {
+            ViewMode::Text => produce_text(&content.bytes, self.text_show_all, self.charset).text,
+            ViewMode::Basic => produce_basic(&content.bytes, self.charset).text,
+            ViewMode::Disasm => produce_disasm(&content.path, &content.bytes).text,
+            _ => return None,
+        })
     }
 
     pub(crate) fn step_search(&mut self, forward: bool) {
@@ -42,7 +86,15 @@ impl MediaExplorerApp {
 
     pub(crate) fn jump_to_current_match(&mut self) {
         if let Some(&offset) = self.search_matches.get(self.search_pos) {
-            self.pending_scroll_row = Some(offset / self.settings.hex.bytes_per_row.max(1));
+            self.pending_scroll_row = Some(if self.view_mode == ViewMode::Hex {
+                offset / self.settings.hex.bytes_per_row.max(1)
+            } else {
+                // Listing views scroll by line (precomputed per match).
+                self.search_match_lines
+                    .get(self.search_pos)
+                    .copied()
+                    .unwrap_or(0)
+            });
         }
     }
 

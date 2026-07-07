@@ -22,6 +22,7 @@ impl MediaExplorerApp {
             return;
         }
         let writable = self.disk_writable();
+        let prev_mode = self.view_mode;
         ui.horizontal(|ui| {
             ui.selectable_value(&mut self.view_mode, ViewMode::Info, "Info");
             ui.selectable_value(&mut self.view_mode, ViewMode::Hex, "Hex");
@@ -32,9 +33,18 @@ impl MediaExplorerApp {
             if self.archive.is_some() {
                 ui.selectable_value(&mut self.view_mode, ViewMode::Archive, "Archive");
             }
-            ui.separator();
+            // Find results are per-view (hex matches are file offsets, listing
+            // matches are listing-text offsets), so a view switch clears them.
+            if self.view_mode != prev_mode {
+                self.search_matches.clear();
+                self.search_match_lines.clear();
+                self.search_pos = 0;
+            }
+            // Each arm draws its own leading separator so views without
+            // toolbar items don't leave an empty "| |" pair behind.
             match self.view_mode {
                 ViewMode::Hex => {
+                    ui.separator();
                     if self.hex_edit.is_some() {
                         if ui.button("Save edits").clicked() {
                             self.save_hex_edit();
@@ -79,6 +89,7 @@ impl MediaExplorerApp {
                     }
                 }
                 ViewMode::Text => {
+                    ui.separator();
                     ui.checkbox(&mut self.text_show_all, "Show all characters");
                 }
                 ViewMode::Basic
@@ -99,12 +110,22 @@ impl MediaExplorerApp {
             }
         });
 
-        if self.content.is_some() && self.view_mode != ViewMode::Archive {
+        // Find applies to the views it can actually search: file bytes in Hex,
+        // the rendered listing in Text/BASIC/Disasm. Info/Screen/Archive have
+        // nothing searchable, so the row is hidden there.
+        let searchable = matches!(
+            self.view_mode,
+            ViewMode::Hex | ViewMode::Text | ViewMode::Basic | ViewMode::Disasm
+        );
+        if self.content.is_some() && searchable {
             ui.horizontal(|ui| {
                 ui.label("Find:");
                 let resp =
                     ui.add(egui::TextEdit::singleline(&mut self.search_query).desired_width(180.0));
-                ui.checkbox(&mut self.search_is_hex, "Hex");
+                // Hex-pattern search only makes sense against raw bytes.
+                if self.view_mode == ViewMode::Hex {
+                    ui.checkbox(&mut self.search_is_hex, "Hex");
+                }
                 let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 if ui.button("Find").clicked() || submit {
                     self.run_search();
@@ -208,6 +229,12 @@ impl MediaExplorerApp {
         let charset = self.charset;
         let show_all = self.text_show_all;
         let mode = self.view_mode;
+        let search = ListingSearch {
+            matches: &self.search_matches,
+            len: self.search_match_len,
+            current: self.search_pos,
+            scroll_to_line: scroll_to,
+        };
         match &self.content {
             None => {
                 ui.weak("Select a file to view its contents.");
@@ -228,8 +255,12 @@ impl MediaExplorerApp {
                         charset,
                         show_all,
                     };
-                    content
-                        .show_listing(ui, key, || produce_text(&content.bytes, show_all, charset));
+                    content.show_listing(
+                        ui,
+                        key,
+                        || produce_text(&content.bytes, show_all, charset),
+                        &search,
+                    );
                 }
                 ViewMode::Basic => {
                     let key = RenderKey {
@@ -237,7 +268,12 @@ impl MediaExplorerApp {
                         charset,
                         show_all,
                     };
-                    content.show_listing(ui, key, || produce_basic(&content.bytes, charset));
+                    content.show_listing(
+                        ui,
+                        key,
+                        || produce_basic(&content.bytes, charset),
+                        &search,
+                    );
                 }
                 ViewMode::Disasm => {
                     let key = RenderKey {
@@ -245,7 +281,12 @@ impl MediaExplorerApp {
                         charset,
                         show_all,
                     };
-                    content.show_listing(ui, key, || produce_disasm(&content.path, &content.bytes));
+                    content.show_listing(
+                        ui,
+                        key,
+                        || produce_disasm(&content.path, &content.bytes),
+                        &search,
+                    );
                 }
                 ViewMode::Screen | ViewMode::Archive | ViewMode::Hex => {
                     unreachable!("handled above")

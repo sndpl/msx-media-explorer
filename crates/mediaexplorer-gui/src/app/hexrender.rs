@@ -94,7 +94,9 @@ pub(crate) fn render_hex(
             let offset = row * bpr;
             let chunk = &bytes[offset..(offset + bpr).min(bytes.len())];
 
-            // Search-match row tint (behind everything).
+            // Search-match row tint (behind everything). A weak tint of the
+            // theme's selection color keeps the row's text readable in both
+            // light and dark themes (a fixed DARK_BLUE swallowed dark text).
             if highlight_row == Some(row) {
                 painter.rect_filled(
                     egui::Rect::from_min_size(
@@ -102,7 +104,7 @@ pub(crate) fn render_hex(
                         egui::vec2(width, row_height),
                     ),
                     0.0,
-                    egui::Color32::DARK_BLUE,
+                    sel_color.gamma_multiply(0.4),
                 );
             }
             // Per-byte selection background and cursor outline.

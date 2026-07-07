@@ -159,6 +159,16 @@ pub(crate) struct RenderedView {
     notice: Option<String>,
 }
 
+/// Find state threaded into a listing render: byte offsets of the matches in
+/// the listing text, the query's byte length, the active match index, and a
+/// one-shot line to scroll to.
+pub(crate) struct ListingSearch<'a> {
+    pub(crate) matches: &'a [usize],
+    pub(crate) len: usize,
+    pub(crate) current: usize,
+    pub(crate) scroll_to_line: Option<usize>,
+}
+
 impl FileContent {
     /// The content-derived file info, decoded once and cached.
     fn file_info(&self) -> &msx_disk::fileinfo::FileInfo {
@@ -174,6 +184,7 @@ impl FileContent {
         ui: &mut egui::Ui,
         key: RenderKey,
         produce: impl FnOnce() -> RenderedView,
+        search: &ListingSearch<'_>,
     ) {
         let mut cache = self.rendered.borrow_mut();
         let stale = match cache.as_ref() {
@@ -184,7 +195,7 @@ impl FileContent {
             *cache = Some((key, produce()));
         }
         if let Some((_, view)) = cache.as_ref() {
-            draw_listing(ui, view);
+            draw_listing(ui, view, search);
         }
     }
 }
@@ -340,10 +351,17 @@ pub struct MediaExplorerApp {
     forced_format: Option<recoil::ImageFormat>,
     search_query: String,
     search_is_hex: bool,
-    /// Byte offsets of matches in the current file, with the active index.
+    /// Match offsets with the active index: file byte offsets in the Hex view,
+    /// listing-text byte offsets in the Text/BASIC/Disasm views (results are
+    /// per-view and cleared when the view changes).
     search_matches: Vec<usize>,
     search_pos: usize,
-    /// One-shot request to scroll the hex view to a row.
+    /// Byte length of the current query's matches (listing highlight width).
+    search_match_len: usize,
+    /// Listing line of each match, parallel to [`search_matches`] (scroll
+    /// target for Text/BASIC/Disasm). Empty for hex-view matches.
+    search_match_lines: Vec<usize>,
+    /// One-shot request to scroll the hex view to a row / a listing to a line.
     pending_scroll_row: Option<usize>,
     /// Rename in progress: the target file and the new name being typed.
     rename_target: Option<RenameTarget>,
@@ -468,6 +486,8 @@ impl Default for MediaExplorerApp {
             search_is_hex: false,
             search_matches: Vec::new(),
             search_pos: 0,
+            search_match_len: 0,
+            search_match_lines: Vec::new(),
             pending_scroll_row: None,
             rename_target: None,
             confirm_delete: None,

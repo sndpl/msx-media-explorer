@@ -447,20 +447,60 @@ pub(crate) fn size_notice(cap: usize, total: usize) -> String {
 }
 
 /// Draw a cached listing: the optional truncation notice, then the selectable
-/// monospace text. Shared by the Text/Basic/Disasm views.
-pub(crate) fn draw_listing(ui: &mut egui::Ui, view: &RenderedView) {
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if let Some(notice) = &view.notice {
-                ui.weak(notice);
-            }
+/// monospace text with any Find matches highlighted. Shared by the
+/// Text/Basic/Disasm views.
+pub(crate) fn draw_listing(ui: &mut egui::Ui, view: &RenderedView, search: &ListingSearch<'_>) {
+    // Lines are not wrapped (long ones scroll horizontally), so a listing line
+    // number maps directly to a vertical offset for scroll-to-match.
+    let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+    let mut area = egui::ScrollArea::both().auto_shrink([false, false]);
+    if let Some(line) = search.scroll_to_line {
+        // Center the target line in the viewport where possible.
+        area = area.vertical_scroll_offset((line as f32 * row_height - 80.0).max(0.0));
+    }
+    area.show(ui, |ui| {
+        if let Some(notice) = &view.notice {
+            ui.weak(notice);
+        }
+        if search.matches.is_empty() || search.len == 0 {
             ui.add(
                 egui::Label::new(egui::RichText::new(view.text.as_str()).monospace())
                     .selectable(true)
-                    .wrap(),
+                    .wrap_mode(egui::TextWrapMode::Extend),
             );
-        });
+            return;
+        }
+        // Highlight every match: the active one in the full selection color,
+        // the others in a weaker tint of it (readable in both themes).
+        let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+        let color = ui.visuals().text_color();
+        let strong = ui.visuals().selection.bg_fill;
+        let weak = strong.gamma_multiply(0.4);
+        let fmt = |background: egui::Color32| egui::TextFormat {
+            font_id: font_id.clone(),
+            color,
+            background,
+            ..Default::default()
+        };
+        let mut job = egui::text::LayoutJob::default();
+        let mut pos = 0;
+        for (i, &start) in search.matches.iter().enumerate() {
+            let end = (start + search.len).min(view.text.len());
+            if start < pos || start >= view.text.len() {
+                continue;
+            }
+            job.append(&view.text[pos..start], 0.0, fmt(egui::Color32::TRANSPARENT));
+            let bg = if i == search.current { strong } else { weak };
+            job.append(&view.text[start..end], 0.0, fmt(bg));
+            pos = end;
+        }
+        job.append(&view.text[pos..], 0.0, fmt(egui::Color32::TRANSPARENT));
+        ui.add(
+            egui::Label::new(job)
+                .selectable(true)
+                .wrap_mode(egui::TextWrapMode::Extend),
+        );
+    });
 }
 
 /// Detokenized BASIC listing for the Basic view.
