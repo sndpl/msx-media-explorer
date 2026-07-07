@@ -32,6 +32,7 @@ mod document;
 mod hexrender;
 mod info;
 mod render;
+mod shoot;
 mod transfer;
 mod viewer;
 mod views;
@@ -378,6 +379,8 @@ pub struct MediaExplorerApp {
     /// available at the end of the frame.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     pending_drag_out: Option<Vec<String>>,
+    /// Env-driven self-screenshot automation; `None` in normal use.
+    shoot: Option<shoot::Shoot>,
     /// MSX character set used to decode filenames and file text for display.
     charset: MsxCharset,
     /// When true, [`charset`] follows auto-detection on each disk load; a manual
@@ -484,6 +487,7 @@ impl Default for MediaExplorerApp {
             sector_highlight: None,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             pending_drag_out: None,
+            shoot: shoot::Shoot::from_env(),
             charset: MsxCharset::default(),
             charset_auto: true,
             hex: HexUiState::default(),
@@ -539,6 +543,7 @@ impl eframe::App for MediaExplorerApp {
 
         self.handle_dropped_files(ui.ctx());
         self.handle_tree_keys(ui.ctx());
+        self.process_screenshot_request(ui.ctx());
 
         // Non-macOS: an in-window menu bar driving the same actions/state (the
         // native bar is used on macOS instead).

@@ -75,10 +75,11 @@ The viewer offers tabs that adapt to the selected file:
 ### Character-set decoding
 
 - Decodes MSX single-byte filenames and text through the correct regional code
-  page: **International** (Western) or **Japanese** (kana / hiragana).
-- The charset is auto-detected from the disk's filenames on load, with a
-  dropdown to pin a different one; the choice re-decodes filenames, text, BASIC
-  listings, and the hex ASCII column live.
+  page: **International** (Western), **Japanese** (kana / hiragana),
+  **Russian**, **Korean**, **Arabic**, or **Brazilian**.
+- The charset is auto-detected from the disk's filenames on load; the
+  **Text Encoding** menu pins a different one, re-decoding filenames, text,
+  BASIC listings, and the hex ASCII column live.
 
 ### Editing (write-back to the source image)
 

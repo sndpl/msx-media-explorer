@@ -78,7 +78,13 @@ fn main() -> eframe::Result<()> {
             // About panel (the unbundled dev binary has none).
             #[cfg(target_os = "macos")]
             macos::set_app_icon(app::ICON_PNG);
-            Ok(Box::new(MediaExplorerApp::new(cc)))
+            let mut app = MediaExplorerApp::new(cc);
+            // Open a disk/tape image passed on the command line, so
+            // `mediaexplorer game.dsk` and the OS's "Open With" work.
+            if let Some(path) = std::env::args_os().nth(1) {
+                app.open_path(std::path::Path::new(&path));
+            }
+            Ok(Box::new(app))
         }),
     )
 }

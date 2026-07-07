@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MSX Media Explorer — browse, inspect &amp; edit MSX disk and tape images</title>
+<meta name="description" content="A free, cross-platform desktop tool for browsing, inspecting, editing and converting vintage MSX floppy, hard-disk and cassette images. Linux, Windows and macOS.">
+<meta property="og:title" content="MSX Media Explorer">
+<meta property="og:description" content="Browse, inspect, edit and convert vintage MSX disk and tape images on Linux, Windows and macOS.">
+<meta property="og:image" content="https://sndpl.github.io/msx-media-explorer/screenshots/screen-view.png">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%232434dc'/><rect x='3' y='4' width='10' height='8' fill='%23eef0ff'/><rect x='5' y='6' width='6' height='4' fill='%232434dc'/></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #eef0ff;
+  --ink-dim: #9aa3d8;
+  --bg: #05061a;
+  --panel: #0b0d33;
+  --panel-edge: #272c6b;
+  --msx-blue: #2434dc;
+  --msx-blue-deep: #1a26ab;
+  --cyan: #41d6ee;
+  --green: #74d07d;
+  --amber: #f4bf4f;
+  --red: #e05a5a;
+  --display: "Silkscreen", monospace;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 16px;
+  line-height: 1.65;
+}
+/* CRT scanlines + vignette over everything, purely decorative */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  background:
+    repeating-linear-gradient(0deg, rgba(3, 4, 16, .14) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 5, .35) 100%);
+}
+a { color: var(--cyan); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+a:hover { color: var(--ink); }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+/* ---------- hero ---------- */
+header {
+  padding: 72px 0 56px;
+  background:
+    radial-gradient(1000px 480px at 70% -10%, rgba(36, 52, 220, .38), transparent 70%),
+    radial-gradient(700px 400px at 8% 10%, rgba(65, 214, 238, .12), transparent 70%);
+  border-bottom: 1px solid var(--panel-edge);
+}
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  gap: 48px;
+  align-items: center;
+}
+h1 {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: clamp(30px, 4.6vw, 52px);
+  line-height: 1.12;
+  margin: 0 0 18px;
+  letter-spacing: .01em;
+  text-shadow: 3px 3px 0 var(--msx-blue-deep);
+}
+h1 .accent { color: var(--cyan); }
+.tagline { color: var(--ink-dim); max-width: 46ch; margin: 0 0 30px; }
+.tagline strong { color: var(--ink); font-weight: 600; }
+.cta-row { display: flex; gap: 14px; flex-wrap: wrap; }
+.btn {
+  display: inline-block;
+  font-family: var(--display);
+  font-size: 14px;
+  padding: 13px 22px 11px;
+  color: var(--bg);
+  background: var(--cyan);
+  border: 2px solid var(--cyan);
+  box-shadow: 4px 4px 0 var(--msx-blue-deep);
+  text-decoration: none;
+  transition: transform .08s ease, box-shadow .08s ease;
+}
+.btn:hover { color: var(--bg); transform: translate(2px, 2px); box-shadow: 2px 2px 0 var(--msx-blue-deep); }
+.btn.ghost { background: transparent; color: var(--cyan); }
+.btn.ghost:hover { color: var(--ink); border-color: var(--ink); }
+
+/* the MSX boot screen */
+.boot {
+  background: var(--msx-blue);
+  border: 3px solid #4a58ee;
+  box-shadow: 0 0 0 3px var(--msx-blue-deep), 12px 12px 0 rgba(0, 0, 5, .45);
+  padding: 26px 28px;
+  font-size: 15px;
+  line-height: 1.75;
+  color: #f2f4ff;
+  white-space: pre-wrap;
+  position: relative;
+  overflow: hidden;
+}
+.boot::before {
+  content: "";
+  position: absolute; inset: 0;
+  background: repeating-linear-gradient(0deg, rgba(255,255,255,.045) 0 1px, transparent 1px 4px);
+  pointer-events: none;
+}
+.boot .dim { color: #aeb8ff; }
+.boot .ok { color: #dbe2ff; }
+.cursor {
+  display: inline-block;
+  width: .62em; height: 1.05em;
+  background: #f2f4ff;
+  vertical-align: text-bottom;
+  animation: blink 1.06s steps(1) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .cursor { animation: none; }
+  html { scroll-behavior: auto; }
+}
+
+/* ---------- sections ---------- */
+section { padding: 64px 0; border-bottom: 1px solid #141743; }
+h2 {
+  font-family: var(--display);
+  font-size: clamp(20px, 2.6vw, 28px);
+  margin: 0 0 10px;
+  color: var(--ink);
+}
+h2::before { content: "■ "; color: var(--cyan); }
+.section-note { color: var(--ink-dim); margin: 0 0 36px; max-width: 70ch; }
+
+/* downloads */
+.dl-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.dl-card {
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  padding: 24px 22px 20px;
+  display: flex; flex-direction: column; gap: 10px;
+  transition: border-color .12s ease;
+}
+.dl-card:hover { border-color: var(--cyan); }
+.dl-card h3 {
+  font-family: var(--display);
+  font-size: 16px; margin: 0;
+  display: flex; align-items: baseline; gap: 10px;
+}
+.dl-card h3 .glyph { color: var(--cyan); }
+.dl-card .meta { color: var(--ink-dim); font-size: 13.5px; flex: 1; }
+.dl-card .meta code { color: var(--amber); font-size: 12.5px; }
+.dl-card .btn { text-align: center; font-size: 12.5px; padding: 11px 10px 9px; }
+.dl-fineprint { margin-top: 22px; color: var(--ink-dim); font-size: 13.5px; }
+.dl-fineprint code { color: var(--amber); background: #10133e; padding: 1px 6px; }
+
+/* screenshots */
+.shots { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; }
+.shots figure { margin: 0; }
+.shots a { display: block; border: 1px solid var(--panel-edge); background: var(--panel); transition: border-color .12s ease, transform .12s ease; }
+.shots a:hover { border-color: var(--cyan); transform: translateY(-3px); }
+.shots img { display: block; width: 100%; height: auto; }
+.shots figcaption { font-size: 13.5px; color: var(--ink-dim); padding: 10px 2px 0; }
+.shots figcaption strong { color: var(--cyan); font-weight: 600; }
+
+/* features */
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+.feature {
+  background: var(--panel);
+  border: 1px solid var(--panel-edge);
+  border-top: 3px solid var(--msx-blue);
+  padding: 20px 20px 18px;
+  transition: border-color .12s ease;
+}
+.feature:hover { border-color: var(--cyan); }
+.feature h3 { font-family: var(--display); font-size: 13.5px; margin: 0 0 8px; color: var(--cyan); }
+.feature p { margin: 0; font-size: 14px; color: var(--ink-dim); }
+.feature p code { color: var(--amber); font-size: 12.5px; }
+
+/* formats table */
+table { border-collapse: collapse; width: 100%; font-size: 14.5px; }
+th, td { text-align: left; padding: 10px 14px; border: 1px solid var(--panel-edge); }
+th { font-family: var(--display); font-size: 12px; color: var(--cyan); background: var(--panel); }
+td:first-child { color: var(--amber); white-space: nowrap; }
+tr:nth-child(even) td { background: rgba(11, 13, 51, .55); }
+
+/* footer */
+footer { padding: 48px 0 64px; color: var(--ink-dim); font-size: 13.5px; }
+footer .boot-off {
+  font-family: var(--display);
+  color: var(--ink-dim);
+  font-size: 12px;
+  margin-top: 18px;
+}
+
+@media (max-width: 860px) {
+  .hero { grid-template-columns: 1fr; }
+  .dl-grid, .features { grid-template-columns: 1fr; }
+  .shots { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap hero">
+    <div>
+      <h1>MSX Media<br>Explorer<span class="accent">_</span></h1>
+      <p class="tagline">A free, cross-platform desktop tool for <strong>browsing, inspecting,
+      editing and converting</strong> vintage MSX floppy, hard-disk and cassette images.
+      A modern, open-source successor to the classic Windows-only DskExplorer.</p>
+      <div class="cta-row">
+        <a class="btn" href="#download">Download</a>
+        <a class="btn ghost" href="https://github.com/sndpl/msx-media-explorer">Source on GitHub</a>
+      </div>
+    </div>
+    <div class="boot" aria-hidden="true">MSX Media Explorer <span id="ver">version 0.2.0</span>
+<span class="dim">GPL-2.0-or-later &middot; Rust + egui</span>
+
+Disk BASIC version 2.01
+737280 Bytes free
+
+<span class="ok">Ok</span>
+load"<span class="dim">YOURDISK.DSK</span>"<span class="cursor"></span></div>
+  </div>
+</header>
+
+<section id="download">
+  <div class="wrap">
+    <h2>Download</h2>
+    <p class="section-note">Prebuilt binaries for every platform, straight from the latest
+    GitHub release. Or build from source with a plain <code>cargo build</code>.</p>
+    <div class="dl-grid">
+      <div class="dl-card">
+        <h3><span class="glyph">&#8984;</span> macOS</h3>
+        <p class="meta">Universal .dmg — Apple&nbsp;Silicon and Intel in one bundle.
+        The app is ad-hoc signed (not notarized): right-click &rarr; <code>Open</code> once
+        on first launch.</p>
+        <a class="btn" href="https://github.com/sndpl/msx-media-explorer/releases/latest/download/mediaexplorer-macos-universal.dmg">Get .dmg</a>
+      </div>
+      <div class="dl-card">
+        <h3><span class="glyph">&#9635;</span> Windows</h3>
+        <p class="meta">Standalone <code>.exe</code> for x86-64 — no installer,
+        no dependencies. Download and run.</p>
+        <a class="btn" href="https://github.com/sndpl/msx-media-explorer/releases/latest/download/mediaexplorer-x86_64-pc-windows-msvc.exe">Get .exe</a>
+      </div>
+      <div class="dl-card">
+        <h3><span class="glyph">&#128039;</span> Linux</h3>
+        <p class="meta">Standalone x86-64 binary. Make it executable and go:
+        <code>chmod +x mediaexplorer-*</code></p>
+        <a class="btn" href="https://github.com/sndpl/msx-media-explorer/releases/latest/download/mediaexplorer-x86_64-unknown-linux-gnu">Get binary</a>
+      </div>
+    </div>
+    <p class="dl-fineprint">Verify your download against
+    <a href="https://github.com/sndpl/msx-media-explorer/releases/latest/download/SHA256SUMS">SHA256SUMS</a>
+    &middot; all versions on the
+    <a href="https://github.com/sndpl/msx-media-explorer/releases">releases page</a>.</p>
+  </div>
+</section>
+
+<section id="screenshots">
+  <div class="wrap">
+    <h2>Screenshots</h2>
+    <p class="section-note">Real disks, real data — MSX-DOS 2 system tools, a Japanese
+    magazine disk, and a game title screen.</p>
+    <div class="shots">
+      <figure>
+        <a href="screenshots/hex-view.png"><img src="screenshots/hex-view.png" loading="lazy"
+          alt="File tree of an MSX-DOS 2 disk with COMMAND2.COM open in the hex viewer"></a>
+        <figcaption><strong>Hex view</strong> — byte-level inspection with an ASCII column,
+        selection, go-to-offset, bookmarks and a data inspector.</figcaption>
+      </figure>
+      <figure>
+        <a href="screenshots/basic-view.png"><img src="screenshots/basic-view.png" loading="lazy"
+          alt="A tokenized MSX-BASIC program shown as a detokenized listing"></a>
+        <figcaption><strong>BASIC view</strong> — tokenized MSX-BASIC programs detokenized
+        into readable listings, with regional character sets decoded.</figcaption>
+      </figure>
+      <figure>
+        <a href="screenshots/screen-view.png"><img src="screenshots/screen-view.png" loading="lazy"
+          alt="The Dark Castle title screen rendered from a .PIC file inside the disk image"></a>
+        <figcaption><strong>Screen view</strong> — MSX graphics decoded straight from the
+        disk, via the full RECOIL format set.</figcaption>
+      </figure>
+      <figure>
+        <a href="screenshots/map-view.png"><img src="screenshots/map-view.png" loading="lazy"
+          alt="A colored disk-usage map showing reserved, FAT, root, used and free sectors"></a>
+        <figcaption><strong>Disk map</strong> — every sector classified
+        (reserved / FAT / root / used / free); click a cell to open that sector.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2>Features</h2>
+    <p class="section-note">Everything the classic DskExplorer did — and a lot it never could.</p>
+    <div class="features">
+      <div class="feature">
+        <h3>Every format opens</h3>
+        <p>Raw <code>.dsk</code> dumps, <code>.img</code>, <code>.msx</code>, <code>.ddi</code>,
+        compressed <code>.xsa</code>, raw-track <code>.dmk</code>, openMSX multi-partition
+        hard disks, and <code>.cas</code>/<code>.tsx</code> tapes.</p>
+      </div>
+      <div class="feature">
+        <h3>Full disk browser</h3>
+        <p>File tree with MSX-DOS 2 subdirectories, FAT12/FAT16 hard-disk partitions as
+        top-level nodes, tape file lists, and multi-select for batch extract or delete.</p>
+      </div>
+      <div class="feature">
+        <h3>Real editing</h3>
+        <p>Add, rename and delete files; edit bytes in hex; edit sectors in place. Writes go
+        back into the original container — and the boot sector is never clobbered.</p>
+      </div>
+      <div class="feature">
+        <h3>Hex power tools</h3>
+        <p>Selectable bytes-per-row, byte selection and copy, go-to-offset, named bookmarks,
+        find (text or hex), and a data inspector that decodes BSAVE headers, boot-sector
+        BPBs and FCBs at the cursor.</p>
+      </div>
+      <div class="feature">
+        <h3>BASIC detokenizer</h3>
+        <p>Tokenized MSX-BASIC programs become readable listings, decoded through the right
+        regional character set.</p>
+      </div>
+      <div class="feature">
+        <h3>Graphics viewer</h3>
+        <p>SCREEN 2&ndash;12, Graph Saurus, Dynamic Publisher, Maki-chan, V9990
+        <code>.G9B</code> and more — the full RECOIL-derived MSX decoder set, with automatic
+        companion-palette loading and PNG export.</p>
+      </div>
+      <div class="feature">
+        <h3>Text encoding menu</h3>
+        <p>International, Japanese (kana), Russian, Korean, Arabic and Brazilian MSX code
+        pages — auto-detected per disk, switchable live for filenames, text, BASIC and hex.</p>
+      </div>
+      <div class="feature">
+        <h3>Disk-level insight</h3>
+        <p>Sector viewer with disk-wide search, a graphical usage map, whole-disk stats with
+        FAT-chain integrity checks, and per-track <code>.dmk</code> analysis for
+        copy-protected disks.</p>
+      </div>
+      <div class="feature">
+        <h3>File identification</h3>
+        <p>Content-derived Info pane: BSAVE/BLOAD headers, graphics-format details, music and
+        tracker metadata (MoonBlaster, FAC, PT3, MOD, MIDI&hellip;), and CRC32/SHA-1 checksums
+        for matching against software databases.</p>
+      </div>
+      <div class="feature">
+        <h3>Archives inside disks</h3>
+        <p>List and extract <code>.lzh</code>/<code>.lha</code>/<code>.lzs</code>/<code>.pma</code>
+        archives without leaving the image.</p>
+      </div>
+      <div class="feature">
+        <h3>Convert &amp; create</h3>
+        <p>Create blank 360&nbsp;KB / 720&nbsp;KB disks; convert any open image to
+        <code>.dsk</code> or compressed <code>.xsa</code> (full XSA compressor included).</p>
+      </div>
+      <div class="feature">
+        <h3>Two-window copying</h3>
+        <p>File &rarr; New Window opens a second instance: drag files from one disk's tree
+        straight into a folder on the other (macOS/Windows drag-out; extract + drop on Linux).</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="formats">
+  <div class="wrap">
+    <h2>Supported formats</h2>
+    <p class="section-note">Everything is normalized to plain 512-byte sectors on open, so the
+    same tools work on every container.</p>
+    <table>
+      <tr><th>Format</th><th>Notes</th></tr>
+      <tr><td>.dsk .di1 .ds1 .di2 .ds2</td><td>Raw sector dumps (360 KB / 720 KB)</td></tr>
+      <tr><td>.img</td><td>Raw with a leading side-count byte</td></tr>
+      <tr><td>.msx</td><td>720 KB, cylinder-interleaved sides</td></tr>
+      <tr><td>.ddi</td><td>DiskDupe image (header + raw)</td></tr>
+      <tr><td>.xsa</td><td>Compressed disk image (decompressed on open, can be written)</td></tr>
+      <tr><td>.dmk</td><td>David Keil raw-track image (read-only; normalized + per-track analysis)</td></tr>
+      <tr><td>.dsk (hard disk)</td><td>openMSX MSX_IDE multi-partition image (read-only; FAT12/FAT16)</td></tr>
+      <tr><td>.cas</td><td>MSX cassette tape image (files + block overview)</td></tr>
+      <tr><td>.tsx</td><td>MSX tape image (TZX 1.21 with #4B Kansas City blocks)</td></tr>
+    </table>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>MSX Media Explorer is free software, licensed
+    <a href="https://github.com/sndpl/msx-media-explorer/blob/main/COPYING">GPL-2.0-or-later</a>.
+    Built in Rust with <a href="https://github.com/emilk/egui">egui</a>; the graphics decoders
+    are ported from <a href="https://recoil.sourceforge.net/">RECOIL</a> by Piotr Fusik.</p>
+    <p><a href="https://github.com/sndpl/msx-media-explorer">github.com/sndpl/msx-media-explorer</a>
+    &middot; bug reports and feature requests welcome on the
+    <a href="https://github.com/sndpl/msx-media-explorer/issues">issue tracker</a>.</p>
+    <p class="boot-off">*** press any key to reboot ***</p>
+  </div>
+</footer>
+
+<script>
+// Progressive enhancement: show the actual latest release tag in the boot screen.
+fetch("https://api.github.com/repos/sndpl/msx-media-explorer/releases/latest")
+  .then(r => r.ok ? r.json() : null)
+  .then(rel => {
+    if (rel && rel.tag_name) {
+      document.getElementById("ver").textContent = "version " + rel.tag_name.replace(/^v/, "");
+    }
+  })
+  .catch(() => {});
+</script>
+
+</body>
+</html>
