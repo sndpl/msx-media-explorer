@@ -440,15 +440,21 @@ pub(crate) fn render_tape_files(
     for (key, file) in tape.entries() {
         let is_cursor = ctx.cursor == Some(key);
         let is_selected = is_cursor || ctx.selection.contains(key);
-        let label = format!(
-            "{:<14} {:<7} {:>8}",
-            key,
-            file.kind.label(),
-            file.data.len()
+        // Same fixed-pixel columns as the disk tree (see `tree_row_cols`): a
+        // name with fallback-font glyphs must not shift the kind/size columns.
+        let id = ui.make_persistent_id(key);
+        let name = egui::RichText::new(key).monospace();
+        let cols = egui::RichText::new(format!("{:<7} {:>8}", file.kind.label(), file.data.len()))
+            .monospace();
+        let col_x = mono_width(ui, &"0".repeat(NAME_FIELD_CHARS));
+        let resp = tree_row_cols(
+            ui,
+            id,
+            is_selected,
+            name,
+            Some((col_x, cols)),
+            egui::Sense::click_and_drag(),
         );
-        let resp = ui
-            .selectable_label(is_selected, egui::RichText::new(label).monospace())
-            .interact(egui::Sense::click_and_drag());
         if is_cursor && ctx.scroll_to_cursor {
             resp.scroll_to_me(Some(egui::Align::Center));
         }
