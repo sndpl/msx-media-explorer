@@ -123,6 +123,18 @@ The viewer offers tabs that adapt to the selected file:
   them.
 - On macOS and Windows, drag files out of the list into the OS file manager.
 
+### Copying files between two disks
+
+- **File → New Window** opens a second, independent window. Open a disk in
+  each, then (macOS/Windows) drag files from one window's file tree straight
+  into a folder in the other.
+- On Linux (no native drag-out): extract the files to a host folder from the
+  first window, then drop them onto the second.
+- Known limitations: don't open the *same* image file in both windows for
+  editing (each write saves the whole image — the last save wins), and file
+  timestamps/attributes are not preserved by a copy (the destination stamps
+  the current time, as with any added file).
+
 ## Supported image formats (read)
 
 | Format | Notes |

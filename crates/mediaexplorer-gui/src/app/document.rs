@@ -14,6 +14,10 @@ impl MediaExplorerApp {
         {
             app.mac_menu = Some(crate::macos::build_menu(&cc.egui_ctx, &app.settings));
         }
+        // Sweep drag-staging dirs abandoned by earlier runs (per-pid, so a
+        // second live instance is never touched).
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        super::transfer::clean_stale_drag_staging();
         app
     }
 

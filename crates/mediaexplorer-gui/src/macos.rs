@@ -59,6 +59,11 @@ fn cmd(code: Code) -> Accelerator {
     Accelerator::new(Some(Modifiers::META), code)
 }
 
+/// Cmd+Shift-modified accelerator for a key code.
+fn cmd_shift(code: Code) -> Accelerator {
+    Accelerator::new(Some(Modifiers::META | Modifiers::SHIFT), code)
+}
+
 /// Handles for the live native menu, kept alive for the process and used to
 /// reflect state changes (checkmarks) and rebuild the Recent submenu.
 pub struct MacMenu {
@@ -205,6 +210,12 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
     let save_xsa = MenuItem::with_id("file.save_xsa", "Save as .xsa…", false, None);
     let _ = file.append_items(&[
         &MenuItem::with_id("file.new", "New Disk…", true, Some(cmd(Code::KeyN))),
+        &MenuItem::with_id(
+            "file.new_window",
+            "New Window",
+            true,
+            Some(cmd_shift(Code::KeyN)),
+        ),
         &MenuItem::with_id(
             "file.open",
             "Open Disk/Tape Image…",

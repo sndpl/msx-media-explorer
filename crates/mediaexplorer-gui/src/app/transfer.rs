@@ -167,11 +167,13 @@ impl MediaExplorerApp {
         }
     }
 
-    /// Extract `paths` to a temp directory (the OS drag transfers file paths,
-    /// not bytes) and return their absolute locations.
+    /// Extract `paths` to a per-instance temp directory (the OS drag transfers
+    /// file paths, not bytes) and return their absolute locations. The pid
+    /// subdirectory keeps two concurrently running instances from overwriting
+    /// each other's staged files.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) fn stage_files_for_drag(&self, paths: &[String]) -> Result<Vec<PathBuf>, String> {
-        let dir = std::env::temp_dir().join("mediaexplorer-dragout");
+        let dir = drag_staging_root().join(std::process::id().to_string());
         std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
         let mut staged = Vec::with_capacity(paths.len());
         for path in paths {
@@ -324,5 +326,36 @@ impl MediaExplorerApp {
             Ok(()) => format!("Saved {}", target.display()),
             Err(e) => format!("Failed to save PNG: {e}"),
         };
+    }
+}
+
+/// Root of the drag-out staging area; each instance stages into a pid-named
+/// subdirectory of it.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn drag_staging_root() -> PathBuf {
+    std::env::temp_dir().join("mediaexplorer-dragout")
+}
+
+/// Best-effort cleanup of drag-staging directories left behind by previous
+/// runs (staged files are never deleted after a drag — the OS may still be
+/// copying them). Only subdirectories untouched for over a day are removed:
+/// far longer than any live drag, so a concurrently running instance's staging
+/// is never disturbed even if its pid was recycled. All errors are ignored.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+pub(crate) fn clean_stale_drag_staging() {
+    let Ok(entries) = std::fs::read_dir(drag_staging_root()) else {
+        return;
+    };
+    const DAY: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    for entry in entries.flatten() {
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > DAY);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
     }
 }

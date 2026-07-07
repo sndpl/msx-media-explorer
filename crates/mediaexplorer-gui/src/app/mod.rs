@@ -17,7 +17,7 @@ use msx_disk::view::text::{self, ControlMode};
 use msx_disk::{charset, DirEntry, ImageFormat, MsxCharset};
 
 use crate::hexlayout::{HexLayout, HexRegion};
-use crate::settings::{ByteGrouping, HexViewOptions, Settings};
+use crate::settings::{ByteGrouping, HexViewOptions, Settings, SETTINGS_KEY};
 use crate::state::{humanize_bytes, LoadedDisk, LoadedTape};
 use crate::tree_nav::{self, NavKey, TreeNav};
 
@@ -47,9 +47,6 @@ pub(crate) use views::*;
 /// Path key for the synthetic disk-root row: the empty string, distinct from
 /// every real entry path and used as the "add to root" target.
 const ROOT_PATH: &str = "";
-
-/// Storage key under which [`Settings`] are persisted by eframe.
-const SETTINGS_KEY: &str = "settings";
 
 /// A standard MSX disk size as a human label for the geometry-mismatch popup.
 fn size_label(bytes: usize) -> String {
@@ -510,6 +507,12 @@ impl Default for MediaExplorerApp {
 
 impl eframe::App for MediaExplorerApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        // Another instance may have saved since this one loaded; union its
+        // recent-files list (best-effort) so concurrent instances don't
+        // clobber each other's. Other prefs stay last-writer-wins.
+        if let Some(disk) = crate::settings::read_from_storage_file(crate::APP_NAME) {
+            self.settings.merge_recent(&disk.recent);
+        }
         eframe::set_value(storage, SETTINGS_KEY, &self.settings);
     }
 

@@ -22,6 +22,10 @@ egui = "0.34.3"
 image.workspace = true
 msx-disk = { path = "../msx-disk" }
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+# Re-reads eframe's on-disk app.ron at save time so two concurrently running
+# instances merge (not clobber) each other's recent-files list. Same version
+# eframe's `persistence` feature already pulls into the tree.
+ron = "0.12"
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

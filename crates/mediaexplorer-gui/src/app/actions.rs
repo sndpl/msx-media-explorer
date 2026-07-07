@@ -87,6 +87,18 @@ impl MediaExplorerApp {
         }
     }
 
+    /// Launch a detached second instance of the app, so two disks can be open
+    /// side by side (e.g. to drag files from one to the other). Spawning the
+    /// current executable works both for the dev binary and from inside a
+    /// packaged `.app`; the child outlives the dropped handle.
+    pub(crate) fn open_new_window(&mut self) {
+        let spawned = std::env::current_exe()
+            .and_then(|exe| std::process::Command::new(exe).spawn().map(|_| ()));
+        if let Err(e) = spawned {
+            self.status = format!("Could not open a new window: {e}");
+        }
+    }
+
     /// Open the system file picker for a disk or tape image.
     pub(crate) fn open_dialog(&mut self) {
         if let Some(path) = rfd::FileDialog::new()
@@ -183,6 +195,7 @@ impl MediaExplorerApp {
         match id {
             "app.about" => self.show_about = true,
             "file.new" => self.show_new_disk = true,
+            "file.new_window" => self.open_new_window(),
             "file.open" => self.open_dialog(),
             "file.save_dsk" => self.save_as_dsk(),
             "file.save_xsa" => self.save_as_xsa(),
@@ -242,6 +255,10 @@ impl MediaExplorerApp {
             ui.menu_button("File", |ui| {
                 if ui.button("New disk…").clicked() {
                     self.show_new_disk = true;
+                    ui.close();
+                }
+                if ui.button("New Window").clicked() {
+                    self.open_new_window();
                     ui.close();
                 }
                 if ui.button("Open disk/tape image…").clicked() {

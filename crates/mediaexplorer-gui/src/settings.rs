@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 /// Maximum number of entries kept in the recent-files list.
 pub const MAX_RECENT: usize = 10;
 
+/// Storage key under which [`Settings`] live in eframe's persisted key/value
+/// store (`app.ron`).
+pub const SETTINGS_KEY: &str = "settings";
+
 /// Selectable bytes-per-row sizes offered by the View menu.
 pub const ROW_SIZES: [usize; 4] = [8, 16, 24, 32];
 
@@ -47,6 +51,38 @@ impl Settings {
     pub fn clear_recent(&mut self) {
         self.recent.clear();
     }
+
+    /// Union another instance's recent list into this one: own entries keep
+    /// their order in front, paths not already present are appended in `other`
+    /// order, and the result is capped at [`MAX_RECENT`]. Used at save time so
+    /// two concurrently running instances don't clobber each other's list.
+    pub fn merge_recent(&mut self, other: &[PathBuf]) {
+        for path in other {
+            if !self.recent.contains(path) {
+                self.recent.push(path.clone());
+            }
+        }
+        self.recent.truncate(MAX_RECENT);
+    }
+}
+
+/// Best-effort read of the settings currently persisted on disk, which may
+/// have been written by *another running instance* since this one started.
+/// eframe's own storage object is loaded once at startup and never re-read,
+/// so concurrent writes are invisible through it — this goes to the file.
+///
+/// The file is eframe's `app.ron`: a RON map of `String -> String` whose
+/// [`SETTINGS_KEY`] value is itself RON-serialized [`Settings`]. Any missing
+/// file or parse failure yields `None` (the caller just skips merging).
+pub fn read_from_storage_file(app_name: &str) -> Option<Settings> {
+    let path = eframe::storage_dir(app_name)?.join("app.ron");
+    parse_storage_ron(&std::fs::read_to_string(path).ok()?)
+}
+
+/// Extract [`Settings`] from the text of an eframe `app.ron` storage file.
+fn parse_storage_ron(text: &str) -> Option<Settings> {
+    let map: std::collections::HashMap<String, String> = ron::from_str(text).ok()?;
+    ron::from_str(map.get(SETTINGS_KEY)?).ok()
 }
 
 /// How the hex view draws each row. Each field maps to a View-menu item.
@@ -146,6 +182,50 @@ mod tests {
     }
 
     #[test]
+    fn merge_recent_unions_keeping_own_order_first() {
+        let mut s = Settings::default();
+        s.push_recent(Path::new("/b.dsk"));
+        s.push_recent(Path::new("/a.dsk")); // own list: a, b
+        s.merge_recent(&[PathBuf::from("/c.dsk"), PathBuf::from("/b.dsk")]);
+        // Own entries stay in front; only genuinely new paths are appended.
+        assert_eq!(
+            s.recent,
+            vec![
+                PathBuf::from("/a.dsk"),
+                PathBuf::from("/b.dsk"),
+                PathBuf::from("/c.dsk"),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_recent_caps_at_max() {
+        let mut s = Settings::default();
+        for i in 0..MAX_RECENT {
+            s.push_recent(Path::new(&format!("/own{i}.dsk")));
+        }
+        let other: Vec<PathBuf> = (0..5)
+            .map(|i| PathBuf::from(format!("/o{i}.dsk")))
+            .collect();
+        s.merge_recent(&other);
+        assert_eq!(s.recent.len(), MAX_RECENT);
+        // A full own list leaves no room for the other instance's entries.
+        assert!(s
+            .recent
+            .iter()
+            .all(|p| p.to_string_lossy().starts_with("/own")));
+    }
+
+    #[test]
+    fn merge_recent_with_empty_other_is_a_noop() {
+        let mut s = Settings::default();
+        s.push_recent(Path::new("/a.dsk"));
+        let before = s.recent.clone();
+        s.merge_recent(&[]);
+        assert_eq!(s.recent, before);
+    }
+
+    #[test]
     fn settings_round_trip_through_json() {
         let mut s = Settings::default();
         s.push_recent(Path::new("/a.dsk"));
@@ -155,6 +235,24 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn parse_storage_ron_round_trips_eframe_format() {
+        // Mirror eframe's storage layout exactly: a RON map of String -> String
+        // whose "settings" value is itself RON-serialized Settings.
+        let mut s = Settings::default();
+        s.push_recent(Path::new("/other-instance.dsk"));
+        let inner = ron::to_string(&s).unwrap();
+        let map = std::collections::HashMap::from([(SETTINGS_KEY.to_string(), inner)]);
+        let text = ron::to_string(&map).unwrap();
+        assert_eq!(parse_storage_ron(&text), Some(s));
+    }
+
+    #[test]
+    fn parse_storage_ron_rejects_garbage_gracefully() {
+        assert_eq!(parse_storage_ron("not ron at all"), None);
+        assert_eq!(parse_storage_ron("{}"), None); // valid map, no settings key
     }
 
     #[test]
