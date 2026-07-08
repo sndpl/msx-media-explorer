@@ -181,9 +181,14 @@
                 font-size: 15px;
                 line-height: 1.75;
                 color: #f2f4ff;
-                white-space: pre-wrap;
+                /* One block element per line, so an HTML formatter re-indenting
+                   the source can't leak whitespace into the rendered text (a
+                   `white-space: pre` boot screen did exactly that). */
                 position: relative;
                 overflow: hidden;
+            }
+            .boot .blank {
+                height: 1.75em;
             }
             .boot::before {
                 content: "";
@@ -500,17 +505,19 @@
                     </div>
                 </div>
                 <div class="boot" aria-hidden="true">
-                    MSX Media Explorer <span id="ver">version 0.2.0</span>
-                    <span class="dim"
-                        >GPL-2.0-or-later &middot; Rust + egui</span
-                    >
-
-                    Disk BASIC version 2.01 737280 Bytes free
-
-                    <span class="ok">Ok</span>
-                    load"<span class="dim">YOURDISK.DSK</span>"<span
-                        class="cursor"
-                    ></span>
+                    <div>
+                        MSX Media Explorer <span id="ver">version 0.3.0</span>
+                    </div>
+                    <div class="blank"></div>
+                    <div>Disk BASIC version 2.01</div>
+                    <div>737280 Bytes free</div>
+                    <div class="blank"></div>
+                    <div class="ok">Ok</div>
+                    <div>
+                        load"<span class="dim">YOURDISK.DSK</span>"<span
+                            class="cursor"
+                        ></span>
+                    </div>
                 </div>
             </div>
         </header>
@@ -519,9 +526,7 @@
             <div class="wrap">
                 <h2>Download</h2>
                 <p class="section-note">
-                    Prebuilt binaries for every platform, straight from the
-                    latest GitHub release. Or build from source with a plain
-                    <code>cargo build</code>.
+                    Prebuilt binaries for every platform.
                 </p>
                 <div class="dl-grid">
                     <div class="dl-card">
