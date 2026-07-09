@@ -46,17 +46,19 @@ jobs:
           sudo apt-get install -y libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
             libxcb-xfixes0-dev libxkbcommon-dev libssl-dev
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p mediaexplorer-gui
+        run: cargo build --release --target ${{ matrix.target }} -p mediaexplorer-gui -p mediaexplorer-cli
       - name: Package (unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${BIN_NAME}" "dist/${BIN_NAME}-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/${BIN_NAME}-cli" "dist/${BIN_NAME}-cli-${{ matrix.target }}"
       - name: Package (windows)
         if: runner.os == 'Windows'
         run: |
           mkdir dist
           copy "target\${{ matrix.target }}\release\${env:BIN_NAME}.exe" "dist\${env:BIN_NAME}-${{ matrix.target }}.exe"
+          copy "target\${{ matrix.target }}\release\${env:BIN_NAME}-cli.exe" "dist\${env:BIN_NAME}-cli-${{ matrix.target }}.exe"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -81,15 +83,21 @@ jobs:
         run: cargo install cargo-packager --locked --version "${CARGO_PACKAGER_VERSION}"
       - name: Build both architectures
         run: |
-          cargo build --release --target aarch64-apple-darwin -p mediaexplorer-gui
-          cargo build --release --target x86_64-apple-darwin -p mediaexplorer-gui
-      - name: Combine into a universal binary
+          cargo build --release --target aarch64-apple-darwin -p mediaexplorer-gui -p mediaexplorer-cli
+          cargo build --release --target x86_64-apple-darwin -p mediaexplorer-gui -p mediaexplorer-cli
+      - name: Combine into universal binaries
         run: |
-          mkdir -p target/release
+          mkdir -p target/release dist
           lipo -create -output "target/release/${BIN_NAME}" \
             "target/aarch64-apple-darwin/release/${BIN_NAME}" \
             "target/x86_64-apple-darwin/release/${BIN_NAME}"
           lipo -archs "target/release/${BIN_NAME}"
+          # The CLI ships as a plain universal binary next to the .dmg (it is
+          # not part of the .app bundle).
+          lipo -create -output "dist/${BIN_NAME}-cli-macos-universal" \
+            "target/aarch64-apple-darwin/release/${BIN_NAME}-cli" \
+            "target/x86_64-apple-darwin/release/${BIN_NAME}-cli"
+          lipo -archs "dist/${BIN_NAME}-cli-macos-universal"
       - name: Build .app bundle
         run: |
           # cargo-packager resolves a relative --out-dir against the package's
@@ -120,7 +128,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: macos-universal
-          path: dist/${{ env.BIN_NAME }}-macos-universal.dmg
+          # Explicit paths, not dist/*, which would also sweep in the .app.
+          path: |
+            dist/${{ env.BIN_NAME }}-macos-universal.dmg
+            dist/${{ env.BIN_NAME }}-cli-macos-universal
 
   release:
     name: Publish GitHub Release
