@@ -145,16 +145,21 @@ impl DiskImage {
     }
 
     /// Re-encode modified normalized sector data back into this image's
-    /// container framing, ready to write to disk.
+    /// container framing, ready to write to disk. `.xsa` data is recompressed;
+    /// the other writable containers get their original prefix back verbatim.
     ///
-    /// Returns an error for `.xsa`, which would require re-compression
-    /// (planned for a later phase); save those as `.dsk` instead.
+    /// Returns an error for `.dmk`, whose raw-track framing (gaps, CRCs,
+    /// per-track layout) cannot be synthesized from sector data alone; save
+    /// those as `.dsk` instead.
     pub fn reencode(&self, data: &[u8]) -> Result<Vec<u8>> {
         if !self.is_writable() {
             return Err(Error::Unsupported(format!(
                 "cannot write back to {:?}; save as .dsk instead",
                 self.format
             )));
+        }
+        if self.format == ImageFormat::Xsa {
+            return Ok(xsa::compress(data));
         }
         let mut out = Vec::with_capacity(self.prefix.len() + data.len());
         out.extend_from_slice(&self.prefix);
@@ -163,10 +168,9 @@ impl DiskImage {
     }
 
     /// Whether modified data can be written back to this image's container.
-    /// Compressed (`.xsa`) and raw-track (`.dmk`) containers are read-only;
-    /// save them as `.dsk` to edit.
+    /// Only raw-track `.dmk` is read-only; save it as `.dsk` to edit.
     pub fn is_writable(&self) -> bool {
-        !matches!(self.format, ImageFormat::Xsa | ImageFormat::Dmk)
+        self.format != ImageFormat::Dmk
     }
 }
 
@@ -295,9 +299,25 @@ mod tests {
     }
 
     #[test]
-    fn reencode_xsa_is_unsupported() {
+    fn reencode_xsa_recompresses_round_trip() {
+        let raw = synthetic_raw(SIZE_720K);
         let img = DiskImage {
             format: ImageFormat::Xsa,
+            geometry: Geometry::DS_720K,
+            prefix: Vec::new(),
+            data: raw.clone(),
+        };
+        assert!(img.is_writable());
+        let compressed = img.reencode(&raw).unwrap();
+        assert!(compressed.starts_with(xsa::MAGIC));
+        let reopened = DiskImage::open_bytes(ImageFormat::Xsa, compressed).unwrap();
+        assert_eq!(reopened.data(), raw.as_slice());
+    }
+
+    #[test]
+    fn reencode_dmk_is_unsupported() {
+        let img = DiskImage {
+            format: ImageFormat::Dmk,
             geometry: Geometry::DS_720K,
             prefix: Vec::new(),
             data: vec![0u8; SIZE_720K],
