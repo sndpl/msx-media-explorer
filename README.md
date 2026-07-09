@@ -136,6 +136,77 @@ The viewer offers tabs that adapt to the selected file:
   timestamps/attributes are not preserved by a copy (the destination stamps
   the current time, as with any added file).
 
+## Command-line tool (`mediaexplorer-cli`)
+
+A headless companion binary built on the same `msx-disk` core, for scripting
+and batch work. It edits floppy images in any writable container
+(`.dsk`-family, `.img`, `.msx`, `.ddi`, and `.xsa`, which is recompressed on
+save); raw-track `.dmk` containers and partitioned hard-disk images can be
+listed, extracted, and converted, but not modified in place.
+
+| Command | What it does |
+|---------|--------------|
+| `ls` | List contents (`-l` long format with volume/DOS header, `-R` recursive) |
+| `add` | Add or update host files (`--dest DIR`, `--as NAME`, `--force`) |
+| `extract` | Copy a file, a directory (`-R`), or the whole image to the host |
+| `rm` / `mv` / `mkdir` | Remove (`-r` recursive), rename/move, create directories (`-p`) |
+| `new` | Create a blank formatted disk (`--format 720\|360ss\|360ds\|180`, `--dos 1\|2`) |
+| `bootsector` | Show the MSX-DOS generation, or install a DOS 1/2 boot sector (`--dos`) |
+| `convert` | Re-container an image: anything readable → `.dsk`, or `.dsk` → `.xsa` |
+
+```sh
+mediaexplorer-cli new game.dsk --format 720     # blank disk, MSX-DOS 2 boot sector
+mediaexplorer-cli mkdir game.dsk -p GAMES/RPG
+mediaexplorer-cli add game.dsk hello.bas --dest GAMES
+mediaexplorer-cli ls game.dsk -l -R
+mediaexplorer-cli extract game.dsk GAMES -R --out ./dump
+mediaexplorer-cli bootsector old.dsk --dos 2    # FIXDISK-style upgrade
+mediaexplorer-cli convert image.xsa image.dsk   # also .dsk -> .xsa
+```
+
+Notes:
+
+- `add`, `mv`, `new`, and `convert` refuse to overwrite without `--force`, and
+  every image write is atomic (temp file + rename) so a crash never leaves a
+  half-written disk.
+- Filenames with bytes ≥ 0x80 (kana, accented Latin) are decoded/encoded via
+  `--charset`; by default the charset is auto-detected per disk, like the GUI.
+- `new` and `bootsector` install real MSX-DOS boot sectors (ported from
+  openMSX). A DOS 2 boot sector carries the `VOL_ID` marker and a volume
+  serial, which is what makes MSX-DOS 2's `UNDEL` and disk cache work. A
+  *bootable system disk* additionally needs `MSXDOS(2).SYS` /
+  `COMMAND(2).COM`, which are copyrighted and never embedded. See
+  [docs/msx-boot-sectors.md](docs/msx-boot-sectors.md) for a full reference
+  on MSX boot sectors.
+- Exit codes: `0` success, `1` operational error, `2` usage error.
+
+### Getting and running the CLI
+
+Every GitHub release ships a prebuilt binary per platform. Download it, then:
+
+```sh
+# Linux / macOS: make it executable and put it on your PATH under a short name
+chmod +x mediaexplorer-cli-x86_64-unknown-linux-gnu   # or -macos-universal
+mv mediaexplorer-cli-* ~/.local/bin/mediaexplorer-cli
+mediaexplorer-cli --help
+
+# Windows: rename mediaexplorer-cli-x86_64-pc-windows-msvc.exe and run it
+# from any terminal; no installer or dependencies needed.
+```
+
+macOS note: like the GUI, the binary is not notarized, so the first run may be
+blocked by Gatekeeper — clear it with
+`xattr -d com.apple.quarantine mediaexplorer-cli`.
+
+Or build and run from source:
+
+```sh
+cargo run -p mediaexplorer-cli -- ls image.dsk   # run straight from the repo
+cargo build --release -p mediaexplorer-cli       # -> target/release/mediaexplorer-cli
+```
+
+Every subcommand documents itself: `mediaexplorer-cli <command> --help`.
+
 ## Supported image formats (read)
 
 | Format | Notes |
@@ -144,7 +215,7 @@ The viewer offers tabs that adapt to the selected file:
 | `.img` | Raw with a leading side-count byte |
 | `.msx` | 720KB, cylinder-interleaved sides |
 | `.ddi` | DiskDupe image (header + raw) |
-| `.xsa` | Compressed disk image (decompressed on open) |
+| `.xsa` | Compressed disk image (decompressed on open, recompressed on save) |
 | `.dmk` | David Keil raw-track image (read-only; normalized + analyzed) |
 | `.dsk` (hard disk) | openMSX `MSX_IDE` multi-partition image (read-only; FAT12/FAT16) |
 | `.cas` | MSX cassette tape image (files + block overview) |
@@ -152,7 +223,7 @@ The viewer offers tabs that adapt to the selected file:
 
 ## Architecture
 
-A Cargo workspace with two crates:
+A Cargo workspace with three crates:
 
 - **`msx-disk`** — headless core library: image-format parsing, FAT12/FAT16
   filesystem (floppies via `fatfs`, hard-disk partitions via an MSX-aware
@@ -160,12 +231,15 @@ A Cargo workspace with two crates:
   dependencies, fully unit-tested.
 - **`mediaexplorer-gui`** — the [egui](https://github.com/emilk/egui) /
   `eframe` desktop application that renders the models produced by `msx-disk`.
+- **`mediaexplorer-cli`** — the command-line companion (see above), a thin
+  shell over the same `msx-disk` primitives.
 
 ## Building
 
 ```sh
 cargo build --workspace
-cargo run -p mediaexplorer-gui
+cargo run -p mediaexplorer-gui                 # the desktop app
+cargo run -p mediaexplorer-cli -- ls image.dsk # the command-line tool
 cargo test --workspace
 ```
 
@@ -207,3 +281,8 @@ GPL-2.0-or-later. See [COPYING](COPYING).
 The MSX/MSX2/MSX2+/V9990 graphics-format decoders are ported from
 [RECOIL](https://recoil.sourceforge.net/) by Piotr Fusik, which is GPLv2+;
 this is why the project is GPL-licensed.
+
+The `.xsa` support implements the XelaSoft Archive format — this project uses
+XSA code developed by Alex Wulms/XelaSoft (ported via openMSX's extractor).
+The MSX-DOS 1/2 boot blocks installed by `new`/`bootsector` are ported from
+[openMSX](https://openmsx.org/) (GPL-2.0).

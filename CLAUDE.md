@@ -15,6 +15,7 @@ this do" questions.
 ```sh
 cargo build --workspace
 cargo run -p mediaexplorer-gui          # launch the GUI (binary is named `mediaexplorer`)
+cargo run -p mediaexplorer-cli -- ls <image>   # the CLI companion (ls/add/extract/rm/mv/mkdir/new/bootsector/convert)
 cargo test --workspace                  # all unit + integration tests
 cargo test -p msx-disk <name>           # run a single test by substring
 cargo fmt --all --check                 # CI runs this; must pass
@@ -53,6 +54,12 @@ has zero UI dependencies.** Every function returns plain data (sector buffers,
 directory trees, decoded view models) so logic is unit-testable and reusable from
 a CLI. Keep rendering in the GUI crate and decoding/parsing in the library.
 
+`crates/mediaexplorer-cli` is that CLI: one pure function per subcommand in
+`src/commands/` (bytes in → bytes/render-plan out, unit-tested on synthetic
+disks), with all host I/O — open, guards, `reencode` + atomic write — in
+`main.rs`/`disk.rs`. Command logic that needs new disk behavior belongs in
+`msx-disk`, not in the CLI.
+
 ### `crates/msx-disk` — headless core library
 
 The data flows through three layers, each unaware of the one below its concern:
@@ -62,9 +69,9 @@ The data flows through three layers, each unaware of the one below its concern:
    512-byte sectors in logical (LBA) order, exactly like a raw `.dsk`. Anything
    that precedes the sector data (the `.img` side byte, the `.ddi` header) is
    stashed in `DiskImage.prefix` so `reencode()` can write back into the same
-   container. `.xsa` and `.dmk` are read-only (`is_writable()` is false); to edit
-   them, the GUI saves as `.dsk`. Format is chosen by extension, falling back to
-   magic-byte sniffing.
+   container. `.xsa` is recompressed by `reencode()` on save; only raw-track
+   `.dmk` is read-only (`is_writable()` is false) — to edit one, save it as
+   `.dsk`. Format is chosen by extension, falling back to magic-byte sniffing.
 
 2. **`fs/`** — FAT12/FAT16 filesystem on top of a normalized buffer. Two paths:
    - **Floppy**: a single FAT volume mounted via the `fatfs` crate (`DiskFs`).

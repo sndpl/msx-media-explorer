@@ -1,0 +1,1031 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>MSX Boot Sectors: A Reference — MSX Media Explorer</title>
+        <meta
+            name="description"
+            content="Everything about sector 0 of an MSX floppy disk — layout, MSX-DOS 1 vs MSX-DOS 2 differences, the quirks that break strict PC FAT parsers, and how MSX Media Explorer reads, repairs, detects and installs boot sectors."
+        />
+        <meta
+            property="og:title"
+            content="MSX Boot Sectors: A Reference — MSX Media Explorer"
+        />
+        <meta
+            property="og:description"
+            content="Sector 0 of an MSX floppy: layout, DOS 1 vs DOS 2, VOL_ID, and why MSX disks break strict PC FAT parsers."
+        />
+        <meta property="og:type" content="article" />
+        <link
+            rel="icon"
+            href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%232434dc'/><rect x='3' y='4' width='10' height='8' fill='%23eef0ff'/><rect x='5' y='6' width='6' height='4' fill='%232434dc'/></svg>"
+        />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap"
+            rel="stylesheet"
+        />
+        <style>
+            :root {
+                --ink: #eef0ff;
+                --ink-dim: #9aa3d8;
+                --bg: #05061a;
+                --panel: #0b0d33;
+                --panel-edge: #272c6b;
+                --msx-blue: #2434dc;
+                --msx-blue-deep: #1a26ab;
+                --cyan: #41d6ee;
+                --green: #74d07d;
+                --amber: #f4bf4f;
+                --red: #e05a5a;
+                --display: "Silkscreen", monospace;
+                --mono: "IBM Plex Mono", ui-monospace, monospace;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            html {
+                scroll-behavior: smooth;
+            }
+            body {
+                margin: 0;
+                background: var(--bg);
+                color: var(--ink);
+                font-family: var(--mono);
+                font-size: 16px;
+                line-height: 1.65;
+            }
+            /* CRT scanlines + vignette over everything, purely decorative */
+            body::after {
+                content: "";
+                position: fixed;
+                inset: 0;
+                pointer-events: none;
+                z-index: 40;
+                background:
+                    repeating-linear-gradient(
+                        0deg,
+                        rgba(3, 4, 16, 0.14) 0 1px,
+                        transparent 1px 3px
+                    ),
+                    radial-gradient(
+                        ellipse at center,
+                        transparent 55%,
+                        rgba(0, 0, 5, 0.35) 100%
+                    );
+            }
+            a {
+                color: var(--cyan);
+                text-decoration-thickness: 1px;
+                text-underline-offset: 3px;
+            }
+            a:hover {
+                color: var(--ink);
+            }
+            .wrap {
+                max-width: 880px;
+                margin: 0 auto;
+                padding: 0 24px;
+            }
+
+            /* ---------- page header ---------- */
+            header {
+                padding: 56px 0 44px;
+                background:
+                    radial-gradient(
+                        1000px 480px at 70% -10%,
+                        rgba(36, 52, 220, 0.38),
+                        transparent 70%
+                    ),
+                    radial-gradient(
+                        700px 400px at 8% 10%,
+                        rgba(65, 214, 238, 0.12),
+                        transparent 70%
+                    );
+                border-bottom: 1px solid var(--panel-edge);
+            }
+            .crumb {
+                font-family: var(--display);
+                font-size: 12px;
+                margin: 0 0 26px;
+            }
+            .crumb a {
+                text-decoration: none;
+            }
+            .crumb a:hover {
+                text-decoration: underline;
+            }
+            h1 {
+                font-family: var(--display);
+                font-weight: 700;
+                font-size: clamp(26px, 4vw, 42px);
+                line-height: 1.15;
+                margin: 0 0 16px;
+                letter-spacing: 0.01em;
+                text-shadow: 3px 3px 0 var(--msx-blue-deep);
+            }
+            h1 .accent {
+                color: var(--cyan);
+            }
+            .tagline {
+                color: var(--ink-dim);
+                max-width: 64ch;
+                margin: 0;
+            }
+            .tagline strong {
+                color: var(--ink);
+                font-weight: 600;
+            }
+
+            /* ---------- article ---------- */
+            main {
+                padding: 24px 0 8px;
+            }
+            article section {
+                padding: 40px 0;
+                border-bottom: 1px solid #141743;
+            }
+            article section:last-child {
+                border-bottom: none;
+            }
+            h2 {
+                font-family: var(--display);
+                font-size: clamp(18px, 2.4vw, 24px);
+                margin: 0 0 18px;
+                color: var(--ink);
+            }
+            h2::before {
+                content: "■ ";
+                color: var(--cyan);
+            }
+            h3 {
+                font-family: var(--display);
+                font-size: 15px;
+                margin: 36px 0 12px;
+                color: var(--cyan);
+            }
+            p {
+                margin: 0 0 18px;
+                color: var(--ink-dim);
+            }
+            p:last-child {
+                margin-bottom: 0;
+            }
+            p strong,
+            li strong {
+                color: var(--ink);
+                font-weight: 600;
+            }
+            code {
+                color: var(--amber);
+                background: #10133e;
+                padding: 1px 6px;
+                font-size: 0.86em;
+            }
+            ul,
+            ol {
+                margin: 0 0 18px;
+                padding-left: 22px;
+                color: var(--ink-dim);
+            }
+            li {
+                margin: 0 0 10px;
+            }
+            li:last-child {
+                margin-bottom: 0;
+            }
+            pre {
+                background: var(--panel);
+                border: 1px solid var(--panel-edge);
+                border-left: 3px solid var(--msx-blue);
+                padding: 18px 20px;
+                margin: 0 0 18px;
+                overflow-x: auto;
+                font-size: 13.5px;
+                line-height: 1.7;
+                color: var(--ink);
+            }
+            pre code {
+                color: inherit;
+                background: none;
+                padding: 0;
+                font-size: inherit;
+            }
+            pre .dim {
+                color: var(--ink-dim);
+            }
+            pre .lit {
+                color: var(--amber);
+            }
+
+            /* tables */
+            table {
+                border-collapse: collapse;
+                width: 100%;
+                font-size: 14px;
+                margin: 0 0 18px;
+            }
+            th,
+            td {
+                text-align: left;
+                padding: 9px 13px;
+                border: 1px solid var(--panel-edge);
+                vertical-align: top;
+            }
+            th {
+                font-family: var(--display);
+                font-size: 11.5px;
+                color: var(--cyan);
+                background: var(--panel);
+            }
+            td {
+                color: var(--ink-dim);
+            }
+            td:first-child {
+                color: var(--amber);
+                white-space: nowrap;
+            }
+            tr:nth-child(even) td {
+                background: rgba(11, 13, 51, 0.55);
+            }
+            /* tables whose first column is prose, not an offset/format key */
+            table.plain td:first-child {
+                color: var(--ink-dim);
+                white-space: normal;
+            }
+            .table-scroll {
+                overflow-x: auto;
+                margin: 0 0 18px;
+            }
+            .table-scroll table {
+                margin: 0;
+            }
+
+            /* footer */
+            footer {
+                padding: 48px 0 64px;
+                color: var(--ink-dim);
+                font-size: 13.5px;
+            }
+            footer .boot-off {
+                font-family: var(--display);
+                color: var(--ink-dim);
+                font-size: 12px;
+                margin-top: 18px;
+            }
+            @media (prefers-reduced-motion: reduce) {
+                html {
+                    scroll-behavior: auto;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <header>
+            <div class="wrap">
+                <p class="crumb">
+                    <a href="index.html">&larr; MSX Media Explorer</a>
+                </p>
+                <h1>MSX Boot Sectors<span class="accent">_</span></h1>
+                <p class="tagline">
+                    Everything this project knows about
+                    <strong>sector 0 of an MSX floppy disk</strong> — its
+                    layout, the MSX-DOS 1 vs MSX-DOS 2 differences, the quirks
+                    that break strict PC FAT parsers, and how MSX Media Explorer
+                    reads, repairs, detects, and installs boot sectors.
+                </p>
+            </div>
+        </header>
+
+        <main>
+            <article class="wrap">
+                <section>
+                    <p>
+                        The DOS 1 and DOS 2 boot blocks embedded in
+                        <code>msx-disk</code> are ports of openMSX's
+                        <code>src/fdc/BootBlocks.cc</code> (GPL-2.0): real
+                        sector dumps captured on a Philips NMS&nbsp;8250 — the
+                        DOS 1 block from the Disk ROM's <code>_format</code>,
+                        the DOS 2 block from MSX-DOS 2.20's FORMAT.
+                    </p>
+                </section>
+
+                <section id="how-an-msx-boots">
+                    <h2>How an MSX boots from disk</h2>
+                    <ol>
+                        <li>
+                            At power-on the Disk ROM (the BIOS extension in the
+                            disk interface) reads
+                            <strong>logical sector 0</strong> of the disk into
+                            RAM at address <strong><code>0xC000</code></strong
+                            >.
+                        </li>
+                        <li>
+                            It jumps to <strong><code>0xC01E</code></strong> —
+                            offset <code>0x1E</code> inside the sector. This
+                            entry point is a hardware-era convention and cannot
+                            move; it is the pivot around which the whole
+                            DOS&nbsp;1/DOS&nbsp;2 difference is arranged.
+                        </li>
+                        <li>
+                            The first instruction of every standard boot loader
+                            is <code>RET NC</code> (<code>0xD0</code>): unless
+                            the Disk ROM signalled with the carry flag that
+                            booting is possible, control returns immediately and
+                            the machine drops into BASIC.
+                        </li>
+                        <li>
+                            If the boot proceeds, the loader uses the BDOS entry
+                            point at <strong><code>0xF37D</code></strong> to
+                            open and load <code>MSXDOS.SYS</code> at
+                            <code>0x0100</code>, then jumps there. On any
+                            failure it prints
+                            <code>Boot error / Press any key for retry</code>
+                            and loops.
+                        </li>
+                    </ol>
+                    <p>
+                        A disk whose sector 0 contains no runnable loader is
+                        still perfectly usable as a <em>data</em> disk — MSX-DOS
+                        reads its FAT filesystem regardless. The boot code only
+                        matters when the machine tries to start from that disk.
+                    </p>
+                </section>
+
+                <section id="sector-layout">
+                    <h2>Sector layout</h2>
+                    <p>
+                        All MSX floppies use 512-byte sectors and FAT12. Sector
+                        0 is laid out as a standard DOS 2.0-era
+                        (&ldquo;short&rdquo;) BPB boot sector:
+                    </p>
+                    <div class="table-scroll">
+                        <table>
+                            <tr>
+                                <th>Offset</th>
+                                <th>Size</th>
+                                <th>Field</th>
+                                <th>Notes</th>
+                            </tr>
+                            <tr>
+                                <td>0x00</td>
+                                <td>3</td>
+                                <td>Jump instruction</td>
+                                <td>
+                                    <code>EB FE 90</code> on real MSX formats
+                                    (<code>JR $</code> + <code>NOP</code> —
+                                    never executed, entry is at
+                                    <code>0x1E</code>); <code>EB 3C 90</code> or
+                                    <code>E9 xx xx</code> also accepted
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>0x03</td>
+                                <td>8</td>
+                                <td>OEM name</td>
+                                <td>
+                                    e.g. <code>"NMS 2.0P"</code> on NMS 8250
+                                    disks. Frequently overrun with garbage on
+                                    DOS 1 disks
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>0x0B</td>
+                                <td>2</td>
+                                <td>Bytes per sector</td>
+                                <td>Always 512</td>
+                            </tr>
+                            <tr>
+                                <td>0x0D</td>
+                                <td>1</td>
+                                <td>Sectors per cluster</td>
+                                <td>2 (1 on 180 KB)</td>
+                            </tr>
+                            <tr>
+                                <td>0x0E</td>
+                                <td>2</td>
+                                <td>Reserved sectors</td>
+                                <td>1 (just the boot sector)</td>
+                            </tr>
+                            <tr>
+                                <td>0x10</td>
+                                <td>1</td>
+                                <td>Number of FATs</td>
+                                <td>2</td>
+                            </tr>
+                            <tr>
+                                <td>0x11</td>
+                                <td>2</td>
+                                <td>Root directory entries</td>
+                                <td>112 (64 on 180 KB)</td>
+                            </tr>
+                            <tr>
+                                <td>0x13</td>
+                                <td>2</td>
+                                <td>Total sectors (16-bit)</td>
+                                <td>
+                                    The authoritative count on every MSX floppy
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>0x15</td>
+                                <td>1</td>
+                                <td>Media descriptor</td>
+                                <td>See table below</td>
+                            </tr>
+                            <tr>
+                                <td>0x16</td>
+                                <td>2</td>
+                                <td>Sectors per FAT</td>
+                                <td>3 (720 KB) or 2</td>
+                            </tr>
+                            <tr>
+                                <td>0x18</td>
+                                <td>2</td>
+                                <td>Sectors per track</td>
+                                <td>9</td>
+                            </tr>
+                            <tr>
+                                <td>0x1A</td>
+                                <td>2</td>
+                                <td>Heads (sides)</td>
+                                <td>1 or 2</td>
+                            </tr>
+                            <tr>
+                                <td>0x1C</td>
+                                <td>2</td>
+                                <td>Hidden sectors</td>
+                                <td>
+                                    0 — <strong>and this is where MSX and PC
+                                    layouts part ways</strong>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>0x1E</td>
+                                <td>—</td>
+                                <td><strong>Boot code entry point</strong></td>
+                                <td>
+                                    DOS 1: code starts here. DOS 2: a jump over
+                                    the <code>VOL_ID</code> block (below)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>0x1FE</td>
+                                <td>2</td>
+                                <td><code>55 AA</code> signature</td>
+                                <td>
+                                    <strong>Usually absent on MSX disks</strong>
+                                    — MSX-DOS never required it
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                    <p>
+                        Canonical BPB values per format (what
+                        <code>msx-disk</code>'s <code>fs/boot.rs</code>
+                        synthesizes and <code>create_blank</code> writes):
+                    </p>
+                    <div class="table-scroll">
+                        <table>
+                            <tr>
+                                <th>Format</th>
+                                <th>Size</th>
+                                <th>Media</th>
+                                <th>Sides &times; tracks &times; spt</th>
+                                <th>Sec/cluster</th>
+                                <th>Root entries</th>
+                                <th>Sec/FAT</th>
+                            </tr>
+                            <tr>
+                                <td>3.5&Prime; DS 2DD</td>
+                                <td>720 KB</td>
+                                <td><code>0xF9</code></td>
+                                <td>2 &times; 80 &times; 9</td>
+                                <td>2</td>
+                                <td>112</td>
+                                <td>3</td>
+                            </tr>
+                            <tr>
+                                <td>3.5&Prime; SS 1DD</td>
+                                <td>360 KB</td>
+                                <td><code>0xF8</code></td>
+                                <td>1 &times; 80 &times; 9</td>
+                                <td>2</td>
+                                <td>112</td>
+                                <td>2</td>
+                            </tr>
+                            <tr>
+                                <td>5.25&Prime; SS DD</td>
+                                <td>180 KB</td>
+                                <td><code>0xFC</code></td>
+                                <td>1 &times; 40 &times; 9</td>
+                                <td>1</td>
+                                <td>64</td>
+                                <td>2</td>
+                            </tr>
+                            <tr>
+                                <td>5.25&Prime; DS DD</td>
+                                <td>360 KB</td>
+                                <td><code>0xFD</code></td>
+                                <td>2 &times; 40 &times; 9</td>
+                                <td>2</td>
+                                <td>112</td>
+                                <td>2</td>
+                            </tr>
+                        </table>
+                    </div>
+                    <p>
+                        The media descriptor is written twice: in the BPB at
+                        <code>0x15</code> <em>and</em> as the first byte of each
+                        FAT — and on MSX the FAT copy is the one that matters
+                        (see quirks below).
+                    </p>
+                </section>
+
+                <section id="pc-parser-quirks">
+                    <h2>Why MSX boot sectors break strict PC parsers</h2>
+                    <p>
+                        MSX-DOS 1 does not read the BPB at all. It derives the
+                        complete disk geometry from the media-descriptor byte
+                        alone. Three consequences:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong
+                                >Garbage BPBs are common and harmless (to an
+                                MSX).</strong
+                            >
+                            DOS 1-era formatters and custom game loaders leave
+                            overrun OEM strings, zeroed fields, or nonsense
+                            values (one real example, the <em>Brainstorm</em>
+                            loader, declares <code>total_sectors = 2</code>) in
+                            the BPB. The disk still works on real hardware.
+                        </li>
+                        <li>
+                            <strong>No <code>55 AA</code> signature.</strong>
+                            Both the DOS 1 and DOS 2 blocks captured from real
+                            hardware end in zeros at <code>0x1FE</code>; MSX
+                            never checks. Strict PC parsers (including the
+                            <code>fatfs</code> crate) refuse to mount without
+                            it.
+                        </li>
+                        <li>
+                            <strong
+                                >The &ldquo;extended&rdquo; fields are actually
+                                code.</strong
+                            >
+                            A PC parser reads offsets
+                            <code>0x1C</code>&ndash;<code>0x26</code> as hidden
+                            sectors, 32-bit total sectors, drive number, and the
+                            <code>0x29</code> extended-signature/volume-label
+                            block. On an MSX disk those bytes are the middle of
+                            the Z80 boot program, so a strict parser can
+                            hallucinate a bogus 32-bit sector count or a garbage
+                            volume label.
+                        </li>
+                    </ul>
+                    <p>
+                        <code>msx-disk</code> handles this with a
+                        <strong>mount-time repair shim</strong>
+                        (<code>fs/boot.rs::repair_boot_sector</code>): in a
+                        <em>private copy</em> of the image it adds the
+                        <code>55 AA</code> signature, zeroes the pseudo-extended
+                        fields (<code>0x1C</code>&ndash;<code>0x26</code>), and
+                        — only if the existing BPB is not self-consistent —
+                        synthesizes the canonical BPB for the disk's byte size.
+                        The caller's original bytes are never modified; every
+                        write transaction (<code>fs/write.rs</code>) snapshots
+                        sector 0 before mounting and restores it before writing
+                        back, so real boot code always survives editing.
+                    </p>
+                </section>
+
+                <section id="dos1-vs-dos2">
+                    <h2>MSX-DOS 1 vs MSX-DOS 2</h2>
+                    <p>
+                        The two generations share everything up to offset
+                        <code>0x1D</code> and everything from
+                        <code>0xAB</code> (the <code>MSXDOS  SYS</code> FCB)
+                        onward. The difference is a 16-byte metadata block DOS 2
+                        wedged in at the fixed entry point:
+                    </p>
+
+                    <h3>DOS 1</h3>
+                    <p>
+                        Boot code starts directly at <code>0x1E</code>. Nothing
+                        else is special.
+                    </p>
+
+                    <h3>DOS 2</h3>
+                    <p>
+                        Offset <code>0x1E</code> holds <code>18 10</code>
+                        (<code>JR +0x10</code>), hopping over the
+                        <strong><code>VOL_ID</code> block</strong> to the
+                        relocated code at <code>0x30</code>:
+                    </p>
+                    <div class="table-scroll">
+                        <table>
+                            <tr>
+                                <th>Offset</th>
+                                <th>Size</th>
+                                <th>Content</th>
+                            </tr>
+                            <tr>
+                                <td>0x1E</td>
+                                <td>2</td>
+                                <td>
+                                    <code>18 10</code> — <code>JR +0x10</code>
+                                    to the boot code at <code>0x30</code>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>0x20</td>
+                                <td>6</td>
+                                <td>
+                                    ASCII <strong><code>"VOL_ID"</code></strong>
+                                    — the DOS 2 format marker
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>0x26</td>
+                                <td>1</td>
+                                <td>
+                                    Undelete flag (<code>0x00</code> on a
+                                    freshly formatted disk)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>0x27</td>
+                                <td>4</td>
+                                <td>
+                                    <strong>Volume serial number</strong> (this
+                                    project reads/writes it little-endian;
+                                    MSX-DOS 2's FORMAT fills it with a random
+                                    value)
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>0x2B</td>
+                                <td>5</td>
+                                <td>Reserved, zero</td>
+                            </tr>
+                            <tr>
+                                <td>0x30</td>
+                                <td>—</td>
+                                <td>
+                                    Boot code (same program as DOS 1,
+                                    reassembled)
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                    <p>
+                        This block — not the boot code — is what MSX-DOS 2
+                        actually cares about. It checks for
+                        <code>"VOL_ID"</code> at <code>0x20</code> to decide
+                        whether the disk is in &ldquo;its own&rdquo; format:
+                    </p>
+                    <ul>
+                        <li>
+                            <strong>Present</strong> &rarr; the disk supports
+                            <code>UNDEL</code> (undelete) and the disk cache can
+                            identify the disk across floppy swaps via the serial
+                            number.
+                        </li>
+                        <li>
+                            <strong>Absent</strong> &rarr; the disk is handled
+                            in DOS 1 compatibility mode: no undelete, degraded
+                            cache behaviour. MSX-DOS 2's
+                            <code>FIXDISK</code> utility upgrades such a disk in
+                            place — which is exactly what
+                            <code>mediaexplorer-cli bootsector &lt;image&gt;
+                            --dos 2</code>
+                            reproduces.
+                        </li>
+                    </ul>
+                    <p>
+                        The reverse direction is a non-event: MSX-DOS 1 never
+                        looks, and happily boots and uses a DOS 2-formatted
+                        disk.
+                    </p>
+                    <p>
+                        Annotated hex of the DOS 2 block's distinctive region:
+                    </p>
+                    <pre><code><span class="dim">offset  bytes                                        meaning</span>
+0x00    <span class="lit">EB FE 90</span>                                     <span class="dim">jump stub (never executed)</span>
+0x03    <span class="lit">4E 4D 53 20 32 2E 30 50</span>                      <span class="dim">OEM "NMS 2.0P"</span>
+0x0B    <span class="lit">00 02 02 01 00 02 70 00  A0 05 F9 03 00 09</span>   <span class="dim">BPB: 512 B/sec, 2 sec/clu, 1 resvd,</span>
+0x19    <span class="lit">00 02 00 00 00</span>                               <span class="dim">  2 FATs, 112 root, 1440 total, F9,</span>
+                                                     <span class="dim">  3 sec/FAT, 9 spt, 2 heads, 0 hidden</span>
+0x1E    <span class="lit">18 10</span>                                        <span class="dim">JR +0x10        &lt;- DOS1 code starts here instead</span>
+0x20    <span class="lit">56 4F 4C 5F 49 44</span>                            <span class="dim">"VOL_ID"</span>
+0x26    <span class="lit">00</span>                                           <span class="dim">undelete flag</span>
+0x27    <span class="lit">71 60 03 19</span>                                  <span class="dim">volume serial (patched per disk)</span>
+0x2B    <span class="lit">00 00 00 00 00</span>                               <span class="dim">reserved</span>
+0x30    <span class="lit">D0 ED 53 6A C0 ...</span>                           <span class="dim">boot loader code</span></code></pre>
+
+                    <h3>Byte-exact diff of the two embedded blocks</h3>
+                    <p>Verified against the openMSX dumps:</p>
+                    <ul>
+                        <li>
+                            Identical: <code>0x00</code>&ndash;<code>0x1D</code>
+                            (jump, OEM, 720 KB BPB) and
+                            <code>0xAB</code>&ndash;<code>0x1FF</code> (the
+                            <code>\0MSXDOS  SYS</code> FCB at
+                            <code>0xAB</code> and trailing zeros).
+                        </li>
+                        <li>
+                            Different: scattered ranges within
+                            <code>0x1E</code>&ndash;<code>0xAA</code> — the
+                            <code>VOL_ID</code> block plus the same loader
+                            reassembled 18 bytes later (every absolute address
+                            baked into the code shifts, e.g. self-modify targets
+                            <code>0xC059</code> &rarr; <code>0xC06A</code>).
+                        </li>
+                        <li>
+                            Last non-zero byte in both: <code>0xB6</code>.
+                            Neither has the <code>55 AA</code> signature.
+                        </li>
+                    </ul>
+
+                    <h3>The boot loader program (both generations)</h3>
+                    <p>Functionally identical in DOS 1 and DOS 2:</p>
+                    <ol>
+                        <li>
+                            <code>RET NC</code> — bail out to BASIC unless the
+                            Disk ROM set carry.
+                        </li>
+                        <li>
+                            Stash the ROM-provided boot parameters
+                            (self-modifying stores), set the stack to
+                            <code>0xF51F</code>.
+                        </li>
+                        <li>
+                            <code>LD DE,0xC0AB</code> /
+                            <code>LD C,0x0F</code> /
+                            <code>CALL 0xF37D</code> — BDOS <em>open file</em>
+                            on the FCB at <code>0xC0AB</code>, whose name field
+                            reads <code>MSXDOS  SYS</code>.
+                        </li>
+                        <li>On failure &rarr; boot-error routine.</li>
+                        <li>
+                            <code>LD DE,0x0100</code> /
+                            <code>LD C,0x1A</code> — BDOS
+                            <em>set DMA address</em> to <code>0x0100</code>.
+                        </li>
+                        <li>
+                            Set the FCB random-record field to 1, then
+                            <code>LD HL,0x3F00</code> /
+                            <code>LD C,0x27</code> — BDOS
+                            <em>random block read</em>: load up to
+                            <code>0x3F00</code> bytes of
+                            <code>MSXDOS.SYS</code> at <code>0x0100</code>.
+                        </li>
+                        <li><code>JP 0x0100</code> — enter MSXDOS.SYS.</li>
+                    </ol>
+                    <p>
+                        The only genuine code differences in the DOS 2 version,
+                        beyond relocation:
+                    </p>
+                    <ul>
+                        <li>
+                            The error message is printed with
+                            <strong>BDOS function 9</strong>
+                            (<code>$</code>-terminated string) instead of DOS
+                            1's hand-rolled per-character loop — visible in the
+                            data: DOS 1's message ends
+                            <code>...retry\r\n\0</code>, DOS 2's ends
+                            <code>...retry\r\n$</code>.
+                        </li>
+                        <li>
+                            The error/warm-boot check is simplified
+                            (<code>SUB 2 / OR 0 / JP Z,0x4022</code> replacing
+                            DOS 1's compare plus a per-boot flag byte it kept at
+                            <code>0xC0D0</code>).
+                        </li>
+                    </ul>
+
+                    <h3>Boot sector &ne; system disk</h3>
+                    <p>
+                        Both loaders load <code>MSXDOS.SYS</code> (the DOS 2
+                        kernel proper lives in the cartridge ROM; its disk
+                        components are
+                        <code>MSXDOS2.SYS</code>/<code>COMMAND2.COM</code>).
+                        Installing a boot sector therefore does
+                        <strong>not</strong> make a disk bootable by itself —
+                        that additionally requires the MSX-DOS system files,
+                        which are copyrighted and never embedded by this
+                        project. A DOS 2 boot sector on a plain data disk is
+                        still worthwhile purely for the
+                        <code>VOL_ID</code> block.
+                    </p>
+
+                    <h3>Related: Nextor</h3>
+                    <p>
+                        Nextor (the modern MSX-DOS 2 successor) formats FAT12
+                        volumes with the same <code>VOL_ID</code> convention and
+                        FAT16 volumes with the PC-style
+                        <code>0x29</code> extended BPB (volume ID + label +
+                        <code>"FAT16"</code> type string), and <em>does</em>
+                        write the <code>55 AA</code> signature. openMSX's
+                        <code>BootBlocks.cc</code> carries both Nextor blocks
+                        alongside the two ported here; this project does not
+                        currently install them.
+                    </p>
+                </section>
+
+                <section id="detecting-dos">
+                    <h2>Detecting the DOS generation of a disk</h2>
+                    <p>
+                        The boot sector is the primary signal, but it can be
+                        wiped or custom, so <code>msx-disk</code>'s
+                        <code>detect_dos_version()</code>
+                        (<code>fs/dos.rs</code>) classifies a disk as DOS 2 if
+                        <strong>any</strong> of these hold:
+                    </p>
+                    <ol>
+                        <li>
+                            <code>"VOL_ID"</code> at boot-sector offset
+                            <code>0x20</code>;
+                        </li>
+                        <li>
+                            the filesystem contains a subdirectory (only DOS 2
+                            creates them);
+                        </li>
+                        <li>
+                            <code>MSXDOS2.SYS</code> exists in the root
+                            directory.
+                        </li>
+                    </ol>
+                    <p>
+                        Otherwise it reports DOS 1. Detection must run on the
+                        <em>raw</em> sector 0 — the mount-time repair shim
+                        zeroes the marker region in its private copy.
+                    </p>
+                </section>
+
+                <section id="in-the-code">
+                    <h2>Where all of this lives in the repository</h2>
+                    <div class="table-scroll">
+                        <table class="plain">
+                            <tr>
+                                <th>Concern</th>
+                                <th>Location</th>
+                            </tr>
+                            <tr>
+                                <td>
+                                    Canonical BPBs, mount-time repair shim, BPB
+                                    validity check
+                                </td>
+                                <td>
+                                    <code
+                                        >crates/msx-disk/src/fs/boot.rs</code
+                                    >
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    Embedded DOS 1/DOS 2 boot blocks (openMSX
+                                    port, provenance notes)
+                                </td>
+                                <td>
+                                    <code
+                                        >crates/msx-disk/src/fs/bootblocks.rs</code
+                                    >
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    <code>set_boot_block()</code> — install a
+                                    boot block, preserving the disk's BPB
+                                    (<code>0x0B</code>&ndash;<code>0x1D</code>)
+                                    and its existing
+                                    <code>0x1FE</code> signature bytes, patching
+                                    the DOS 2 serial
+                                </td>
+                                <td>
+                                    <code
+                                        >crates/msx-disk/src/fs/write.rs</code
+                                    >
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    Blank-disk formatting (BPB + FAT seeding;
+                                    new disks get a DOS 2 block via callers)
+                                </td>
+                                <td>
+                                    <code
+                                        >crates/msx-disk/src/fs/write.rs::create_blank</code
+                                    >
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>DOS generation detection</td>
+                                <td>
+                                    <code>crates/msx-disk/src/fs/dos.rs</code>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    Boot-sector size-declaration repair
+                                    (truncated/padded images)
+                                </td>
+                                <td>
+                                    <code
+                                        >crates/msx-disk/src/fs/sizefix.rs</code
+                                    >
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    Sector-0 preservation during file edits
+                                </td>
+                                <td>
+                                    <code
+                                        >crates/msx-disk/src/fs/write.rs::transaction</code
+                                    >
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    CLI: <code>new --dos 1|2</code>,
+                                    <code>bootsector [--dos 1|2]</code>
+                                    (show/install, FIXDISK-style)
+                                </td>
+                                <td>
+                                    <code
+                                        >crates/mediaexplorer-cli/src/commands/{new,bootsector}.rs</code
+                                    >
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    GUI: New Disk creates DOS 2 disks with a
+                                    fresh serial
+                                </td>
+                                <td>
+                                    <code
+                                        >crates/mediaexplorer-gui/src/app/actions.rs::new_disk</code
+                                    >
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>
+                                    BPB decode in the hex viewer's data
+                                    inspector
+                                </td>
+                                <td>
+                                    <code
+                                        >crates/mediaexplorer-gui/src/app/hexrender.rs</code
+                                    >
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
+                </section>
+
+                <section id="references">
+                    <h2>References</h2>
+                    <ul>
+                        <li>
+                            openMSX, <code>src/fdc/BootBlocks.cc</code> — the
+                            boot-block dumps ported here.
+                        </li>
+                        <li>
+                            <a
+                                href="https://openmsx.org/manual/diskmanipulator.html"
+                                >openMSX diskmanipulator manual</a
+                            >
+                            — formats DOS 2 by default,
+                            <code>-dos1</code>/<code>-nextor</code> options (the
+                            convention <code>mediaexplorer-cli new</code>
+                            follows).
+                        </li>
+                        <li>
+                            <a href="https://www.faq.msxnet.org/dos2.html"
+                                >The Ultimate MSX FAQ, MSX-DOS 2 section</a
+                            >
+                            — <code>VOL_ID</code>,
+                            <code>UNDEL</code>/cache behaviour, and
+                            <code>FIXDISK</code>.
+                        </li>
+                    </ul>
+                </section>
+            </article>
+        </main>
+
+        <footer>
+            <div class="wrap">
+                <p>
+                    Part of <a href="index.html">MSX Media Explorer</a> — free
+                    software for browsing, inspecting and editing MSX disk and
+                    tape images.
+                </p>
+                <p class="boot-off">*** press any key to reboot ***</p>
+            </div>
+        </footer>
+    </body>
+</html>
