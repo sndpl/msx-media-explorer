@@ -160,12 +160,23 @@ impl MediaExplorerApp {
     }
 
     /// Open the system file picker for a disk or tape image.
+    ///
+    /// Images in the wild often have no extension or an unrecognized one
+    /// (`DiskImage::open` falls back to magic-byte sniffing), so the dialog
+    /// must never make files unselectable. On Windows and Linux an
+    /// "All files" filter is offered alongside the MSX ones (rfd maps `*` to
+    /// `*.*` / a match-all glob there). On macOS rfd merges every filter's
+    /// extensions into a single `setAllowedFileTypes:` list — `*` is not a
+    /// wildcard in that API, and there is no filter dropdown to switch to —
+    /// so the panel is left unrestricted instead.
     pub(crate) fn open_dialog(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
+        let dialog = rfd::FileDialog::new();
+        #[cfg(not(target_os = "macos"))]
+        let dialog = dialog
             .add_filter("MSX disk images", DISK_IMAGE_EXTS)
             .add_filter("MSX tape images", TAPE_EXTS)
-            .pick_file()
-        {
+            .add_filter("All files", &["*"]);
+        if let Some(path) = dialog.pick_file() {
             self.open_path(&path);
         }
     }
