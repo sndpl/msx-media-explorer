@@ -154,7 +154,7 @@ fn run(cli: Cli) -> Result<(), String> {
             let image = open_readable(&args.input)?;
             let format = extension_format(&args.output).ok_or_else(|| {
                 format!(
-                    "{}: unknown output format; use a .dsk or .xsa extension",
+                    "{}: unknown output format; use a .dsk, .xsa, or .sav extension",
                     args.output.display()
                 )
             })?;

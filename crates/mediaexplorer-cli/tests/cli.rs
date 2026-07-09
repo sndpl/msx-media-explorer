@@ -176,6 +176,41 @@ fn single_letter_aliases_drive_every_command() {
 }
 
 #[test]
+fn sav_conversion_round_trips_and_edits_in_place() {
+    let tmp = TempDir::new("sav");
+    let dir = &tmp.0;
+    std::fs::write(dir.join("data.txt"), b"payload").unwrap();
+    std::fs::write(dir.join("extra.txt"), b"more").unwrap();
+
+    // dsk -> sav: the MSXPLAYer journal is sparse, and lists like any disk.
+    ok(dir, &["new", "disk.dsk"]);
+    ok(dir, &["add", "disk.dsk", "data.txt"]);
+    ok(dir, &["convert", "disk.dsk", "disk.sav"]);
+    assert!(
+        std::fs::metadata(dir.join("disk.sav")).unwrap().len()
+            < std::fs::metadata(dir.join("disk.dsk")).unwrap().len(),
+        "a mostly-empty journal must be smaller than the raw disk"
+    );
+    let listing = ok(dir, &["ls", "disk.sav"]);
+    assert!(listing.contains("DATA.TXT"), "{listing}");
+
+    // sav -> dsk restores the identical raw disk (the journal keeps the real
+    // boot sector because it differs from the synthetic BPB stub).
+    ok(dir, &["convert", "disk.sav", "back.dsk"]);
+    assert_eq!(
+        std::fs::read(dir.join("back.dsk")).unwrap(),
+        std::fs::read(dir.join("disk.dsk")).unwrap()
+    );
+
+    // Edits re-journal in place.
+    ok(dir, &["rm", "disk.sav", "DATA.TXT"]);
+    ok(dir, &["add", "disk.sav", "extra.txt"]);
+    let listing = ok(dir, &["ls", "disk.sav"]);
+    assert!(listing.contains("EXTRA.TXT"), "{listing}");
+    assert!(!listing.contains("DATA.TXT"), "{listing}");
+}
+
+#[test]
 fn bootsector_install_upgrades_dos1_to_dos2() {
     let tmp = TempDir::new("boot");
     let dir = &tmp.0;

@@ -47,7 +47,7 @@ pub enum Command {
     /// Show or install the MSX-DOS 1/2 boot sector of a disk image
     #[command(visible_alias = "b")]
     Bootsector(BootsectorArgs),
-    /// Convert between disk-image containers (.dsk, .img, .msx, .ddi, .xsa, .dmk)
+    /// Convert between disk-image containers (.dsk, .img, .msx, .ddi, .xsa, .dmk, .sav)
     #[command(visible_alias = "c")]
     Convert(ConvertArgs),
 }
@@ -173,9 +173,9 @@ pub struct BootsectorArgs {
 
 #[derive(Args)]
 pub struct ConvertArgs {
-    /// Source image (.dsk, .img, .msx, .ddi, .xsa, .dmk)
+    /// Source image (.dsk, .img, .msx, .ddi, .xsa, .dmk, .sav)
     pub input: PathBuf,
-    /// Destination image; the extension picks the format (.dsk or .xsa)
+    /// Destination image; the extension picks the format (.dsk, .xsa, or .sav)
     pub output: PathBuf,
     /// Overwrite an existing output file
     #[arg(short, long)]
