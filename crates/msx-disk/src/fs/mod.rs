@@ -6,6 +6,7 @@
 //! they come through transparently.
 
 mod boot;
+mod bootblocks;
 pub mod dos;
 pub mod entry;
 pub mod map;

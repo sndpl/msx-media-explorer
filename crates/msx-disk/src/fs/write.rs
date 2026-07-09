@@ -140,6 +140,41 @@ pub fn rename(normalized: &[u8], old_path: &str, new_path: &str) -> Result<Vec<u
     transaction(normalized, |root| root.rename(old_path, root, new_path))
 }
 
+/// Install an MSX-DOS 1 or MSX-DOS 2 boot block into sector 0, preserving the
+/// disk's own BPB (offsets 11..30) and boot-signature bytes.
+///
+/// The templates are real boot sectors ported from openMSX (see
+/// [`super::bootblocks`]). For DOS 2 the given `serial` becomes the volume
+/// serial number behind the `VOL_ID` marker, which is what makes MSX-DOS 2
+/// treat the disk as its own format (enabling `UNDEL` and the disk cache).
+/// Installing a boot block does not create a bootable *system* disk — that
+/// additionally requires the copyrighted MSXDOS(2).SYS / COMMAND(2).COM files.
+pub fn set_boot_block(
+    normalized: &[u8],
+    version: super::DosVersion,
+    serial: u32,
+) -> Result<Vec<u8>> {
+    if normalized.len() < SECTOR_SIZE {
+        return Err(Error::Malformed("image smaller than one sector".into()));
+    }
+    let mut sector0 = match version {
+        super::DosVersion::Dos1 => super::bootblocks::DOS1_BOOT_BLOCK,
+        super::DosVersion::Dos2 => super::bootblocks::DOS2_BOOT_BLOCK,
+    };
+    // Keep the disk's geometry description and its existing signature bytes;
+    // only the surrounding jump/OEM and boot-code regions come from the template.
+    sector0[11..30].copy_from_slice(&normalized[11..30]);
+    sector0[SECTOR_SIZE - 2..].copy_from_slice(&normalized[SECTOR_SIZE - 2..SECTOR_SIZE]);
+    if version == super::DosVersion::Dos2 {
+        let at = super::bootblocks::DOS2_SERIAL_OFFSET;
+        sector0[at..at + 4].copy_from_slice(&serial.to_le_bytes());
+    }
+
+    let mut out = normalized.to_vec();
+    out[..SECTOR_SIZE].copy_from_slice(&sector0);
+    Ok(out)
+}
+
 /// Create a blank, freshly-formatted MSX FAT12 disk image in the given format.
 ///
 /// The format pins the geometry and media descriptor (so the two 360KB formats
@@ -322,6 +357,59 @@ mod tests {
             create_blank(DiskFormat::Ss360).unwrap(),
             create_blank(DiskFormat::Ds360).unwrap()
         );
+    }
+
+    #[test]
+    fn set_boot_block_dos2_flips_detection_and_keeps_bpb_and_data() {
+        use crate::fs::{detect_dos_version, DosVersion};
+        use crate::image::geometry::DiskFormat;
+
+        let disk = create_blank(DiskFormat::Ds720).unwrap();
+        let with_file = add_files(&disk, &[("KEEP.TXT", b"keep me")]).unwrap();
+        assert_eq!(
+            detect_dos_version(&with_file[..SECTOR_SIZE], &[]),
+            DosVersion::Dos1,
+            "blank disks start out as DOS1"
+        );
+
+        let out = set_boot_block(&with_file, DosVersion::Dos2, 0x1234_5678).unwrap();
+        assert_eq!(
+            detect_dos_version(&out[..SECTOR_SIZE], &[]),
+            DosVersion::Dos2
+        );
+        // The BPB and the boot signature survive the install.
+        assert_eq!(&out[11..30], &with_file[11..30], "BPB must be preserved");
+        assert_eq!(&out[510..512], &with_file[510..512]);
+        // The caller's serial lands behind the VOL_ID marker.
+        assert_eq!(&out[0x27..0x2B], &0x1234_5678u32.to_le_bytes());
+        // Everything after sector 0 is untouched and the file still reads back.
+        assert_eq!(&out[SECTOR_SIZE..], &with_file[SECTOR_SIZE..]);
+        let fs = DiskFs::mount(out).unwrap();
+        assert_eq!(fs.read_file("KEEP.TXT").unwrap(), b"keep me");
+    }
+
+    #[test]
+    fn set_boot_block_dos1_downgrades_a_dos2_disk() {
+        use crate::fs::{detect_dos_version, DosVersion};
+        use crate::image::geometry::DiskFormat;
+
+        let disk = create_blank(DiskFormat::Ss360).unwrap();
+        let dos2 = set_boot_block(&disk, DosVersion::Dos2, 1).unwrap();
+        let dos1 = set_boot_block(&dos2, DosVersion::Dos1, 0).unwrap();
+        assert_eq!(
+            detect_dos_version(&dos1[..SECTOR_SIZE], &[]),
+            DosVersion::Dos1
+        );
+        // The 360KB BPB survived both installs (templates carry a 720KB BPB).
+        assert_eq!(&dos1[11..30], &disk[11..30]);
+        let fs = DiskFs::mount(dos1).unwrap();
+        assert!(fs.tree().unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_boot_block_rejects_short_buffer() {
+        use crate::fs::DosVersion;
+        assert!(set_boot_block(&[0u8; 16], DosVersion::Dos2, 0).is_err());
     }
 
     #[test]
