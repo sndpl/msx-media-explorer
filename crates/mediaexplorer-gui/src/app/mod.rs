@@ -123,7 +123,7 @@ const MAX_TEXT_BYTES: usize = 128 * 1024;
 /// Extensions recognized as openable disk images (for the Open dialog filter
 /// and to decide whether a dropped file should open vs. be added to the disk).
 const DISK_IMAGE_EXTS: &[&str] = &[
-    "dsk", "di1", "ds1", "di2", "ds2", "img", "msx", "ddi", "xsa", "dmk",
+    "dsk", "di1", "ds1", "di2", "ds2", "img", "msx", "ddi", "xsa", "dmk", "sav",
 ];
 
 /// Extensions recognized as openable tape images.
@@ -558,6 +558,9 @@ impl eframe::App for MediaExplorerApp {
                 self.disk
                     .as_ref()
                     .is_some_and(LoadedDisk::can_convert_to_xsa),
+                self.disk
+                    .as_ref()
+                    .is_some_and(LoadedDisk::can_convert_to_sav),
             );
         }
 

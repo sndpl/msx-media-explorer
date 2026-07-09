@@ -270,6 +270,7 @@ impl MediaExplorerApp {
             "file.open" => self.open_dialog(),
             "file.save_dsk" => self.save_as_dsk(),
             "file.save_xsa" => self.save_as_xsa(),
+            "file.save_sav" => self.save_as_sav(),
             "file.close" => self.close_document(),
             "recent.clear" => self.clear_recent(),
             "view.line_numbers" => self.settings.hex.show_line_numbers ^= true,
@@ -390,6 +391,17 @@ impl MediaExplorerApp {
                     self.save_as_xsa();
                     ui.close();
                 }
+                let can_sav = self
+                    .disk
+                    .as_ref()
+                    .is_some_and(LoadedDisk::can_convert_to_sav);
+                if ui
+                    .add_enabled(can_sav, egui::Button::new("Save as .sav…"))
+                    .clicked()
+                {
+                    self.save_as_sav();
+                    ui.close();
+                }
                 ui.separator();
                 if ui.button("Close").clicked() {
                     self.close_document();
@@ -455,22 +467,37 @@ impl MediaExplorerApp {
     }
 
     pub(crate) fn save_as_dsk(&mut self) {
-        self.save_converted("dsk", LoadedDisk::to_dsk_bytes);
+        self.save_converted("dsk", |d| Ok(d.to_dsk_bytes()));
     }
 
     pub(crate) fn save_as_xsa(&mut self) {
-        self.save_converted("xsa", LoadedDisk::to_xsa_bytes);
+        self.save_converted("xsa", |d| Ok(d.to_xsa_bytes()));
+    }
+
+    pub(crate) fn save_as_sav(&mut self) {
+        self.save_converted("sav", LoadedDisk::to_sav_bytes);
     }
 
     /// Shared helper for "Save as <ext>": derive a default name, run `encode`,
     /// and write to a chosen path.
-    pub(crate) fn save_converted(&mut self, ext: &str, encode: fn(&LoadedDisk) -> Vec<u8>) {
-        let Some((bytes, default)) = self.disk.as_ref().map(|d| {
+    pub(crate) fn save_converted(
+        &mut self,
+        ext: &str,
+        encode: fn(&LoadedDisk) -> msx_disk::Result<Vec<u8>>,
+    ) {
+        let Some((encoded, default)) = self.disk.as_ref().map(|d| {
             let title = d.title();
             let stem = title.rsplit_once('.').map(|(s, _)| s).unwrap_or(&title);
             (encode(d), format!("{stem}.{ext}"))
         }) else {
             return;
+        };
+        let bytes = match encoded {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = format!("Cannot convert to .{ext}: {e}");
+                return;
+            }
         };
         if let Some(path) = rfd::FileDialog::new().set_file_name(&default).save_file() {
             self.status = match std::fs::write(&path, &bytes) {

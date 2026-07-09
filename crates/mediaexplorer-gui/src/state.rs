@@ -186,6 +186,20 @@ impl LoadedDisk {
         !self.is_partitioned() && !matches!(self.format, ImageFormat::Xsa)
     }
 
+    /// Journal the disk's sectors into an MSXPLAYer `.sav` image.
+    pub fn to_sav_bytes(&self) -> msx_disk::Result<Vec<u8>> {
+        msx_disk::image::sav::encode(self.image.data())
+    }
+
+    /// Whether exporting to `.sav` is meaningful: a single-volume 720KB image
+    /// (the only geometry the MSXPLAYer journal describes) whose source is not
+    /// already `.sav`.
+    pub fn can_convert_to_sav(&self) -> bool {
+        !self.is_partitioned()
+            && !matches!(self.format, ImageFormat::Sav)
+            && self.image.data().len() == msx_disk::image::geometry::SIZE_720K
+    }
+
     /// The raw normalized sector data (for disk-wide search).
     pub fn data(&self) -> &[u8] {
         self.image.data()
@@ -585,6 +599,10 @@ mod tests {
         let dsk = LoadedDisk::open(&dsk_path).expect("open dsk");
         assert!(!dsk.can_convert_to_dsk(), "already a .dsk");
         assert!(dsk.can_convert_to_xsa(), ".dsk can be compressed to .xsa");
+        assert!(
+            !dsk.can_convert_to_sav(),
+            "a 360KB disk cannot be a .sav journal (720KB only)"
+        );
 
         // Compress it to .xsa and reopen: the reverse now holds.
         let xsa_path = std::env::temp_dir().join("mediaexplorer_saveas_test.xsa");
@@ -593,8 +611,25 @@ mod tests {
         assert!(xsa.can_convert_to_dsk(), ".xsa can be saved as .dsk");
         assert!(!xsa.can_convert_to_xsa(), "already a .xsa");
 
+        // A 720KB disk journals to .sav and back; a .sav is never re-offered.
+        let bytes720 = msx_disk::fs::write::create_blank(DiskFormat::Ds720).expect("blank 720");
+        let dsk720_path = std::env::temp_dir().join("mediaexplorer_saveas_test720.dsk");
+        std::fs::write(&dsk720_path, &bytes720).expect("write 720 dsk");
+        let dsk720 = LoadedDisk::open(&dsk720_path).expect("open 720 dsk");
+        assert!(
+            dsk720.can_convert_to_sav(),
+            "720KB .dsk can journal to .sav"
+        );
+        let sav_path = std::env::temp_dir().join("mediaexplorer_saveas_test.sav");
+        std::fs::write(&sav_path, dsk720.to_sav_bytes().expect("encode sav")).expect("write sav");
+        let sav = LoadedDisk::open(&sav_path).expect("open sav");
+        assert!(sav.can_convert_to_dsk(), ".sav can be saved as .dsk");
+        assert!(!sav.can_convert_to_sav(), "already a .sav");
+
         let _ = std::fs::remove_file(&dsk_path);
         let _ = std::fs::remove_file(&xsa_path);
+        let _ = std::fs::remove_file(&dsk720_path);
+        let _ = std::fs::remove_file(&sav_path);
     }
 
     #[test]
