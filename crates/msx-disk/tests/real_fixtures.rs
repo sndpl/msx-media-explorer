@@ -262,6 +262,37 @@ fn single_sided_dmk_with_garbage_bpb_mounts_and_lists_files() {
     );
 }
 
+#[test]
+fn raw_img_without_side_byte_opens_unchanged_and_mounts() {
+    // mmc_p2.img is a bare 32MB FAT16 partition pulled off an MMC/SD card given
+    // the `.img` extension. It has no leading side-count byte: sector 0 is the
+    // boot sector (`EB` jump, OEM "MMCSD_40") and the file is an exact sector
+    // multiple. The `.img` loader must recognize the prefix-less layout instead
+    // of stripping byte 0 as a side count, which would shift every sector and
+    // leave a non-sector-aligned buffer that fails to open at all.
+    let path = skip_if_absent!("mmc_p2.img");
+    let image = DiskImage::open(&path).expect("open raw .img");
+    assert_eq!(image.format(), ImageFormat::Img);
+    assert_eq!(
+        image.data().len(),
+        33_554_432,
+        "no byte may be stripped from a prefix-less raw .img"
+    );
+    assert_eq!(
+        image.data()[0],
+        0xEB,
+        "sector 0's boot-sector jump must survive at offset 0, not be consumed"
+    );
+
+    let fs = DiskFs::from_image(&image).expect("mount raw .img FAT16 volume");
+    let tree = fs.tree().expect("tree");
+    assert!(
+        tree.iter().any(|e| e.name == "System Volume Information"),
+        "expected the FAT16 volume's directory among: {:?}",
+        tree.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+}
+
 /// Decode every decodable member of an archive and confirm each one's length
 /// and CRC-16 match the values recorded in its header. A CRC match is strong
 /// evidence the decompressor is byte-for-byte correct.

@@ -23,7 +23,7 @@ use geometry::{Geometry, SECTOR_SIZE};
 pub enum ImageFormat {
     /// Raw sector dump: `.dsk`, `.di1`, `.ds1`, `.di2`, `.ds2`.
     Dsk,
-    /// Raw dump with a leading side-count byte: `.img`.
+    /// Raw dump, either with a leading side-count byte or none at all: `.img`.
     Img,
     /// 720KB image with documented interleave: `.msx`.
     Msx,
@@ -124,10 +124,7 @@ impl DiskImage {
     pub fn open_bytes(format: ImageFormat, bytes: Vec<u8>) -> Result<DiskImage> {
         let (prefix, data) = match format {
             ImageFormat::Dsk => (Vec::new(), dsk::normalize(bytes)?),
-            ImageFormat::Img => {
-                let prefix = bytes[..1.min(bytes.len())].to_vec();
-                (prefix, img::normalize(&bytes)?.0)
-            }
+            ImageFormat::Img => img::normalize(&bytes)?,
             ImageFormat::Msx => (Vec::new(), msx::normalize(bytes)?),
             ImageFormat::Ddi => {
                 let data = ddi::normalize(&bytes)?;
@@ -225,6 +222,20 @@ mod tests {
     }
 
     #[test]
+    fn img_raw_dump_without_side_byte_opens_unchanged() {
+        // A bare raw sector dump handed the `.img` extension (e.g. a FAT16
+        // partition pulled off an MMC/SD card): sector 0 begins with the boot
+        // sector's `EB` jump and the file is an exact sector multiple. The
+        // loader must not mistake that `EB` for a side-count byte and shift
+        // every sector by one.
+        let mut raw = synthetic_raw(SIZE_720K);
+        raw[0] = 0xEB;
+        let img = DiskImage::open_bytes(ImageFormat::Img, raw.clone()).unwrap();
+        assert_eq!(img.data(), &raw[..]);
+        assert_eq!(img.sector_count(), 1440);
+    }
+
+    #[test]
     fn ddi_strips_header_either_size() {
         let raw = synthetic_raw(SIZE_720K);
         for header in [0x1200usize, 0x1800] {
@@ -262,6 +273,16 @@ mod tests {
         bytes.extend_from_slice(&raw);
         let img = DiskImage::open_bytes(ImageFormat::Img, bytes.clone()).unwrap();
         assert_eq!(img.reencode(img.data()).unwrap(), bytes);
+    }
+
+    #[test]
+    fn reencode_img_raw_dump_is_identity() {
+        // A prefix-less raw `.img` must round-trip byte-for-byte, with no
+        // side-count byte invented on write-back.
+        let mut raw = synthetic_raw(SIZE_720K);
+        raw[0] = 0xEB;
+        let img = DiskImage::open_bytes(ImageFormat::Img, raw.clone()).unwrap();
+        assert_eq!(img.reencode(img.data()).unwrap(), raw);
     }
 
     #[test]
