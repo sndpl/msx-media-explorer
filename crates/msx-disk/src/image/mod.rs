@@ -11,6 +11,7 @@ mod dsk;
 pub mod geometry;
 mod img;
 mod msx;
+pub mod sav;
 pub mod xsa;
 
 use std::path::Path;
@@ -33,6 +34,8 @@ pub enum ImageFormat {
     Xsa,
     /// David Keil raw-track image: `.dmk`.
     Dmk,
+    /// MSXPLAYer virtual floppy, a sector diff journal: `.sav`.
+    Sav,
 }
 
 impl ImageFormat {
@@ -45,6 +48,7 @@ impl ImageFormat {
             "ddi" => Some(ImageFormat::Ddi),
             "xsa" => Some(ImageFormat::Xsa),
             "dmk" => Some(ImageFormat::Dmk),
+            "sav" => Some(ImageFormat::Sav),
             _ => None,
         }
     }
@@ -133,6 +137,7 @@ impl DiskImage {
             }
             ImageFormat::Xsa => (Vec::new(), xsa::decompress(&bytes)?),
             ImageFormat::Dmk => (Vec::new(), dmk::normalize(&bytes)?),
+            ImageFormat::Sav => (Vec::new(), sav::normalize(&bytes)?),
         };
         let geometry = Geometry::for_raw_len(data.len())
             .ok_or_else(|| Error::Malformed("normalized image is not sector-aligned".into()))?;
@@ -145,8 +150,9 @@ impl DiskImage {
     }
 
     /// Re-encode modified normalized sector data back into this image's
-    /// container framing, ready to write to disk. `.xsa` data is recompressed;
-    /// the other writable containers get their original prefix back verbatim.
+    /// container framing, ready to write to disk. `.xsa` data is recompressed,
+    /// `.sav` data is re-journaled; the other writable containers get their
+    /// original prefix back verbatim.
     ///
     /// Returns an error for `.dmk`, whose raw-track framing (gaps, CRCs,
     /// per-track layout) cannot be synthesized from sector data alone; save
@@ -158,13 +164,16 @@ impl DiskImage {
                 self.format
             )));
         }
-        if self.format == ImageFormat::Xsa {
-            return Ok(xsa::compress(data));
+        match self.format {
+            ImageFormat::Xsa => Ok(xsa::compress(data)),
+            ImageFormat::Sav => sav::encode(data),
+            _ => {
+                let mut out = Vec::with_capacity(self.prefix.len() + data.len());
+                out.extend_from_slice(&self.prefix);
+                out.extend_from_slice(data);
+                Ok(out)
+            }
         }
-        let mut out = Vec::with_capacity(self.prefix.len() + data.len());
-        out.extend_from_slice(&self.prefix);
-        out.extend_from_slice(data);
-        Ok(out)
     }
 
     /// Whether modified data can be written back to this image's container.
@@ -312,6 +321,23 @@ mod tests {
         assert!(compressed.starts_with(xsa::MAGIC));
         let reopened = DiskImage::open_bytes(ImageFormat::Xsa, compressed).unwrap();
         assert_eq!(reopened.data(), raw.as_slice());
+    }
+
+    #[test]
+    fn sav_journal_round_trips_a_real_filesystem() {
+        // A formatted disk with a file, journaled to .sav, must reopen with
+        // identical sector data (its real sector 0 differs from the synthetic
+        // BPB stub, so the journal preserves it) and re-journal identically.
+        let blank = crate::fs::write::create_blank(geometry::DiskFormat::Ds720).unwrap();
+        let disk = crate::fs::write::add_files(&blank, &[("HELLO.TXT", b"hi there")]).unwrap();
+
+        let journal = sav::encode(&disk).unwrap();
+        assert!(journal.len() < disk.len(), "journal is sparse");
+        let img = DiskImage::open_bytes(ImageFormat::Sav, journal.clone()).unwrap();
+        assert_eq!(img.format(), ImageFormat::Sav);
+        assert!(img.is_writable());
+        assert_eq!(img.data(), disk.as_slice());
+        assert_eq!(img.reencode(img.data()).unwrap(), journal);
     }
 
     #[test]
