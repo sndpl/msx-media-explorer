@@ -123,7 +123,15 @@ impl MediaExplorerApp {
     }
 
     pub(crate) fn new_disk(&mut self, format: DiskFormat) {
-        let bytes = match msx_disk::fs::write::create_blank(format) {
+        // New disks get a real MSX-DOS 2 boot block (VOL_ID + serial), so
+        // MSX-DOS 2's UNDEL and disk cache work; DOS 1 machines boot it too.
+        let bytes = match msx_disk::fs::write::create_blank(format).and_then(|blank| {
+            msx_disk::fs::write::set_boot_block(
+                &blank,
+                msx_disk::fs::DosVersion::Dos2,
+                new_disk_volume_serial(),
+            )
+        }) {
             Ok(b) => b,
             Err(e) => {
                 self.status = format!("Could not create disk: {e}");
@@ -465,7 +473,8 @@ impl MediaExplorerApp {
     /// tree's "Add files here…" menu.
     pub(crate) fn add_files_into(&mut self, target: &str) {
         if !self.disk_writable() {
-            self.status = "This image is read-only (.xsa or no source file).".to_string();
+            self.status =
+                "This image is read-only (.dmk, partitioned, or no source file).".to_string();
             return;
         }
         if let Some(paths) = rfd::FileDialog::new().pick_files() {
@@ -477,7 +486,8 @@ impl MediaExplorerApp {
     /// sanitized 8.3 name. Used by the right-click menu and drag-in.
     pub(crate) fn add_paths_into(&mut self, paths: &[PathBuf], target: &str) {
         if !self.disk_writable() {
-            self.status = "This image is read-only (.xsa or no source file).".to_string();
+            self.status =
+                "This image is read-only (.dmk, partitioned, or no source file).".to_string();
             return;
         }
         let mut files = Vec::new();
@@ -852,4 +862,14 @@ impl MediaExplorerApp {
             self.show_about = false;
         }
     }
+}
+
+/// Volume serial for a freshly created disk's DOS 2 boot sector, derived from
+/// the clock like MSX-DOS 2's FORMAT does (uniqueness, not secrecy, is the goal).
+fn new_disk_volume_serial() -> u32 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    (now.as_secs() as u32) ^ now.subsec_nanos()
 }
