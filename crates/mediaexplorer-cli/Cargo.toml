@@ -1,0 +1,24 @@
+[package]
+name = "mediaexplorer-cli"
+description = "Command-line companion to MSX Media Explorer: list, add, extract, and convert MSX disk images"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "mediaexplorer-cli"
+path = "src/main.rs"
+
+[dependencies]
+msx-disk = { path = "../msx-disk" }
+# The workspace's first argument parser. Nine subcommands with their own flags
+# plus generated --help/--version is exactly clap's remit; it is MIT/Apache
+# (GPL-compatible) and confined to this standalone binary, so neither the core
+# library nor the GUI gains a dependency.
+clap = { version = "4", features = ["derive"] }
+
+[lints]
+workspace = true
