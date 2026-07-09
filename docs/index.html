@@ -706,6 +706,7 @@
                             Raw <code>.dsk</code> dumps, <code>.img</code>,
                             <code>.msx</code>, <code>.ddi</code>, compressed
                             <code>.xsa</code>, raw-track <code>.dmk</code>,
+                            MSXPLAYer <code>.sav</code> virtual floppies,
                             openMSX multi-partition hard disks, and
                             <code>.cas</code>/<code>.tsx</code> tapes.
                         </p>
@@ -795,9 +796,9 @@
                         <h3>Convert &amp; create</h3>
                         <p>
                             Create blank 360&nbsp;KB / 720&nbsp;KB disks;
-                            convert any open image to <code>.dsk</code> or
+                            convert any open image to <code>.dsk</code>,
                             compressed <code>.xsa</code> (full XSA compressor
-                            included).
+                            included) or MSXPLAYer <code>.sav</code>.
                         </p>
                     </div>
                     <div class="feature">
@@ -853,6 +854,14 @@
                         <td>
                             David Keil raw-track image (read-only; normalized +
                             per-track analysis)
+                        </td>
+                    </tr>
+                    <tr>
+                        <td>.sav</td>
+                        <td>
+                            MSXPLAYer virtual floppy: a sector diff journal
+                            replayed onto an empty 720 KB disk (editable;
+                            re-journaled on save)
                         </td>
                     </tr>
                     <tr>

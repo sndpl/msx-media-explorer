@@ -65,11 +65,12 @@ disks), with all host I/O — open, guards, `reencode` + atomic write — in
 The data flows through three layers, each unaware of the one below its concern:
 
 1. **`image/`** — container layer. Every supported container (`.dsk`, `.img`,
-   `.msx`, `.ddi`, `.xsa`, `.dmk`) is read into a **normalized** flat buffer of
-   512-byte sectors in logical (LBA) order, exactly like a raw `.dsk`. Anything
-   that precedes the sector data (the `.img` side byte, the `.ddi` header) is
-   stashed in `DiskImage.prefix` so `reencode()` can write back into the same
-   container. `.xsa` is recompressed by `reencode()` on save; only raw-track
+   `.msx`, `.ddi`, `.xsa`, `.dmk`, `.sav`) is read into a **normalized** flat
+   buffer of 512-byte sectors in logical (LBA) order, exactly like a raw
+   `.dsk`. Anything that precedes the sector data (the `.img` side byte, the
+   `.ddi` header) is stashed in `DiskImage.prefix` so `reencode()` can write
+   back into the same container. `.xsa` is recompressed and the MSXPLAYer
+   `.sav` diff journal re-journaled by `reencode()` on save; only raw-track
    `.dmk` is read-only (`is_writable()` is false) — to edit one, save it as
    `.dsk`. Format is chosen by extension, falling back to magic-byte sniffing.
 

@@ -152,7 +152,7 @@ listed, extracted, and converted, but not modified in place.
 | `rm` / `mv` / `mkdir` | Remove (`-r` recursive), rename/move, create directories (`-p`) |
 | `new` | Create a blank formatted disk (`--format 720\|360ss\|360ds\|180`, `--dos 1\|2`) |
 | `bootsector` | Show the MSX-DOS generation, or install a DOS 1/2 boot sector (`--dos`) |
-| `convert` | Re-container an image: anything readable → `.dsk`, or `.dsk` → `.xsa` |
+| `convert` | Re-container an image: anything readable → `.dsk`, `.xsa`, or MSXPLAYer `.sav` |
 
 ```sh
 mediaexplorer-cli new game.dsk --format 720     # blank disk, MSX-DOS 2 boot sector
@@ -217,6 +217,7 @@ Every subcommand documents itself: `mediaexplorer-cli <command> --help`.
 | `.ddi` | DiskDupe image (header + raw) |
 | `.xsa` | Compressed disk image (decompressed on open, recompressed on save) |
 | `.dmk` | David Keil raw-track image (read-only; normalized + analyzed) |
+| `.sav` | MSXPLAYer virtual floppy: a sector diff journal replayed onto an empty 720KB disk (boot sector synthesized when absent; re-journaled on save) |
 | `.dsk` (hard disk) | openMSX `MSX_IDE` multi-partition image (read-only; FAT12/FAT16) |
 | `.cas` | MSX cassette tape image (files + block overview) |
 | `.tsx` | MSX tape image (TZX 1.21 with `#4B` Kansas City blocks) |
