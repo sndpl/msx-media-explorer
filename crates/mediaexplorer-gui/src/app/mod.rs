@@ -17,10 +17,14 @@ use msx_disk::view::text::{self, ControlMode};
 use msx_disk::{charset, DirEntry, ImageFormat, MsxCharset};
 
 use crate::hexlayout::{HexLayout, HexRegion};
+use crate::i18n::Lang;
 use crate::settings::{ByteGrouping, HexViewOptions, Settings, SETTINGS_KEY};
 use crate::state::{humanize_bytes, LoadedDisk, LoadedTape};
 use crate::tree_filter;
 use crate::tree_nav::{self, NavKey, TreeNav};
+// The translation macros, in scope for every submodule via `use super::*`.
+pub(crate) use crate::i18n::tn;
+pub(crate) use rust_i18n::t;
 
 // `MediaExplorerApp`'s methods are split across these submodules; each holds a
 // focused `impl MediaExplorerApp` block. The free render/format helpers live in
@@ -565,7 +569,7 @@ impl eframe::App for MediaExplorerApp {
         // macOS: act on any native menu item activated since the last frame.
         #[cfg(target_os = "macos")]
         for id in crate::macos::take_menu_events() {
-            self.handle_menu_event(&id);
+            self.handle_menu_event(&id, ui.ctx());
         }
         // Keep the native Text Encoding menu's checks/enabled state in sync; the
         // charset can change outside a menu event (auto-detect on disk load).

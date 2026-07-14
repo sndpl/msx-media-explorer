@@ -27,9 +27,16 @@ rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] 
 # eframe's `persistence` feature already pulls into the tree.
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }
+# UI internationalization: compile-time-embedded YAML catalogs under `locales/`
+# plus the `t!` lookup macro (MIT, pure Rust). Adding a language is one .yml file.
+rust-i18n = "3"
+# Default the UI language to the OS locale on first run (MIT/Apache, pure Rust).
+sys-locale = "0.3"
 
 [dev-dependencies]
 serde_json = "1"
+# Test-only: parse the locale catalogs to assert their key sets match.
+serde_yaml = "0.9"
 
 # Native drag-out to the OS file manager (macOS + Windows only; Linux falls
 # back to the Extract dialog).

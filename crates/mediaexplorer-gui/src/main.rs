@@ -4,6 +4,7 @@
 mod app;
 mod dnd;
 mod hexlayout;
+mod i18n;
 #[cfg(target_os = "macos")]
 mod macos;
 mod settings;
@@ -12,6 +13,11 @@ mod tree_filter;
 mod tree_nav;
 
 use app::MediaExplorerApp;
+
+// UI translations: embed every `locales/*.yml` catalog at compile time and fall
+// back to English for any key a translation is missing. The `t!` macro looks up
+// the active locale set by `rust_i18n::set_locale` (see `MediaExplorerApp::new`).
+rust_i18n::i18n!("locales", fallback = "en");
 
 /// Product name shown in the window title and (on macOS) the app menu and
 /// About panel.

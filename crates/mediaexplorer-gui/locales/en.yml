@@ -1,0 +1,142 @@
+# ---------------------------------------------------------------------------
+# UI language catalog (source of truth); the file name (en) is the locale.
+# Keys are shared by the macOS native menu and the in-window menu bar.
+# Interpolation uses %{name}; pluralized messages use `one`/`other` selected by
+# the `count` argument.
+# ---------------------------------------------------------------------------
+
+menu:
+  file: File
+  view: View
+  help: Help
+  language: Language
+  text_encoding: Text Encoding
+  new_disk: New Disk…
+  new_window: New Window
+  open: Open Disk/Tape Image…
+  open_recent: Open Recent
+  no_recent_files: No Recent Files
+  clear_menu: Clear Menu
+  save_as_dsk: Save as .dsk…
+  save_as_xsa: Save as .xsa…
+  save_as_sav: Save as .sav…
+  close: Close
+  about: About MSX Media Explorer
+  keyboard_shortcuts: Keyboard Shortcuts
+  # View submenu
+  line_numbers: Line Numbers
+  hexadecimal: Hexadecimal
+  plain_text: Plain Text
+  status_bar: Status Bar
+  columns: Columns
+  hide_null_bytes: Hide Null Bytes
+  line_number_format: Line Number Format
+  decimal: Decimal
+  bytes_per_row: Bytes per Row
+  byte_grouping: Byte Grouping
+  none: None
+  # Text Encoding submenu
+  automatic: Automatic
+
+view_tab:
+  files: Files
+  sectors: Sectors
+  map: Map
+  stats: Stats
+  analyze: Analyze
+  blocks: Blocks
+
+button:
+  cancel: Cancel
+  delete: Delete
+  rename: Rename
+  create: Create
+  clear: Clear
+  apply_fix: Apply fix
+  ignore: Ignore
+  find: Find
+  copy_image: Copy image
+  save_png: Save PNG…
+  extract: Extract…
+  rename_menu: Rename…
+  remove_directory: Remove directory
+  add_files_here: Add files here…
+  add_directory: Add directory…
+
+dialog:
+  new_disk_title: New disk
+  new_disk_prompt: "Create a new, empty MSX disk image:"
+  confirm_delete_title: Confirm delete
+  delete_one: "Delete \"%{name}\" from the disk?"
+  delete_many: "Delete these %{count} items from the disk?"
+  delete_rewrites: This rewrites the image file on disk.
+  rename_title: Rename file
+  rename_prompt: "Rename \"%{name}\" to:"
+  name_hint: 8-character name, optional 3-character extension.
+  new_dir_title: New directory
+  new_dir_prompt: "Create directory in %{parent}:"
+  new_dir_warning: "Subdirectories need MSX-DOS 2; MSX-DOS 1 cannot read them."
+  size_fix_title: Disk geometry mismatch
+  size_fix_declared: "Boot sector declares:"
+  size_fix_image: "Image file size:"
+  size_fix_real: "Real size (from layout):"
+  size_fix_truncate: "Shrink the image to %{size} (the unused, all-zero tail is discarded) and update the boot sector to match."
+  size_fix_pad: "Pad the image up to %{size} (it appears truncated) and update the boot sector to match."
+  size_fix_fixboot: "Correct the boot sector to %{size}; the image file size is left unchanged."
+  about_title: About
+  about_tagline: Browse and edit MSX disk and tape images.
+  about_version: Version
+  about_built: Built
+  about_commit: Commit
+  shortcuts_title: Keyboard Shortcuts
+
+status:
+  extracted_to:
+    one: "Extracted %{count} file to %{dir}"
+    other: "Extracted %{count} files to %{dir}"
+  extracted_to_failed:
+    one: "Extracted %{count} file to %{dir}, %{failed} failed"
+    other: "Extracted %{count} files to %{dir}, %{failed} failed"
+  extracted_one_to: "Extracted %{name} to %{dir}"
+  extract_failed: "Failed to extract: %{error}"
+  nothing_to_extract: Nothing to extract
+  cannot_read: "Cannot read %{path}"
+  copied_to_clipboard: Copied to clipboard
+  clipboard_error: "Clipboard error: %{error}"
+  no_matches: "No matches for \"%{query}\""
+  matches:
+    one: "%{count} match"
+    other: "%{count} matches"
+  no_disk_open: No disk open.
+  files_selected:
+    one: "%{count} file selected"
+    other: "%{count} files selected"
+  deleted:
+    one: "Deleted %{name}"
+    other: "Deleted %{count} files"
+
+filter:
+  label: "Filter:"
+  clear_tooltip: Clear filter
+  no_matches: "No files match \"%{pattern}\"."
+
+shortcut:
+  move: Move through the file list
+  collapse: Collapse / expand a directory
+  page: Jump one screen of rows
+  home_end: Jump to the first / last row
+  activate: Open or close a directory
+  parent: Jump to the containing directory
+  type_ahead: Jump to the next name starting with the typed letters
+  rename: Rename (writable disks)
+  delete: Delete (writable disks)
+  select_all: Select all visible files
+  extract: Extract the current file or selection
+  filter: Focus the filter box
+  escape: Close dialog / clear filter / clear selection
+  help: This window
+
+file_dialog:
+  disk_images: MSX disk images
+  tape_images: MSX tape images
+  all_files: All files

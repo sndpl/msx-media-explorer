@@ -1,0 +1,137 @@
+# Nederlandse vertaling; de bestandsnaam (nl) is de locale. Sleutels moeten
+# gelijk lopen met en.yml (een test bewaakt dat). Ontbrekende sleutels vallen
+# terug op het Engels.
+
+menu:
+  file: Bestand
+  view: Beeld
+  help: Help
+  language: Taal
+  text_encoding: Tekencodering
+  new_disk: Nieuwe schijf…
+  new_window: Nieuw venster
+  open: Schijf-/tape-image openen…
+  open_recent: Recent geopend
+  no_recent_files: Geen recente bestanden
+  clear_menu: Menu wissen
+  save_as_dsk: Opslaan als .dsk…
+  save_as_xsa: Opslaan als .xsa…
+  save_as_sav: Opslaan als .sav…
+  close: Sluiten
+  about: Over MSX Media Explorer
+  keyboard_shortcuts: Sneltoetsen
+  line_numbers: Regelnummers
+  hexadecimal: Hexadecimaal
+  plain_text: Platte tekst
+  status_bar: Statusbalk
+  columns: Kolommen
+  hide_null_bytes: Nulbytes verbergen
+  line_number_format: Regelnummeropmaak
+  decimal: Decimaal
+  bytes_per_row: Bytes per rij
+  byte_grouping: Bytegroepering
+  none: Geen
+  automatic: Automatisch
+
+view_tab:
+  files: Bestanden
+  sectors: Sectoren
+  map: Kaart
+  stats: Statistiek
+  analyze: Analyse
+  blocks: Blokken
+
+button:
+  cancel: Annuleren
+  delete: Verwijderen
+  rename: Hernoemen
+  create: Aanmaken
+  clear: Wissen
+  apply_fix: Reparatie toepassen
+  ignore: Negeren
+  find: Zoeken
+  copy_image: Afbeelding kopiëren
+  save_png: PNG opslaan…
+  extract: Uitpakken…
+  rename_menu: Hernoemen…
+  remove_directory: Map verwijderen
+  add_files_here: Bestanden hier toevoegen…
+  add_directory: Map toevoegen…
+
+dialog:
+  new_disk_title: Nieuwe schijf
+  new_disk_prompt: "Maak een nieuwe, lege MSX-schijfimage:"
+  confirm_delete_title: Verwijderen bevestigen
+  delete_one: "\"%{name}\" van de schijf verwijderen?"
+  delete_many: "Deze %{count} items van de schijf verwijderen?"
+  delete_rewrites: Dit herschrijft het imagebestand op schijf.
+  rename_title: Bestand hernoemen
+  rename_prompt: "\"%{name}\" hernoemen naar:"
+  name_hint: Naam van 8 tekens, optionele extensie van 3 tekens.
+  new_dir_title: Nieuwe map
+  new_dir_prompt: "Map aanmaken in %{parent}:"
+  new_dir_warning: "Submappen vereisen MSX-DOS 2; MSX-DOS 1 kan ze niet lezen."
+  size_fix_title: Schijfgeometrie komt niet overeen
+  size_fix_declared: "Bootsector geeft op:"
+  size_fix_image: "Grootte imagebestand:"
+  size_fix_real: "Werkelijke grootte (uit indeling):"
+  size_fix_truncate: "Verklein de image tot %{size} (de ongebruikte staart van enkel nullen wordt weggelaten) en pas de bootsector hierop aan."
+  size_fix_pad: "Vul de image aan tot %{size} (hij lijkt afgekapt) en pas de bootsector hierop aan."
+  size_fix_fixboot: "Corrigeer de bootsector naar %{size}; de grootte van het imagebestand blijft ongewijzigd."
+  about_title: Over
+  about_tagline: Blader door en bewerk MSX-schijf- en tape-images.
+  about_version: Versie
+  about_built: Gebouwd
+  about_commit: Commit
+  shortcuts_title: Sneltoetsen
+
+status:
+  extracted_to:
+    one: "%{count} bestand uitgepakt naar %{dir}"
+    other: "%{count} bestanden uitgepakt naar %{dir}"
+  extracted_to_failed:
+    one: "%{count} bestand uitgepakt naar %{dir}, %{failed} mislukt"
+    other: "%{count} bestanden uitgepakt naar %{dir}, %{failed} mislukt"
+  extracted_one_to: "%{name} uitgepakt naar %{dir}"
+  extract_failed: "Uitpakken mislukt: %{error}"
+  nothing_to_extract: Niets om uit te pakken
+  cannot_read: "Kan %{path} niet lezen"
+  copied_to_clipboard: Gekopieerd naar klembord
+  clipboard_error: "Klembordfout: %{error}"
+  no_matches: "Geen resultaten voor \"%{query}\""
+  matches:
+    one: "%{count} resultaat"
+    other: "%{count} resultaten"
+  no_disk_open: Geen schijf geopend.
+  files_selected:
+    one: "%{count} bestand geselecteerd"
+    other: "%{count} bestanden geselecteerd"
+  deleted:
+    one: "%{name} verwijderd"
+    other: "%{count} bestanden verwijderd"
+
+filter:
+  label: "Filter:"
+  clear_tooltip: Filter wissen
+  no_matches: "Geen bestanden komen overeen met \"%{pattern}\"."
+
+shortcut:
+  move: Door de bestandenlijst bewegen
+  collapse: Map in-/uitklappen
+  page: Eén scherm met rijen verspringen
+  home_end: Naar de eerste / laatste rij
+  activate: Een map openen of sluiten
+  parent: Naar de bovenliggende map
+  type_ahead: Naar de volgende naam die met de getypte letters begint
+  rename: Hernoemen (beschrijfbare schijven)
+  delete: Verwijderen (beschrijfbare schijven)
+  select_all: Alle zichtbare bestanden selecteren
+  extract: Huidig bestand of selectie uitpakken
+  filter: Filtervak focussen
+  escape: Dialoog sluiten / filter wissen / selectie wissen
+  help: Dit venster
+
+file_dialog:
+  disk_images: MSX-schijfimages
+  tape_images: MSX-tape-images
+  all_files: Alle bestanden

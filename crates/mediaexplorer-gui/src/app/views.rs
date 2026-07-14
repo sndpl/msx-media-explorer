@@ -311,18 +311,18 @@ pub(crate) fn about_meta_grid(ui: &mut egui::Ui) {
         .num_columns(2)
         .spacing([12.0, 6.0])
         .show(ui, |ui| {
-            meta_label(ui, "Version");
+            meta_label(ui, t!("dialog.about_version"));
             ui.label(egui::RichText::new(VERSION).monospace());
             ui.end_row();
 
             if !BUILD_DATE.is_empty() {
-                meta_label(ui, "Built");
+                meta_label(ui, t!("dialog.about_built"));
                 ui.label(egui::RichText::new(BUILD_DATE).monospace());
                 ui.end_row();
             }
 
             if !GIT_HASH.is_empty() {
-                meta_label(ui, "Commit");
+                meta_label(ui, t!("dialog.about_commit"));
                 ui.label(egui::RichText::new(GIT_HASH).monospace());
                 ui.end_row();
             }
@@ -330,7 +330,7 @@ pub(crate) fn about_meta_grid(ui: &mut egui::Ui) {
 }
 
 /// A right-aligned, muted label cell for [`about_meta_grid`].
-pub(crate) fn meta_label(ui: &mut egui::Ui, text: &str) {
+pub(crate) fn meta_label(ui: &mut egui::Ui, text: impl Into<String>) {
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.label(egui::RichText::new(text).weak());
     });

@@ -10,6 +10,10 @@ impl MediaExplorerApp {
                 app.settings = settings;
             }
         }
+        // Set the active UI locale before any strings are produced (the macOS
+        // menu below is built from it): the explicit choice, else the OS locale,
+        // else English.
+        rust_i18n::set_locale(app.active_language().code());
         #[cfg(target_os = "macos")]
         {
             app.mac_menu = Some(crate::macos::build_menu(&cc.egui_ctx, &app.settings));

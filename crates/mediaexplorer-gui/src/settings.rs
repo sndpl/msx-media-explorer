@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::Lang;
+
 /// Maximum number of entries kept in the recent-files list.
 pub const MAX_RECENT: usize = 10;
 
@@ -26,6 +28,9 @@ pub struct Settings {
     pub show_status_bar: bool,
     /// Hex-view display options.
     pub hex: HexViewOptions,
+    /// Chosen UI language. `None` means "follow the OS locale", resolved once at
+    /// startup; a `Some` value is the user's explicit, persisted choice.
+    pub language: Option<Lang>,
 }
 
 impl Default for Settings {
@@ -34,6 +39,7 @@ impl Default for Settings {
             recent: Vec::new(),
             show_status_bar: true,
             hex: HexViewOptions::default(),
+            language: None,
         }
     }
 }
@@ -232,9 +238,21 @@ mod tests {
         s.hex.line_number_hex = false;
         s.hex.grouping = ByteGrouping::Of(4);
         s.show_status_bar = false;
+        s.language = Some(Lang::Dutch);
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
+    }
+
+    #[test]
+    fn language_defaults_to_none_and_old_configs_still_parse() {
+        // Follow-the-OS is the default.
+        assert_eq!(Settings::default().language, None);
+        // A config written before the `language` field existed still loads
+        // (serde-default fills it in), so there is no migration.
+        let old = r#"{"recent":[],"show_status_bar":true,"hex":{}}"#;
+        let s: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(s.language, None);
     }
 
     #[test]

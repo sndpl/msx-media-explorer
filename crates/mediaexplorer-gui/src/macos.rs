@@ -17,7 +17,9 @@ use objc2_app_kit::{NSApplication, NSImage};
 use objc2_foundation::{NSData, NSProcessInfo, NSString};
 
 use msx_disk::MsxCharset;
+use rust_i18n::t;
 
+use crate::i18n::Lang;
 use crate::settings::{ByteGrouping, Settings, ROW_SIZES};
 
 /// egui context, stored so the menu handler can wake a repaint when the app is
@@ -124,7 +126,7 @@ impl MacMenu {
         while self.recent.remove_at(0).is_some() {}
         self.recent_items.clear();
         if recent.is_empty() {
-            let empty = MenuItem::new("No Recent Files", false, None);
+            let empty = MenuItem::new(t!("menu.no_recent_files"), false, None);
             let _ = self.recent.append(&empty);
             self.recent_items.push(empty);
             return;
@@ -135,7 +137,7 @@ impl MacMenu {
             self.recent_items.push(item);
         }
         let _ = self.recent.append(&PredefinedMenuItem::separator());
-        let clear = MenuItem::with_id("recent.clear", "Clear Menu", true, None);
+        let clear = MenuItem::with_id("recent.clear", t!("menu.clear_menu"), true, None);
         let _ = self.recent.append(&clear);
         self.recent_items.push(clear);
     }
@@ -194,7 +196,7 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
     // muda otherwise derives their app name from `NSRunningApplication`, which is
     // the executable name ("mediaexplorer") for an unbundled dev binary.
     let app_menu = Submenu::new(crate::APP_NAME, true);
-    let about = MenuItem::with_id("app.about", "About MSX Media Explorer", true, None);
+    let about = MenuItem::with_id("app.about", t!("menu.about"), true, None);
     let hide_label = format!("Hide {}", crate::APP_NAME);
     let quit_label = format!("Quit {}", crate::APP_NAME);
     let _ = app_menu.append_items(&[
@@ -211,67 +213,82 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
 
     // File menu. The save-as items start disabled (no document yet) and are
     // toggled per-document by `sync_save_items`.
-    let file = Submenu::new("File", true);
-    let recent = Submenu::new("Open Recent", true);
-    let save_dsk = MenuItem::with_id("file.save_dsk", "Save as .dsk…", false, None);
-    let save_xsa = MenuItem::with_id("file.save_xsa", "Save as .xsa…", false, None);
-    let save_sav = MenuItem::with_id("file.save_sav", "Save as .sav…", false, None);
+    let file = Submenu::new(t!("menu.file"), true);
+    let recent = Submenu::new(t!("menu.open_recent"), true);
+    let save_dsk = MenuItem::with_id("file.save_dsk", t!("menu.save_as_dsk"), false, None);
+    let save_xsa = MenuItem::with_id("file.save_xsa", t!("menu.save_as_xsa"), false, None);
+    let save_sav = MenuItem::with_id("file.save_sav", t!("menu.save_as_sav"), false, None);
     let _ = file.append_items(&[
-        &MenuItem::with_id("file.new", "New Disk…", true, Some(cmd(Code::KeyN))),
+        &MenuItem::with_id("file.new", t!("menu.new_disk"), true, Some(cmd(Code::KeyN))),
         &MenuItem::with_id(
             "file.new_window",
-            "New Window",
+            t!("menu.new_window"),
             true,
             Some(cmd_shift(Code::KeyN)),
         ),
-        &MenuItem::with_id(
-            "file.open",
-            "Open Disk/Tape Image…",
-            true,
-            Some(cmd(Code::KeyO)),
-        ),
+        &MenuItem::with_id("file.open", t!("menu.open"), true, Some(cmd(Code::KeyO))),
         &recent,
         &PredefinedMenuItem::separator(),
         &save_dsk,
         &save_xsa,
         &save_sav,
         &PredefinedMenuItem::separator(),
-        &MenuItem::with_id("file.close", "Close", true, Some(cmd(Code::KeyW))),
+        &MenuItem::with_id("file.close", t!("menu.close"), true, Some(cmd(Code::KeyW))),
     ]);
 
     // View menu.
-    let view = Submenu::new("View", true);
-    let line_numbers = check("view.line_numbers", "Line Numbers", settings, &mut checks);
-    let hex = check("view.hex", "Hexadecimal", settings, &mut checks);
-    let ascii = check("view.ascii", "Plain Text", settings, &mut checks);
-    let status = check("view.status_bar", "Status Bar", settings, &mut checks);
-    let columns = check("view.columns", "Columns", settings, &mut checks);
-    let hide_nulls = check("view.hide_nulls", "Hide Null Bytes", settings, &mut checks);
+    let view = Submenu::new(t!("menu.view"), true);
+    let line_numbers = check(
+        "view.line_numbers",
+        t!("menu.line_numbers"),
+        settings,
+        &mut checks,
+    );
+    let hex = check("view.hex", t!("menu.hexadecimal"), settings, &mut checks);
+    let ascii = check("view.ascii", t!("menu.plain_text"), settings, &mut checks);
+    let status = check(
+        "view.status_bar",
+        t!("menu.status_bar"),
+        settings,
+        &mut checks,
+    );
+    let columns = check("view.columns", t!("menu.columns"), settings, &mut checks);
+    let hide_nulls = check(
+        "view.hide_nulls",
+        t!("menu.hide_null_bytes"),
+        settings,
+        &mut checks,
+    );
 
-    let lnf = Submenu::new("Line Number Format", true);
-    let lnf_dec = check("view.lnf.dec", "Decimal", settings, &mut checks);
-    let lnf_hex = check("view.lnf.hex", "Hexadecimal", settings, &mut checks);
+    let lnf = Submenu::new(t!("menu.line_number_format"), true);
+    let lnf_dec = check("view.lnf.dec", t!("menu.decimal"), settings, &mut checks);
+    let lnf_hex = check(
+        "view.lnf.hex",
+        t!("menu.hexadecimal"),
+        settings,
+        &mut checks,
+    );
     let _ = lnf.append_items(&[&lnf_dec, &lnf_hex]);
 
-    let bpr = Submenu::new("Bytes per Row", true);
+    let bpr = Submenu::new(t!("menu.bytes_per_row"), true);
     for n in ROW_SIZES {
         let item = check(
             Box::leak(format!("view.bpr.{n}").into_boxed_str()),
-            &n.to_string(),
+            n.to_string(),
             settings,
             &mut checks,
         );
         let _ = bpr.append(&item);
     }
 
-    let group = Submenu::new("Byte Grouping", true);
-    let group_none = check("view.group.none", "None", settings, &mut checks);
+    let group = Submenu::new(t!("menu.byte_grouping"), true);
+    let group_none = check("view.group.none", t!("menu.none"), settings, &mut checks);
     let _ = group.append(&group_none);
     for n in ByteGrouping::SIZES {
         let item = check(
             // Leak a 'static id string for each fixed grouping size.
             Box::leak(format!("view.group.{n}").into_boxed_str()),
-            &n.to_string(),
+            n.to_string(),
             settings,
             &mut checks,
         );
@@ -295,10 +312,12 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
     // Text Encoding menu. Built in the app's startup state (auto-detect on, no
     // disk yet); `sync_encoding` keeps it current as documents open and the user
     // picks a code page. Ids are `encoding.{i}`, `i` indexing `MsxCharset::ALL`.
-    let encoding = Submenu::new("Text Encoding", true);
-    let encoding_auto = CheckMenuItem::with_id("encoding.auto", "Automatic", false, true, None);
+    let encoding = Submenu::new(t!("menu.text_encoding"), true);
+    let encoding_auto =
+        CheckMenuItem::with_id("encoding.auto", t!("menu.automatic"), false, true, None);
     let _ = encoding.append_items(&[&encoding_auto, &PredefinedMenuItem::separator()]);
     let mut encodings: Vec<CheckMenuItem> = Vec::new();
+    // MSX code-page names are proper region names — not localized.
     for (i, cs) in MsxCharset::ALL.iter().enumerate() {
         let item = CheckMenuItem::with_id(
             Box::leak(format!("encoding.{i}").into_boxed_str()),
@@ -311,19 +330,35 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
         encodings.push(item);
     }
 
+    // Language menu. The whole menu is rebuilt on a language change (labels are
+    // baked here), so the active item is simply checked at build time.
+    let active_lang = Lang::from_locale_tag(rust_i18n::locale().as_ref()).unwrap_or(Lang::English);
+    let language = Submenu::new(t!("menu.language"), true);
+    for (i, lang) in Lang::ALL.iter().enumerate() {
+        let _ = language.append(&CheckMenuItem::with_id(
+            Box::leak(format!("lang.{i}").into_boxed_str()),
+            lang.native_name(),
+            true,
+            *lang == active_lang,
+            None,
+        ));
+    }
+
     // Window menu (macOS injects Minimize/Zoom/Bring All to Front).
     let window = Submenu::new("Window", true);
 
     // Help menu.
-    let help = Submenu::new("Help", true);
+    let help = Submenu::new(t!("menu.help"), true);
     let _ = help.append(&MenuItem::with_id(
         "help.shortcuts",
-        "Keyboard Shortcuts",
+        t!("menu.keyboard_shortcuts"),
         true,
         None,
     ));
 
-    let _ = menu.append_items(&[&app_menu, &file, &view, &encoding, &window, &help]);
+    let _ = menu.append_items(&[
+        &app_menu, &file, &view, &encoding, &language, &window, &help,
+    ]);
     menu.init_for_nsapp();
     window.set_as_windows_menu_for_nsapp();
 
@@ -346,7 +381,7 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
 /// syncing, and return it for placement in the menu.
 fn check(
     id: &'static str,
-    label: &str,
+    label: impl AsRef<str>,
     settings: &Settings,
     checks: &mut Vec<(&'static str, CheckMenuItem)>,
 ) -> CheckMenuItem {

@@ -45,7 +45,7 @@ impl MediaExplorerApp {
     /// Extract a single file via a save-as dialog (lets the user rename it).
     pub(crate) fn extract_one(&mut self, path: &str) {
         let Some(bytes) = self.read_doc_file(path) else {
-            self.status = format!("Cannot read {path}");
+            self.status = t!("status.cannot_read", path => path).to_string();
             return;
         };
         let modified = self.entry_for_path(path).and_then(|e| e.modified);
@@ -62,8 +62,11 @@ impl MediaExplorerApp {
             .save_file()
         {
             self.status = match write_extracted(&target, &bytes, modified) {
-                Ok(()) => format!("Extracted {} to {}", default_name, target.display()),
-                Err(e) => format!("Failed to extract: {e}"),
+                Ok(()) => {
+                    t!("status.extracted_one_to", name => default_name, dir => target.display())
+                        .to_string()
+                }
+                Err(e) => t!("status.extract_failed", error => e).to_string(),
             };
         }
     }
@@ -73,7 +76,7 @@ impl MediaExplorerApp {
     pub(crate) fn extract_tree(&mut self, paths: &[String]) {
         let planned = self.plan_extraction(paths);
         if planned.is_empty() {
-            self.status = "Nothing to extract".to_string();
+            self.status = t!("status.nothing_to_extract").to_string();
             return;
         }
         let Some(dir) = rfd::FileDialog::new().pick_folder() else {
@@ -81,12 +84,10 @@ impl MediaExplorerApp {
         };
         let (ok, failed) = self.write_extractions(&dir, &planned);
         self.status = if failed == 0 {
-            format!("Extracted {ok} file(s) to {}", dir.display())
+            tn!("status.extracted_to", ok, dir => dir.display()).to_string()
         } else {
-            format!(
-                "Extracted {ok} file(s) to {}, {failed} failed",
-                dir.display()
-            )
+            tn!("status.extracted_to_failed", ok, dir => dir.display(), failed => failed)
+                .to_string()
         };
     }
 
@@ -315,8 +316,8 @@ impl MediaExplorerApp {
             None => Err("clipboard unavailable".to_string()),
         };
         self.status = match result {
-            Ok(()) => "Copied to clipboard".to_string(),
-            Err(e) => format!("Clipboard error: {e}"),
+            Ok(()) => t!("status.copied_to_clipboard").to_string(),
+            Err(e) => t!("status.clipboard_error", error => e).to_string(),
         };
     }
 

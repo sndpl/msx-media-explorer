@@ -27,11 +27,11 @@ impl MediaExplorerApp {
         };
         self.search_match_lines.clear();
         if matches.is_empty() {
-            self.status = format!("No matches for \"{}\"", self.search_query);
+            self.status = t!("status.no_matches", query => self.search_query.clone()).to_string();
             self.search_matches.clear();
             return;
         }
-        self.status = format!("{} match(es)", matches.len());
+        self.status = tn!("status.matches", matches.len()).to_string();
         self.search_matches = matches;
         self.search_pos = 0;
         self.jump_to_current_match();
@@ -43,12 +43,12 @@ impl MediaExplorerApp {
         };
         let matches = search::find_text(text.as_bytes(), &self.search_query, true);
         if matches.is_empty() {
-            self.status = format!("No matches for \"{}\"", self.search_query);
+            self.status = t!("status.no_matches", query => self.search_query.clone()).to_string();
             self.search_matches.clear();
             self.search_match_lines.clear();
             return;
         }
-        self.status = format!("{} match(es)", matches.len());
+        self.status = tn!("status.matches", matches.len()).to_string();
         self.search_match_len = self.search_query.len();
         self.search_match_lines = matches
             .iter()
@@ -103,6 +103,32 @@ impl MediaExplorerApp {
             .as_ref()
             .map(LoadedDisk::writable)
             .unwrap_or(false)
+    }
+
+    /// The active UI language: the user's explicit choice, else the OS locale,
+    /// else English.
+    pub(crate) fn active_language(&self) -> Lang {
+        self.settings.language.unwrap_or_else(|| {
+            sys_locale::get_locale()
+                .and_then(|tag| Lang::from_locale_tag(&tag))
+                .unwrap_or(Lang::English)
+        })
+    }
+
+    /// Switch the UI language: persist the choice, apply it, and (on macOS)
+    /// rebuild the native menu, whose labels are baked at build time. The
+    /// in-window egui menu re-renders itself, so it needs nothing here.
+    pub(crate) fn set_language(&mut self, lang: Lang, ctx: &egui::Context) {
+        if self.settings.language == Some(lang) {
+            return;
+        }
+        self.settings.language = Some(lang);
+        rust_i18n::set_locale(lang.code());
+        #[cfg(target_os = "macos")]
+        {
+            self.mac_menu = Some(crate::macos::build_menu(ctx, &self.settings));
+        }
+        ctx.request_repaint();
     }
 
     /// Update state after a write operation completes.
@@ -236,20 +262,21 @@ impl MediaExplorerApp {
         }
         let mut choice: Option<DiskFormat> = None;
         let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        egui::Window::new("New disk")
+        egui::Window::new(t!("dialog.new_disk_title"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label("Create a new, empty MSX disk image:");
+                ui.label(t!("dialog.new_disk_prompt"));
                 ui.add_space(8.0);
+                // Format names are technical MSX sizes — not localized.
                 for format in DiskFormat::ALL {
                     if ui.button(format.label()).clicked() {
                         choice = Some(format);
                     }
                 }
                 ui.add_space(8.0);
-                cancel = ui.button("Cancel").clicked();
+                cancel |= ui.button(t!("button.cancel")).clicked();
             });
         if let Some(format) = choice {
             self.show_new_disk = false;
@@ -262,7 +289,7 @@ impl MediaExplorerApp {
     /// Act on a native macOS menu item, by its id, then reflect any toggle
     /// changes back into the menu's checkmarks.
     #[cfg(target_os = "macos")]
-    pub(crate) fn handle_menu_event(&mut self, id: &str) {
+    pub(crate) fn handle_menu_event(&mut self, id: &str, ctx: &egui::Context) {
         match id {
             "app.about" => self.show_about = true,
             "help.shortcuts" => self.show_shortcuts = true,
@@ -298,6 +325,15 @@ impl MediaExplorerApp {
                     }
                 }
             }
+            _ if id.starts_with("lang.") => {
+                if let Some(&lang) = id
+                    .strip_prefix("lang.")
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .and_then(|i| Lang::ALL.get(i))
+                {
+                    self.set_language(lang, ctx);
+                }
+            }
             _ if id.starts_with("recent.") => {
                 if let Some(i) = id.strip_prefix("recent.").and_then(|n| n.parse().ok()) {
                     self.open_recent(i);
@@ -325,22 +361,22 @@ impl MediaExplorerApp {
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     pub(crate) fn menu_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.menu_button("File", |ui| {
-                if ui.button("New disk…").clicked() {
+            ui.menu_button(t!("menu.file"), |ui| {
+                if ui.button(t!("menu.new_disk")).clicked() {
                     self.show_new_disk = true;
                     ui.close();
                 }
-                if ui.button("New Window").clicked() {
+                if ui.button(t!("menu.new_window")).clicked() {
                     self.open_new_window();
                     ui.close();
                 }
-                if ui.button("Open disk/tape image…").clicked() {
+                if ui.button(t!("menu.open")).clicked() {
                     self.open_dialog();
                     ui.close();
                 }
-                ui.menu_button("Open Recent", |ui| {
+                ui.menu_button(t!("menu.open_recent"), |ui| {
                     if self.settings.recent.is_empty() {
-                        ui.add_enabled(false, egui::Button::new("No Recent Files"));
+                        ui.add_enabled(false, egui::Button::new(t!("menu.no_recent_files")));
                     } else {
                         // Collect the click during the borrow of `recent`, then act
                         // after it ends — avoids cloning the list every frame.
@@ -356,7 +392,7 @@ impl MediaExplorerApp {
                             }
                         }
                         ui.separator();
-                        let clear = ui.button("Clear Menu").clicked();
+                        let clear = ui.button(t!("menu.clear_menu")).clicked();
                         if clear {
                             ui.close();
                         }
@@ -375,7 +411,7 @@ impl MediaExplorerApp {
                     .as_ref()
                     .is_some_and(LoadedDisk::can_convert_to_dsk);
                 if ui
-                    .add_enabled(can_dsk, egui::Button::new("Save as .dsk…"))
+                    .add_enabled(can_dsk, egui::Button::new(t!("menu.save_as_dsk")))
                     .clicked()
                 {
                     self.save_as_dsk();
@@ -386,7 +422,7 @@ impl MediaExplorerApp {
                     .as_ref()
                     .is_some_and(LoadedDisk::can_convert_to_xsa);
                 if ui
-                    .add_enabled(can_xsa, egui::Button::new("Save as .xsa…"))
+                    .add_enabled(can_xsa, egui::Button::new(t!("menu.save_as_xsa")))
                     .clicked()
                 {
                     self.save_as_xsa();
@@ -397,36 +433,51 @@ impl MediaExplorerApp {
                     .as_ref()
                     .is_some_and(LoadedDisk::can_convert_to_sav);
                 if ui
-                    .add_enabled(can_sav, egui::Button::new("Save as .sav…"))
+                    .add_enabled(can_sav, egui::Button::new(t!("menu.save_as_sav")))
                     .clicked()
                 {
                     self.save_as_sav();
                     ui.close();
                 }
                 ui.separator();
-                if ui.button("Close").clicked() {
+                if ui.button(t!("menu.close")).clicked() {
                     self.close_document();
                     ui.close();
                 }
             });
-            ui.menu_button("View", |ui| {
-                ui.checkbox(&mut self.settings.hex.show_line_numbers, "Line numbers");
-                ui.checkbox(&mut self.settings.hex.show_hex, "Hexadecimal");
-                ui.checkbox(&mut self.settings.hex.show_ascii, "Plain text");
-                ui.checkbox(&mut self.settings.show_status_bar, "Status bar");
-                ui.checkbox(&mut self.settings.hex.show_columns, "Columns");
+            ui.menu_button(t!("menu.view"), |ui| {
+                ui.checkbox(
+                    &mut self.settings.hex.show_line_numbers,
+                    t!("menu.line_numbers"),
+                );
+                ui.checkbox(&mut self.settings.hex.show_hex, t!("menu.hexadecimal"));
+                ui.checkbox(&mut self.settings.hex.show_ascii, t!("menu.plain_text"));
+                ui.checkbox(&mut self.settings.show_status_bar, t!("menu.status_bar"));
+                ui.checkbox(&mut self.settings.hex.show_columns, t!("menu.columns"));
                 ui.separator();
-                ui.menu_button("Bytes per row", |ui| {
+                ui.menu_button(t!("menu.bytes_per_row"), |ui| {
                     for n in crate::settings::ROW_SIZES {
                         ui.radio_value(&mut self.settings.hex.bytes_per_row, n, n.to_string());
                     }
                 });
-                ui.menu_button("Line number format", |ui| {
-                    ui.radio_value(&mut self.settings.hex.line_number_hex, false, "Decimal");
-                    ui.radio_value(&mut self.settings.hex.line_number_hex, true, "Hexadecimal");
+                ui.menu_button(t!("menu.line_number_format"), |ui| {
+                    ui.radio_value(
+                        &mut self.settings.hex.line_number_hex,
+                        false,
+                        t!("menu.decimal"),
+                    );
+                    ui.radio_value(
+                        &mut self.settings.hex.line_number_hex,
+                        true,
+                        t!("menu.hexadecimal"),
+                    );
                 });
-                ui.menu_button("Byte grouping", |ui| {
-                    ui.radio_value(&mut self.settings.hex.grouping, ByteGrouping::None, "None");
+                ui.menu_button(t!("menu.byte_grouping"), |ui| {
+                    ui.radio_value(
+                        &mut self.settings.hex.grouping,
+                        ByteGrouping::None,
+                        t!("menu.none"),
+                    );
                     for n in ByteGrouping::SIZES {
                         ui.radio_value(
                             &mut self.settings.hex.grouping,
@@ -436,18 +487,22 @@ impl MediaExplorerApp {
                     }
                 });
                 ui.separator();
-                ui.checkbox(&mut self.settings.hex.hide_null_bytes, "Hide null bytes");
+                ui.checkbox(
+                    &mut self.settings.hex.hide_null_bytes,
+                    t!("menu.hide_null_bytes"),
+                );
             });
-            ui.menu_button("Text Encoding", |ui| {
+            ui.menu_button(t!("menu.text_encoding"), |ui| {
                 // The charset only applies to an open disk; mirror the old
                 // dropdown's "only when a disk is loaded" gating.
                 ui.add_enabled_ui(self.disk.is_some(), |ui| {
-                    if ui.radio(self.charset_auto, "Automatic").clicked() {
+                    if ui.radio(self.charset_auto, t!("menu.automatic")).clicked() {
                         self.charset_auto = true;
                         self.autodetect_charset();
                         ui.close();
                     }
                     ui.separator();
+                    // MSX code-page names are proper region names — not localized.
                     for &cs in MsxCharset::ALL {
                         let selected = !self.charset_auto && self.charset == cs;
                         if ui.selectable_label(selected, cs.label()).clicked() {
@@ -458,12 +513,25 @@ impl MediaExplorerApp {
                     }
                 });
             });
-            ui.menu_button("Help", |ui| {
-                if ui.button("Keyboard Shortcuts").clicked() {
+            ui.menu_button(t!("menu.language"), |ui| {
+                let active = self.active_language();
+                for &lang in Lang::ALL {
+                    // Language names are shown in their own language, as usual.
+                    if ui
+                        .selectable_label(active == lang, lang.native_name())
+                        .clicked()
+                    {
+                        self.set_language(lang, ui.ctx());
+                        ui.close();
+                    }
+                }
+            });
+            ui.menu_button(t!("menu.help"), |ui| {
+                if ui.button(t!("menu.keyboard_shortcuts")).clicked() {
                     self.show_shortcuts = true;
                     ui.close();
                 }
-                if ui.button("About MSX Media Explorer").clicked() {
+                if ui.button(t!("menu.about")).clicked() {
                     self.show_about = true;
                     ui.close();
                 }
@@ -615,11 +683,12 @@ impl MediaExplorerApp {
         if paths.is_empty() {
             return;
         }
-        let msg = if paths.len() == 1 {
-            format!("Deleted {}", paths[0])
-        } else {
-            format!("Deleted {} files", paths.len())
-        };
+        let msg = tn!(
+            "status.deleted",
+            paths.len(),
+            name => paths.first().map(String::as_str).unwrap_or_default()
+        )
+        .to_string();
         let result = self.disk.as_mut().unwrap().delete(&paths);
         self.after_mutation(result, msg);
     }
@@ -656,16 +725,16 @@ impl MediaExplorerApp {
         // Decode names for display only; the stored `paths` (PUA-encoded) stay
         // the keys used for the actual delete.
         let charset = self.charset;
-        egui::Window::new("Confirm delete")
+        egui::Window::new(t!("dialog.confirm_delete_title"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
                 if let [path] = paths.as_slice() {
                     let shown = charset::decode_fs_name(charset, path);
-                    ui.label(format!("Delete \"{shown}\" from the disk?"));
+                    ui.label(t!("dialog.delete_one", name => shown));
                 } else {
-                    ui.label(format!("Delete these {} items from the disk?", paths.len()));
+                    ui.label(t!("dialog.delete_many", count => paths.len()));
                     egui::ScrollArea::vertical()
                         .max_height(160.0)
                         .show(ui, |ui| {
@@ -674,13 +743,13 @@ impl MediaExplorerApp {
                             }
                         });
                 }
-                ui.label("This rewrites the image file on disk.");
+                ui.label(t!("dialog.delete_rewrites"));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Delete").clicked() {
+                    if ui.button(t!("button.delete")).clicked() {
                         do_delete = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(t!("button.cancel")).clicked() {
                         cancel = true;
                     }
                 });
@@ -702,12 +771,12 @@ impl MediaExplorerApp {
         let old = charset::decode_fs_name(charset, &base_name(&target.path));
         let mut apply = false;
         let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        egui::Window::new("Rename file")
+        egui::Window::new(t!("dialog.rename_title"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label(format!("Rename \"{old}\" to:"));
+                ui.label(t!("dialog.rename_prompt", name => old));
                 let resp =
                     ui.add(egui::TextEdit::singleline(&mut target.name).desired_width(160.0));
                 // Restrict to a valid 8.3 name (charset-aware) as the user types.
@@ -718,14 +787,16 @@ impl MediaExplorerApp {
                 if ui.memory(|m| m.focused().is_none()) {
                     resp.request_focus();
                 }
-                ui.small("8-character name, optional 3-character extension.");
+                ui.small(t!("dialog.name_hint"));
                 let valid = !msx_name_stem(&target.name).is_empty();
                 let enter =
                     valid && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    apply = ui.add_enabled(valid, egui::Button::new("Rename")).clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    apply = ui
+                        .add_enabled(valid, egui::Button::new(t!("button.rename")))
+                        .clicked();
+                    cancel |= ui.button(t!("button.cancel")).clicked();
                 });
                 apply |= enter;
             });
@@ -750,12 +821,12 @@ impl MediaExplorerApp {
         };
         let mut apply = false;
         let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        egui::Window::new("New directory")
+        egui::Window::new(t!("dialog.new_dir_title"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label(format!("Create directory in {parent_label}:"));
+                ui.label(t!("dialog.new_dir_prompt", parent => parent_label));
                 let resp =
                     ui.add(egui::TextEdit::singleline(&mut target.name).desired_width(160.0));
                 if resp.changed() {
@@ -764,21 +835,18 @@ impl MediaExplorerApp {
                 if ui.memory(|m| m.focused().is_none()) {
                     resp.request_focus();
                 }
-                ui.small("8-character name, optional 3-character extension.");
+                ui.small(t!("dialog.name_hint"));
                 let warn = ui.visuals().warn_fg_color;
-                ui.small(
-                    egui::RichText::new(
-                        "Subdirectories need MSX-DOS 2; MSX-DOS 1 cannot read them.",
-                    )
-                    .color(warn),
-                );
+                ui.small(egui::RichText::new(t!("dialog.new_dir_warning")).color(warn));
                 let valid = !msx_name_stem(&target.name).is_empty();
                 let enter =
                     valid && resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    apply = ui.add_enabled(valid, egui::Button::new("Create")).clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    apply = ui
+                        .add_enabled(valid, egui::Button::new(t!("button.create")))
+                        .clicked();
+                    cancel |= ui.button(t!("button.cancel")).clicked();
                 });
                 apply |= enter;
             });
@@ -798,22 +866,13 @@ impl MediaExplorerApp {
         };
         let real = size_label(m.real_bytes);
         let action = match m.fix {
-            SizeFix::TruncateImage => format!(
-                "Shrink the image to {real} (the unused, all-zero tail is discarded) \
-                 and update the boot sector to match.",
-            ),
-            SizeFix::PadImage => format!(
-                "Pad the image up to {real} (it appears truncated) and update the \
-                 boot sector to match.",
-            ),
-            SizeFix::FixBootSector => format!(
-                "Correct the boot sector to {real}; the image file size is left \
-                 unchanged.",
-            ),
+            SizeFix::TruncateImage => t!("dialog.size_fix_truncate", size => real),
+            SizeFix::PadImage => t!("dialog.size_fix_pad", size => real),
+            SizeFix::FixBootSector => t!("dialog.size_fix_fixboot", size => real),
         };
         let mut apply = false;
         let mut ignore = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        egui::Window::new("Disk geometry mismatch")
+        egui::Window::new(t!("dialog.size_fix_title"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -821,23 +880,23 @@ impl MediaExplorerApp {
                 egui::Grid::new("size_fix_facts")
                     .num_columns(2)
                     .show(ui, |ui| {
-                        ui.label("Boot sector declares:");
+                        ui.label(t!("dialog.size_fix_declared"));
                         ui.monospace(size_label(m.declared_bytes));
                         ui.end_row();
-                        ui.label("Image file size:");
+                        ui.label(t!("dialog.size_fix_image"));
                         ui.monospace(size_label(m.image_bytes));
                         ui.end_row();
-                        ui.label("Real size (from layout):");
+                        ui.label(t!("dialog.size_fix_real"));
                         ui.monospace(&real);
                         ui.end_row();
                     });
                 ui.add_space(6.0);
                 ui.label(action);
-                ui.small("This rewrites the image file on disk.");
+                ui.small(t!("dialog.delete_rewrites"));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    apply = ui.button("Apply fix").clicked();
-                    ignore = ui.button("Ignore").clicked();
+                    apply = ui.button(t!("button.apply_fix")).clicked();
+                    ignore |= ui.button(t!("button.ignore")).clicked();
                 });
             });
         if apply {
@@ -872,7 +931,7 @@ impl MediaExplorerApp {
             .get_or_insert_with(|| load_about_icon(ctx))
             .clone();
         let mut open = true;
-        egui::Window::new("About")
+        egui::Window::new(t!("dialog.about_title"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -888,15 +947,14 @@ impl MediaExplorerApp {
                         .corner_radius(egui::CornerRadius::same(20)),
                     );
                     ui.add_space(12.0);
+                    // Product name is a brand — not localized.
                     ui.label(
                         egui::RichText::new("MSX Media Explorer")
                             .size(24.0)
                             .strong(),
                     );
                     ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new("Browse and edit MSX disk and tape images.").weak(),
-                    );
+                    ui.label(egui::RichText::new(t!("dialog.about_tagline")).weak());
                     ui.add_space(18.0);
                     about_meta_grid(ui);
                     ui.add_space(12.0);
@@ -923,30 +981,28 @@ impl MediaExplorerApp {
         } else {
             "Delete".to_string()
         };
-        let rows: Vec<(String, &str)> = vec![
-            ("Up / Down".into(), "Move through the file list"),
-            ("Left / Right".into(), "Collapse / expand a directory"),
-            ("PageUp / PageDown".into(), "Jump one screen of rows"),
-            ("Home / End".into(), "Jump to the first / last row"),
-            ("Enter".into(), "Open or close a directory"),
-            ("Backspace".into(), "Jump to the containing directory"),
+        // Key combos stay as-is (universal); the descriptions are translated.
+        let rows: Vec<(String, String)> = vec![
+            ("Up / Down".into(), t!("shortcut.move").into_owned()),
+            ("Left / Right".into(), t!("shortcut.collapse").into_owned()),
+            ("PageUp / PageDown".into(), t!("shortcut.page").into_owned()),
+            ("Home / End".into(), t!("shortcut.home_end").into_owned()),
+            ("Enter".into(), t!("shortcut.activate").into_owned()),
+            ("Backspace".into(), t!("shortcut.parent").into_owned()),
             (
                 "A\u{2013}Z, 0\u{2013}9 \u{2026}".into(),
-                "Jump to the next name starting with the typed letters",
+                t!("shortcut.type_ahead").into_owned(),
             ),
-            (format!("F2 / {cmd}+R"), "Rename (writable disks)"),
-            (delete, "Delete (writable disks)"),
-            (format!("{cmd}+A"), "Select all visible files"),
-            (format!("{cmd}+E"), "Extract the current file or selection"),
-            (format!("{cmd}+F"), "Focus the filter box"),
-            (
-                "Escape".into(),
-                "Close dialog / clear filter / clear selection",
-            ),
-            ("F1".into(), "This window"),
+            (format!("F2 / {cmd}+R"), t!("shortcut.rename").into_owned()),
+            (delete, t!("shortcut.delete").into_owned()),
+            (format!("{cmd}+A"), t!("shortcut.select_all").into_owned()),
+            (format!("{cmd}+E"), t!("shortcut.extract").into_owned()),
+            (format!("{cmd}+F"), t!("shortcut.filter").into_owned()),
+            ("Escape".into(), t!("shortcut.escape").into_owned()),
+            ("F1".into(), t!("shortcut.help").into_owned()),
         ];
         let mut open = true;
-        egui::Window::new("Keyboard Shortcuts")
+        egui::Window::new(t!("dialog.shortcuts_title"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
@@ -958,7 +1014,7 @@ impl MediaExplorerApp {
                     .show(ui, |ui| {
                         for (keys, action) in &rows {
                             ui.monospace(keys);
-                            ui.label(*action);
+                            ui.label(action);
                             ui.end_row();
                         }
                     });

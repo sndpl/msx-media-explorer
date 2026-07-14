@@ -8,21 +8,29 @@ impl MediaExplorerApp {
         // right-click menu (right-click the "/" root row).
         if self.disk.is_some() || self.tape.is_some() {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.app_view, AppView::Files, "Files");
+                ui.selectable_value(&mut self.app_view, AppView::Files, t!("view_tab.files"));
                 if let Some(disk) = &self.disk {
-                    ui.selectable_value(&mut self.app_view, AppView::Sectors, "Sectors");
+                    ui.selectable_value(
+                        &mut self.app_view,
+                        AppView::Sectors,
+                        t!("view_tab.sectors"),
+                    );
                     // The disk-usage Map is FAT12-only and whole-disk; it is
                     // disabled for partitioned hard-disk images.
                     if !disk.is_partitioned() {
-                        ui.selectable_value(&mut self.app_view, AppView::Map, "Map");
+                        ui.selectable_value(&mut self.app_view, AppView::Map, t!("view_tab.map"));
                     }
-                    ui.selectable_value(&mut self.app_view, AppView::Stats, "Stats");
+                    ui.selectable_value(&mut self.app_view, AppView::Stats, t!("view_tab.stats"));
                 }
                 if self.dmk_analysis.is_some() {
-                    ui.selectable_value(&mut self.app_view, AppView::Analyze, "Analyze");
+                    ui.selectable_value(
+                        &mut self.app_view,
+                        AppView::Analyze,
+                        t!("view_tab.analyze"),
+                    );
                 }
                 if self.tape.is_some() {
-                    ui.selectable_value(&mut self.app_view, AppView::Blocks, "Blocks");
+                    ui.selectable_value(&mut self.app_view, AppView::Blocks, t!("view_tab.blocks"));
                 }
                 // The MSX code page used to decode names/text now lives in the
                 // "Text Encoding" menu (auto-detected on load; a manual pick pins it).
@@ -35,12 +43,12 @@ impl MediaExplorerApp {
         // the file list below. Only shown once a document is open.
         if self.disk.is_some() || self.tape.is_some() {
             ui.horizontal(|ui| {
-                ui.label("Filter:");
+                ui.label(t!("filter.label"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if !self.filter.is_empty()
                         && ui
                             .button("\u{2715}")
-                            .on_hover_text("Clear filter")
+                            .on_hover_text(t!("filter.clear_tooltip"))
                             .clicked()
                     {
                         self.filter.clear();
@@ -61,8 +69,8 @@ impl MediaExplorerApp {
         }
         if self.selection.len() > 1 {
             ui.horizontal(|ui| {
-                ui.label(format!("{} files selected", self.selection.len()));
-                if ui.button("Clear").clicked() {
+                ui.label(tn!("status.files_selected", self.selection.len()));
+                if ui.button(t!("button.clear")).clicked() {
                     self.selection.clear();
                 }
             });
@@ -91,7 +99,7 @@ impl MediaExplorerApp {
                 filter: keep.as_ref(),
             };
             if keep.as_ref().is_some_and(|k| k.is_empty()) {
-                ui.weak(format!("No files match \"{}\".", self.filter));
+                ui.weak(t!("filter.no_matches", pattern => self.filter.clone()));
             } else if let Some(disk) = &self.disk {
                 let out = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -114,7 +122,7 @@ impl MediaExplorerApp {
                     });
                 viewport_height = Some(out.inner_rect.height());
             } else {
-                ui.weak("No disk open.");
+                ui.weak(t!("status.no_disk_open"));
             }
         }
         if let Some(height) = viewport_height {
