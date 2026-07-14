@@ -231,7 +231,7 @@ pub(crate) fn msx_name_stem(name: &str) -> &str {
 
 /// Extensions that default to the Text view.
 pub(crate) const TEXT_EXTENSIONS: &[&str] = &[
-    "txt", "bat", "asc", "doc", "me", "ini", "cfg", "diz", "nfo", "log", "csv", "md",
+    "txt", "bat", "asc", "doc", "me", "ini", "cfg", "diz", "nfo", "log", "csv", "md", "hlp",
 ];
 
 /// Pick a sensible default view mode for a file based on its extension.

@@ -767,6 +767,8 @@ fn default_view_mode_by_extension() {
     assert_eq!(default_view_mode("README.TXT"), ViewMode::Text);
     assert_eq!(default_view_mode("AUTOEXEC.BAT"), ViewMode::Text);
     assert_eq!(default_view_mode("notes.txt"), ViewMode::Text);
+    // MSX-DOS help files are plain text.
+    assert_eq!(default_view_mode("COMMAND2.HLP"), ViewMode::Text);
     assert_eq!(default_view_mode("SONG.MBM"), ViewMode::Info);
     assert_eq!(default_view_mode("TUNE.mod"), ViewMode::Info);
     assert_eq!(default_view_mode("track.pt3"), ViewMode::Info);
