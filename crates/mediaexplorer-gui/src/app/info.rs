@@ -298,7 +298,9 @@ pub(crate) fn render_info(
             ui.heading("File");
             egui::Grid::new("info_file").num_columns(2).show(ui, |ui| {
                 ui.label("Name:");
-                ui.monospace(info_display_name(entry, path, charset));
+                ui.monospace(charset::display_control_safe(&info_display_name(
+                    entry, path, charset,
+                )));
                 ui.end_row();
                 let size = entry.map(|e| e.size).unwrap_or(bytes.len() as u64);
                 ui.label("Size:");
@@ -312,6 +314,48 @@ pub(crate) fn render_info(
                     }
                 }
             });
+
+            // Crafted directory entries whose name is control characters (they
+            // beep/clear the screen when the directory is listed on a real MSX):
+            // explain which codes are present and what they do.
+            let raw_name = entry.map(|e| e.name.as_str()).unwrap_or(path);
+            let name_bytes: Vec<u8> = raw_name.chars().filter_map(charset::fs_name_byte).collect();
+            let mut controls: Vec<u8> = name_bytes
+                .iter()
+                .copied()
+                .filter(|&b| b < 0x20 || b == 0x7F)
+                .collect();
+            controls.sort_unstable();
+            controls.dedup();
+            if !controls.is_empty() {
+                ui.add_space(8.0);
+                ui.heading("Control characters");
+                ui.label(
+                    "This filename contains control characters that manipulate an MSX terminal \
+                     when the directory is listed (e.g. via the BASIC files command):",
+                );
+                egui::Grid::new("info_controls")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        for b in &controls {
+                            ui.monospace(format!("{b:02X}"));
+                            ui.label(
+                                charset::control_char_effect(*b).unwrap_or("control character"),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                let hex = name_bytes
+                    .iter()
+                    .map(|b| format!("{b:02X}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                ui.add_space(2.0);
+                ui.horizontal(|ui| {
+                    ui.label("Raw bytes:");
+                    ui.monospace(hex);
+                });
+            }
 
             if let Some(e) = entry {
                 let a = e.attributes;

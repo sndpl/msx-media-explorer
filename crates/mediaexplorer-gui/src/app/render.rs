@@ -313,21 +313,37 @@ pub(crate) fn render_tree_with_root(
     });
 }
 
+/// When `raw_name` contains control bytes, the space-separated hex of its on-disk
+/// bytes, for a hover tooltip that reveals what a crafted control-character name
+/// actually holds. `None` for ordinary names (no tooltip).
+fn control_hex_tooltip(raw_name: &str) -> Option<String> {
+    let bytes: Vec<u8> = raw_name.chars().filter_map(charset::fs_name_byte).collect();
+    bytes.iter().any(|&b| b < 0x20 || b == 0x7F).then(|| {
+        bytes
+            .iter()
+            .map(|b| format!("{b:02X}"))
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
+}
+
 pub(crate) fn render_entries(
     ui: &mut egui::Ui,
     entries: &[DirEntry],
     ctx: &TreeRender,
     events: &mut RowEvents,
 ) {
-    for entry in entries {
+    for (i, entry) in entries.iter().enumerate() {
         // While a filter is active, show only kept paths (matching files and the
         // ancestor directories on their way).
         if ctx.filter.is_some_and(|keep| !keep.contains(&entry.path)) {
             continue;
         }
         let is_cursor = ctx.cursor == Some(entry.path.as_str());
-        // Stable, path-keyed id so the row keeps its identity across reflows.
-        let id = ui.make_persistent_id(&entry.path);
+        // Path plus sibling index: the index disambiguates byte-identical
+        // duplicate entries (crafted "fake" files) that would otherwise share an
+        // id and trip egui's id-clash warning; it is stable across reflows.
+        let id = ui.make_persistent_id((entry.path.as_str(), i));
         // Where a file dropped on (or "add" invoked from) this row should land:
         // a directory targets itself, a file its parent folder.
         let target = add_target_dir(&entry.path, entry.is_dir);
@@ -344,7 +360,7 @@ pub(crate) fn render_entries(
             let arrow = if expanded { '\u{25BC}' } else { '\u{25B6}' };
             let header = egui::RichText::new(format!(
                 "{arrow} \u{1F4C1} {}",
-                entry.display_name(ctx.charset)
+                charset::display_control_safe(&entry.display_name(ctx.charset))
             ))
             .monospace();
             let cols = egui::RichText::new(format!(
@@ -354,7 +370,7 @@ pub(crate) fn render_entries(
             ))
             .monospace();
             let col_x = mono_width(ui, &format!("\u{25BC} \u{1F4C1} {}", "0".repeat(14)));
-            let resp = tree_row_cols(
+            let mut resp = tree_row_cols(
                 ui,
                 id,
                 is_cursor,
@@ -362,6 +378,9 @@ pub(crate) fn render_entries(
                 Some((col_x, cols)),
                 egui::Sense::click(),
             );
+            if let Some(hex) = control_hex_tooltip(&entry.name) {
+                resp = resp.on_hover_text(hex);
+            }
             events.drop_targets.push((resp.rect, target.clone()));
             if is_cursor && ctx.scroll_to_cursor {
                 resp.scroll_to_me(Some(egui::Align::Center));
@@ -391,10 +410,13 @@ pub(crate) fn render_entries(
             }
         } else {
             let is_selected = is_cursor || ctx.selection.contains(&entry.path);
-            let name = egui::RichText::new(entry.display_name(ctx.charset)).monospace();
+            let name = egui::RichText::new(charset::display_control_safe(
+                &entry.display_name(ctx.charset),
+            ))
+            .monospace();
             let cols = egui::RichText::new(file_row_columns(entry)).monospace();
             let col_x = mono_width(ui, &"0".repeat(NAME_FIELD_CHARS));
-            let resp = tree_row_cols(
+            let mut resp = tree_row_cols(
                 ui,
                 id,
                 is_selected,
@@ -402,6 +424,9 @@ pub(crate) fn render_entries(
                 Some((col_x, cols)),
                 egui::Sense::click_and_drag(),
             );
+            if let Some(hex) = control_hex_tooltip(&entry.name) {
+                resp = resp.on_hover_text(hex);
+            }
             events.drop_targets.push((resp.rect, target.clone()));
             if is_cursor && ctx.scroll_to_cursor {
                 resp.scroll_to_me(Some(egui::Align::Center));
@@ -449,7 +474,7 @@ pub(crate) fn render_tape_files(
         ui.weak("Tape has no recognizable files.");
         return;
     }
-    for (key, file) in tape.entries() {
+    for (i, (key, file)) in tape.entries().enumerate() {
         if ctx.filter.is_some_and(|keep| !keep.contains(key)) {
             continue;
         }
@@ -457,12 +482,13 @@ pub(crate) fn render_tape_files(
         let is_selected = is_cursor || ctx.selection.contains(key);
         // Same fixed-pixel columns as the disk tree (see `tree_row_cols`): a
         // name with fallback-font glyphs must not shift the kind/size columns.
-        let id = ui.make_persistent_id(key);
-        let name = egui::RichText::new(key).monospace();
+        // Key plus index so duplicate names can't collide on one egui id.
+        let id = ui.make_persistent_id((key, i));
+        let name = egui::RichText::new(charset::display_control_safe(key)).monospace();
         let cols = egui::RichText::new(format!("{:<7} {:>8}", file.kind.label(), file.data.len()))
             .monospace();
         let col_x = mono_width(ui, &"0".repeat(NAME_FIELD_CHARS));
-        let resp = tree_row_cols(
+        let mut resp = tree_row_cols(
             ui,
             id,
             is_selected,
@@ -470,6 +496,9 @@ pub(crate) fn render_tape_files(
             Some((col_x, cols)),
             egui::Sense::click_and_drag(),
         );
+        if let Some(hex) = control_hex_tooltip(key) {
+            resp = resp.on_hover_text(hex);
+        }
         if is_cursor && ctx.scroll_to_cursor {
             resp.scroll_to_me(Some(egui::Align::Center));
         }

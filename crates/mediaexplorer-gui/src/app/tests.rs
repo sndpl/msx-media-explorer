@@ -233,6 +233,42 @@ fn real_dsk_directory_extracts_with_structure_and_timestamps() {
 }
 
 #[test]
+fn control_char_filenames_sanitize_to_pictures() {
+    // Skip-if-absent: jaarg-hw.di1 has crafted directory entries whose names are
+    // C0 control bytes (BEL/CR/LF/FF/SUB).
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/jaarg-hw.di1");
+    if !path.exists() {
+        eprintln!("skipping: fixture 'jaarg-hw.di1' not present");
+        return;
+    }
+    let image = msx_disk::image::DiskImage::open(&path).unwrap();
+    let disk = LoadedDisk::from_image(image, None).unwrap();
+    let names: Vec<String> = disk
+        .tree
+        .iter()
+        .flat_map(|e| e.walk())
+        .filter(|e| !e.is_dir)
+        .map(|e| {
+            msx_disk::charset::display_control_safe(&e.display_name(MsxCharset::International))
+        })
+        .collect();
+
+    // The crafted entry's BEL byte becomes its control picture (␇), and no raw
+    // control byte survives into any displayed name.
+    assert!(
+        names.iter().any(|n| n.contains('\u{2407}')),
+        "expected a BEL control picture among: {names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .all(|n| !n.chars().any(|c| (c as u32) < 0x20 || c == '\u{7F}')),
+        "no raw control characters should remain in a displayed name"
+    );
+}
+
+#[test]
 fn extracted_file_keeps_its_fat_modification_time() {
     let dir = std::env::temp_dir().join(format!("megui-mtime-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

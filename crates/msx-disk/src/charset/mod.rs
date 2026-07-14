@@ -137,6 +137,52 @@ pub fn fs_name_byte(c: char) -> Option<u8> {
     }
 }
 
+/// Make a decoded display string safe to show by replacing control characters
+/// with their visible Unicode Control Picture, leaving everything else
+/// untouched.
+///
+/// MSX filenames can contain C0 control bytes; crafted "fake" directory entries
+/// are sometimes built entirely from them (BEL, CR, LF, FF, ...) so that listing
+/// the directory beeps and clears the screen on a real MSX. Rendered raw they
+/// become garbled or invisible glyphs, and distinct names can look identical.
+/// This maps `0x00..=0x1F` to `U+2400 + b` (BEL 0x07 -> ␇, CR -> ␍, FF -> ␌, ...)
+/// and DEL `0x7F` to `U+2421` (␡) — one scalar per byte, so column-aligned tables
+/// stay aligned. Ordinary names are returned unchanged.
+pub fn display_control_safe(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '\u{7F}' => '\u{2421}',
+            c if (c as u32) < 0x20 => char::from_u32(0x2400 + c as u32).unwrap_or(c),
+            c => c,
+        })
+        .collect()
+}
+
+/// A short "ABBR — effect" description of a control byte in MSX-console terms,
+/// or `None` for a non-control byte. Explains what a control character in a
+/// filename does when the directory is listed on an MSX.
+pub fn control_char_effect(b: u8) -> Option<&'static str> {
+    Some(match b {
+        0x00 => "NUL — null",
+        0x07 => "BEL — beep",
+        0x08 => "BS — backspace",
+        0x09 => "TAB — horizontal tab",
+        0x0A => "LF — line feed (cursor down)",
+        0x0B => "HOME — cursor to top-left",
+        0x0C => "FF — clear screen",
+        0x0D => "CR — carriage return",
+        0x1A => "SUB — end-of-file (Ctrl-Z)",
+        0x1B => "ESC — start escape sequence",
+        0x1C => "RIGHT — cursor right",
+        0x1D => "LEFT — cursor left",
+        0x1E => "UP — cursor up",
+        0x1F => "DOWN — cursor down",
+        0x7F => "DEL — delete",
+        b if b < 0x20 => "control character",
+        _ => return None,
+    })
+}
+
 /// Best-effort auto-detection of the charset from a byte sample.
 ///
 /// Single-byte sets overlap, so this is a heuristic, not a guarantee: a sample
@@ -223,6 +269,33 @@ impl fatfs::OemCpConverter for PuaOemCpConverter {
 mod tests {
     use super::*;
     use fatfs::OemCpConverter;
+
+    #[test]
+    fn display_control_safe_maps_controls_to_pictures() {
+        // No-op for ordinary names and decoded high glyphs (kana).
+        assert_eq!(display_control_safe("HELLO.PIC"), "HELLO.PIC");
+        assert_eq!(display_control_safe("\u{FF71}"), "\u{FF71}");
+        // Individual codes -> their control pictures.
+        assert_eq!(display_control_safe("\u{00}"), "\u{2400}"); // NUL -> ␀
+        assert_eq!(display_control_safe("\u{07}"), "\u{2407}"); // BEL -> ␇
+        assert_eq!(display_control_safe("\u{7F}"), "\u{2421}"); // DEL -> ␡
+                                                                // The crafted jaarg-hw.di1 name: BEL CR CR CR CR LF FF FF . SUB FF FF.
+        assert_eq!(
+            display_control_safe("\u{07}\r\r\r\r\n\u{0C}\u{0C}.\u{1A}\u{0C}\u{0C}"),
+            "\u{2407}\u{240D}\u{240D}\u{240D}\u{240D}\u{240A}\u{240C}\u{240C}.\u{241A}\u{240C}\u{240C}"
+        );
+    }
+
+    #[test]
+    fn control_char_effect_describes_known_codes() {
+        assert!(control_char_effect(0x07).unwrap().contains("beep"));
+        assert!(control_char_effect(0x0C).unwrap().contains("clear"));
+        assert!(control_char_effect(0x7F).is_some());
+        assert!(control_char_effect(0x03).is_some()); // generic C0 fallback
+                                                      // Non-control bytes have no effect description.
+        assert_eq!(control_char_effect(b'A'), None);
+        assert_eq!(control_char_effect(0x20), None);
+    }
 
     #[test]
     fn ascii_is_identity_in_every_charset() {
