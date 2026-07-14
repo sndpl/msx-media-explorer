@@ -2330,7 +2330,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "mediaexplorer-cli"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "clap",
  "msx-disk",
@@ -2338,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "mediaexplorer-gui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "arboard",
  "drag",
@@ -2402,7 +2402,7 @@ dependencies = [
 
 [[package]]
 name = "msx-disk"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "delharc",
  "fatfs",

@@ -556,7 +556,7 @@
                 </div>
                 <div class="boot" aria-hidden="true">
                     <div>
-                        MSX Media Explorer <span id="ver">version 0.3.0</span>
+                        MSX Media Explorer <span id="ver">version 0.4.0</span>
                     </div>
                     <div class="blank"></div>
                     <div>Disk BASIC version 2.01</div>
@@ -895,9 +895,56 @@
                 <div class="changelog">
                     <div class="release">
                         <div class="ver">
+                            v0.4.0
+                            <span class="date">14 Jul 2026</span>
+                            <span class="latest">LATEST</span>
+                        </div>
+                        <ul>
+                            <li>
+                                <strong
+                                    >Command-line companion
+                                    (<code>mediaexplorer-cli</code>)</strong
+                                >
+                                — a headless tool shipped for every platform:
+                                <code>ls</code>, <code>add</code>,
+                                <code>extract</code>, <code>rm</code>,
+                                <code>mv</code>, <code>mkdir</code>,
+                                <code>new</code>, <code>bootsector</code> and
+                                <code>convert</code>, for scripting and batch
+                                work on the same engine as the app.
+                            </li>
+                            <li>
+                                <strong>Real MSX-DOS boot sectors</strong> — new
+                                disks are created with a genuine MSX-DOS 2 boot
+                                sector (VOL_ID + volume serial, so UNDEL and the
+                                disk cache work); <code>bootsector</code>
+                                installs or upgrades a DOS 1/2 boot sector on an
+                                existing image, FIXDISK-style.
+                            </li>
+                            <li>
+                                <strong>Editable <code>.xsa</code></strong> —
+                                compressed images can now be edited in place and
+                                are recompressed on save, instead of being
+                                read-only.
+                            </li>
+                            <li>
+                                <strong>MSXPLAYer <code>.sav</code></strong> —
+                                open, browse and edit the virtual floppies from
+                                the MSX MAGAZINE emulator, and convert to or from
+                                them.
+                            </li>
+                            <li>
+                                Open dialog gains an <strong>All files</strong>
+                                choice for images with an odd or missing
+                                extension, plus a fix for prefix-less raw
+                                <code>.img</code> dumps.
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="release">
+                        <div class="ver">
                             v0.3.0
                             <span class="date">7 Jul 2026</span>
-                            <span class="latest">LATEST</span>
                         </div>
                         <ul>
                             <li>
