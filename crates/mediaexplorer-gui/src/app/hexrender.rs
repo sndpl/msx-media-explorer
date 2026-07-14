@@ -36,7 +36,7 @@ pub(crate) fn render_hex(
         .width();
     let text_color = ui.visuals().text_color();
     let sel_color = ui.visuals().selection.bg_fill;
-    let cursor_stroke = egui::Stroke::new(1.0, ui.visuals().strong_text_color());
+    let cursor_stroke = egui::Stroke::new(1.0_f32, ui.visuals().strong_text_color());
 
     let layout = HexLayout::new(opts, bpr, bytes.len());
     let content_width = layout.total_cols() as f32 * char_w;

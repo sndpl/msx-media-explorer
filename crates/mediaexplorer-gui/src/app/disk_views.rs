@@ -316,7 +316,7 @@ impl MediaExplorerApp {
                     painter.rect_stroke(
                         rect,
                         0.0,
-                        egui::Stroke::new(1.5, egui::Color32::WHITE),
+                        egui::Stroke::new(1.5_f32, egui::Color32::WHITE),
                         egui::StrokeKind::Inside,
                     );
                 }
@@ -400,7 +400,7 @@ impl MediaExplorerApp {
                         painter.add(egui::Shape::mesh(mesh));
 
                         if file_set.contains(&lba) {
-                            let stroke = egui::Stroke::new(1.0, egui::Color32::WHITE);
+                            let stroke = egui::Stroke::new(1.0_f32, egui::Color32::WHITE);
                             let mut outer = Vec::with_capacity(steps + 1);
                             let mut inner = Vec::with_capacity(steps + 1);
                             for s in 0..=steps {
