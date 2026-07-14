@@ -458,7 +458,14 @@ impl MediaExplorerApp {
     pub(crate) fn status_bar(&self, ui: &mut egui::Ui) {
         if let Some(disk) = &self.disk {
             let geo = disk.geometry;
-            ui.label(egui::RichText::new(describe_geometry(geo)).weak());
+            // A hard disk's sides/tracks are a fabrication (they only carry the
+            // byte total); describe it by its partitions instead.
+            let description = if disk.is_partitioned() {
+                describe_hard_disk(disk.partition_sizes())
+            } else {
+                describe_geometry(geo)
+            };
+            ui.label(egui::RichText::new(description).weak());
             ui.horizontal(|ui| {
                 ui.label(format!(
                     "Size: {}",
@@ -467,8 +474,6 @@ impl MediaExplorerApp {
                 if disk.is_partitioned() {
                     ui.separator();
                     ui.label(format!("Sectors: {}", geo.total_sectors()));
-                    ui.separator();
-                    ui.label(format!("{} partitions", disk.tree.len()));
                 } else if let Some(fs) = self.disk_fs_geometry {
                     ui.separator();
                     ui.label(format!("Free: {}", humanize_bytes(fs.free_bytes())));

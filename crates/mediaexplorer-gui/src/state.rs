@@ -36,6 +36,9 @@ pub struct LoadedDisk {
     pub tree: Vec<DirEntry>,
     image: DiskImage,
     backing: Backing,
+    /// Byte size of each partition (from its partition-table entry), for the
+    /// status bar. Empty for a single-volume floppy.
+    partition_sizes: Vec<u64>,
     /// Lazily-computed whole-image checksums (the SHA-1 of a large HD image is
     /// too slow to compute eagerly on every open).
     image_checksums: OnceCell<msx_disk::Checksums>,
@@ -72,6 +75,7 @@ impl LoadedDisk {
             tree,
             image,
             backing: Backing::Floppy { fs },
+            partition_sizes: Vec::new(),
             image_checksums: OnceCell::new(),
             stats: OnceCell::new(),
             volume_stats: Vec::new(),
@@ -87,6 +91,7 @@ impl LoadedDisk {
     ) -> msx_disk::Result<LoadedDisk> {
         let entries = partition::parse_partition_table(image.data()).unwrap_or_default();
         let mut volumes = Vec::new();
+        let mut partition_sizes = Vec::new();
         let mut tree = Vec::new();
         for entry in &entries {
             let Some(volume) = Volume::from_partition(&image, entry) else {
@@ -104,6 +109,7 @@ impl LoadedDisk {
                 modified: None,
                 children,
             });
+            partition_sizes.push(entry.sector_count as u64 * 512);
             volumes.push(volume);
         }
         if volumes.is_empty() {
@@ -121,6 +127,7 @@ impl LoadedDisk {
             tree,
             image,
             backing: Backing::Partitioned { volumes },
+            partition_sizes,
             image_checksums: OnceCell::new(),
             stats: OnceCell::new(),
             volume_stats,
@@ -283,6 +290,11 @@ impl LoadedDisk {
             Backing::Partitioned { volumes } => volumes.len(),
             Backing::Floppy { .. } => 0,
         }
+    }
+
+    /// Byte size of each partition (partition-table order); empty for a floppy.
+    pub fn partition_sizes(&self) -> &[u64] {
+        &self.partition_sizes
     }
 
     /// Statistics for partition `i` of a hard-disk image, computed once and
@@ -743,6 +755,7 @@ mod tests {
         assert!(stats.integrity.is_clean());
         // Floppies have no partitions.
         assert_eq!(disk.partition_count(), 0);
+        assert!(disk.partition_sizes().is_empty());
         assert!(disk.volume_stats(0).is_none());
     }
 
@@ -756,6 +769,10 @@ mod tests {
         // Whole-disk stats are unavailable for partitioned images.
         assert!(disk.stats().is_none());
         assert_eq!(disk.partition_count(), 4);
+        // Per-partition byte sizes (from the partition table) are exposed for
+        // the status bar: one per partition, all non-empty.
+        assert_eq!(disk.partition_sizes().len(), 4);
+        assert!(disk.partition_sizes().iter().all(|&b| b > 0));
         // Each partition has its own statistics.
         for i in 0..disk.partition_count() {
             assert!(disk.volume_stats(i).is_some(), "partition {i} stats");

@@ -102,6 +102,24 @@ pub(crate) fn describe_geometry(geo: Geometry) -> String {
     }
 }
 
+/// A human-readable description of a partitioned hard-disk image, e.g.
+/// `Hard disk image: 4 partitions (32.00 MB, 32.00 MB, 32.00 MB, 32.00 MB)`.
+/// Used instead of [`describe_geometry`], whose sides/tracks are a meaningless
+/// fabrication for a hard disk. `sizes` is each partition's byte size.
+pub(crate) fn describe_hard_disk(sizes: &[u64]) -> String {
+    let n = sizes.len();
+    let unit = if n == 1 { "partition" } else { "partitions" };
+    if sizes.is_empty() {
+        return "Hard disk image".to_string();
+    }
+    let list = sizes
+        .iter()
+        .map(|&b| humanize_bytes(b))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("Hard disk image: {n} {unit} ({list})")
+}
+
 /// Whether `path`'s lowercased extension is in `exts`.
 pub(crate) fn ext_in(path: &Path, exts: &[&str]) -> bool {
     path.extension()

@@ -1030,6 +1030,24 @@ fn describe_geometry_falls_back_to_arithmetic_for_unknown() {
 }
 
 #[test]
+fn describe_hard_disk_lists_partition_sizes() {
+    // 4 x 32 MiB partitions, as on a typical MSX-IDE hard disk; sizes use the
+    // app-wide decimal humanize_bytes, so 33,554,432 bytes reads as 33.55 MB
+    // (matching the per-partition labels in the tree).
+    let desc = describe_hard_disk(&[33_554_432; 4]);
+    assert_eq!(
+        desc,
+        "Hard disk image: 4 partitions (33.55 MB, 33.55 MB, 33.55 MB, 33.55 MB)"
+    );
+    // Singular, and no fabricated floppy geometry ("sides"/"tracks").
+    let one = describe_hard_disk(&[16_777_216]);
+    assert_eq!(one, "Hard disk image: 1 partition (16.78 MB)");
+    assert!(!one.contains("sides") && !one.contains("tracks"));
+    // Degenerate: no readable partitions.
+    assert_eq!(describe_hard_disk(&[]), "Hard disk image");
+}
+
+#[test]
 fn is_disk_image_matches_known_extensions_case_insensitively() {
     assert!(is_disk_image(Path::new("GAME.DSK")));
     assert!(is_disk_image(Path::new("game.xsa")));
