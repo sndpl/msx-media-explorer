@@ -47,6 +47,11 @@ impl MediaExplorerApp {
                     }
                     ui.add(
                         egui::TextEdit::singleline(&mut self.filter)
+                            // A stable id so focus survives the clear button
+                            // appearing/disappearing: without it the field's
+                            // auto-id shifts once the button shows after the
+                            // first keystroke and egui drops keyboard focus.
+                            .id(egui::Id::new("tree_filter_input"))
                             .hint_text("*.PIC")
                             .desired_width(f32::INFINITY),
                     );
