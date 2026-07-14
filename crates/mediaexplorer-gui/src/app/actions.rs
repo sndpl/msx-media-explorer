@@ -235,7 +235,7 @@ impl MediaExplorerApp {
             return;
         }
         let mut choice: Option<DiskFormat> = None;
-        let mut cancel = false;
+        let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         egui::Window::new("New disk")
             .collapsible(false)
             .resizable(false)
@@ -265,6 +265,7 @@ impl MediaExplorerApp {
     pub(crate) fn handle_menu_event(&mut self, id: &str) {
         match id {
             "app.about" => self.show_about = true,
+            "help.shortcuts" => self.show_shortcuts = true,
             "file.new" => self.show_new_disk = true,
             "file.new_window" => self.open_new_window(),
             "file.open" => self.open_dialog(),
@@ -458,6 +459,10 @@ impl MediaExplorerApp {
                 });
             });
             ui.menu_button("Help", |ui| {
+                if ui.button("Keyboard Shortcuts").clicked() {
+                    self.show_shortcuts = true;
+                    ui.close();
+                }
                 if ui.button("About MSX Media Explorer").clicked() {
                     self.show_about = true;
                     ui.close();
@@ -645,8 +650,9 @@ impl MediaExplorerApp {
             self.confirm_delete = None;
             return;
         }
-        let mut do_delete = false;
-        let mut cancel = false;
+        // Enter confirms, Escape cancels (the buttons stay for the mouse).
+        let mut do_delete = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         // Decode names for display only; the stored `paths` (PUA-encoded) stay
         // the keys used for the actual delete.
         let charset = self.charset;
@@ -695,7 +701,7 @@ impl MediaExplorerApp {
         let charset = target.charset;
         let old = charset::decode_fs_name(charset, &base_name(&target.path));
         let mut apply = false;
-        let mut cancel = false;
+        let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         egui::Window::new("Rename file")
             .collapsible(false)
             .resizable(false)
@@ -743,7 +749,7 @@ impl MediaExplorerApp {
             charset::decode_fs_name(charset, &target.parent)
         };
         let mut apply = false;
-        let mut cancel = false;
+        let mut cancel = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         egui::Window::new("New directory")
             .collapsible(false)
             .resizable(false)
@@ -806,7 +812,7 @@ impl MediaExplorerApp {
             ),
         };
         let mut apply = false;
-        let mut ignore = false;
+        let mut ignore = ctx.input(|i| i.key_pressed(egui::Key::Escape));
         egui::Window::new("Disk geometry mismatch")
             .collapsible(false)
             .resizable(false)
@@ -896,8 +902,69 @@ impl MediaExplorerApp {
                     ui.add_space(12.0);
                 });
             });
-        if !open {
+        if !open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.show_about = false;
+        }
+    }
+
+    /// The keyboard-shortcuts help window (F1, or Help menu). A static cheat
+    /// sheet; `Cmd` rows show the platform's real modifier.
+    pub(crate) fn shortcuts_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_shortcuts {
+            return;
+        }
+        let cmd = if cfg!(target_os = "macos") {
+            "Cmd"
+        } else {
+            "Ctrl"
+        };
+        let delete = if cfg!(target_os = "macos") {
+            format!("Delete / {cmd}+Backspace")
+        } else {
+            "Delete".to_string()
+        };
+        let rows: Vec<(String, &str)> = vec![
+            ("Up / Down".into(), "Move through the file list"),
+            ("Left / Right".into(), "Collapse / expand a directory"),
+            ("PageUp / PageDown".into(), "Jump one screen of rows"),
+            ("Home / End".into(), "Jump to the first / last row"),
+            ("Enter".into(), "Open or close a directory"),
+            ("Backspace".into(), "Jump to the containing directory"),
+            (
+                "A\u{2013}Z, 0\u{2013}9 \u{2026}".into(),
+                "Jump to the next name starting with the typed letters",
+            ),
+            (format!("F2 / {cmd}+R"), "Rename (writable disks)"),
+            (delete, "Delete (writable disks)"),
+            (format!("{cmd}+A"), "Select all visible files"),
+            (format!("{cmd}+E"), "Extract the current file or selection"),
+            (format!("{cmd}+F"), "Focus the filter box"),
+            (
+                "Escape".into(),
+                "Close dialog / clear filter / clear selection",
+            ),
+            ("F1".into(), "This window"),
+        ];
+        let mut open = true;
+        egui::Window::new("Keyboard Shortcuts")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::Grid::new("shortcuts")
+                    .num_columns(2)
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        for (keys, action) in &rows {
+                            ui.monospace(keys);
+                            ui.label(*action);
+                            ui.end_row();
+                        }
+                    });
+            });
+        if !open || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.show_shortcuts = false;
         }
     }
 }

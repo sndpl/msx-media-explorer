@@ -24,13 +24,26 @@ pub struct VisibleRow {
     pub collapsible: bool,
 }
 
-/// An arrow key pressed while the tree has focus.
+/// A navigation key pressed while the tree has focus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavKey {
     Up,
     Down,
     Left,
     Right,
+    /// PageUp: jump one viewport of rows towards the top.
+    PageUp,
+    /// PageDown: jump one viewport of rows towards the bottom.
+    PageDown,
+    /// Home: jump to the first row.
+    Home,
+    /// End: jump to the last row.
+    End,
+    /// Enter: toggle a directory open/closed; nothing on a file (files load as
+    /// the cursor lands on them).
+    Activate,
+    /// Backspace: jump to the containing directory.
+    Parent,
 }
 
 /// What an arrow key resolves to.
@@ -122,12 +135,14 @@ fn push_rows(
 ///
 /// `collapsed` is consulted to tell an expanded directory (Left collapses it,
 /// Right steps into it) from a collapsed one (Right expands it, Left leaves it
-/// for the parent).
+/// for the parent). `page_rows` is how many rows PageUp/PageDown jump (the
+/// tree viewport height in rows).
 pub fn navigate(
     rows: &[VisibleRow],
     cursor: Option<&str>,
     collapsed: &BTreeSet<String>,
     key: NavKey,
+    page_rows: usize,
 ) -> TreeNav {
     if rows.is_empty() {
         return TreeNav::Nothing;
@@ -137,11 +152,35 @@ pub fn navigate(
     let Some(idx) = cursor.and_then(|c| rows.iter().position(|r| r.path == c)) else {
         return TreeNav::MoveTo(rows[0].path.clone());
     };
+    // A move to `to` (already clamped); `Nothing` when the cursor stays put, so
+    // holding a key at an edge doesn't reload the file on every repeat.
+    let move_to = |to: usize| {
+        if to == idx {
+            TreeNav::Nothing
+        } else {
+            TreeNav::MoveTo(rows[to].path.clone())
+        }
+    };
     let row = &rows[idx];
     match key {
         NavKey::Down if idx + 1 < rows.len() => TreeNav::MoveTo(rows[idx + 1].path.clone()),
         NavKey::Up if idx > 0 => TreeNav::MoveTo(rows[idx - 1].path.clone()),
         NavKey::Down | NavKey::Up => TreeNav::Nothing,
+        NavKey::PageDown => move_to((idx + page_rows.max(1)).min(rows.len() - 1)),
+        NavKey::PageUp => move_to(idx.saturating_sub(page_rows.max(1))),
+        NavKey::Home => move_to(0),
+        NavKey::End => move_to(rows.len() - 1),
+        NavKey::Activate => {
+            if row.is_dir && row.collapsible {
+                TreeNav::SetCollapsed(row.path.clone(), !collapsed.contains(&row.path))
+            } else {
+                TreeNav::Nothing
+            }
+        }
+        NavKey::Parent => match &row.parent {
+            Some(parent) => TreeNav::MoveTo(parent.clone()),
+            None => TreeNav::Nothing,
+        },
         NavKey::Right => {
             if !row.is_dir {
                 return TreeNav::Nothing;
@@ -164,6 +203,35 @@ pub fn navigate(
             }
         }
     }
+}
+
+/// Type-ahead: the row for the typed `prefix` (base name — last `/` component —
+/// prefix match, ASCII case-insensitive), wrapping around the list.
+///
+/// A single letter starts searching *after* the cursor, so repeating it steps
+/// through all matches; a longer prefix starts *at* the cursor, so extending
+/// "w" to "wi" stays on the current row while it still matches — both as in
+/// Finder/Explorer. `None` when nothing matches (the caller keeps the cursor).
+pub fn type_ahead(rows: &[VisibleRow], cursor: Option<&str>, prefix: &str) -> Option<String> {
+    if rows.is_empty() || prefix.is_empty() {
+        return None;
+    }
+    let after = usize::from(prefix.chars().count() == 1);
+    let start = cursor
+        .and_then(|c| rows.iter().position(|r| r.path == c))
+        .map(|i| i + after)
+        .unwrap_or(0);
+    let matches = |row: &VisibleRow| {
+        let name = row.path.rsplit('/').next().unwrap_or(&row.path);
+        // Checked slice: names can hold multi-byte scalars (PUA-encoded bytes),
+        // where an unchecked byte slice could split a character and panic.
+        name.get(..prefix.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+    };
+    (0..rows.len())
+        .map(|i| &rows[(start + i) % rows.len()])
+        .find(|r| matches(r))
+        .map(|r| r.path.clone())
 }
 
 #[cfg(test)]
@@ -267,25 +335,28 @@ mod tests {
         let c = BTreeSet::new();
         // Right steps from root into its first child.
         assert_eq!(
-            navigate(&rows, Some(""), &c, NavKey::Right),
+            navigate(&rows, Some(""), &c, NavKey::Right, 10),
             TreeNav::MoveTo("GAMES".to_string())
         );
         // Left does nothing on the root: it has no parent and cannot collapse.
         assert_eq!(
-            navigate(&rows, Some(""), &c, NavKey::Left),
+            navigate(&rows, Some(""), &c, NavKey::Left, 10),
             TreeNav::Nothing
         );
         // Left from a top-level entry returns to the root.
         assert_eq!(
-            navigate(&rows, Some("HELLO.BAS"), &c, NavKey::Left),
+            navigate(&rows, Some("HELLO.BAS"), &c, NavKey::Left, 10),
             TreeNav::MoveTo(String::new())
         );
         // Up from the first entry lands on the root; Up from root does nothing.
         assert_eq!(
-            navigate(&rows, Some("GAMES"), &c, NavKey::Up),
+            navigate(&rows, Some("GAMES"), &c, NavKey::Up, 10),
             TreeNav::MoveTo(String::new())
         );
-        assert_eq!(navigate(&rows, Some(""), &c, NavKey::Up), TreeNav::Nothing);
+        assert_eq!(
+            navigate(&rows, Some(""), &c, NavKey::Up, 10),
+            TreeNav::Nothing
+        );
     }
 
     #[test]
@@ -341,11 +412,11 @@ mod tests {
         let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         let c = BTreeSet::new();
         assert_eq!(
-            navigate(&rows, Some("GAMES"), &c, NavKey::Down),
+            navigate(&rows, Some("GAMES"), &c, NavKey::Down, 10),
             TreeNav::MoveTo("GAMES/A.PCT".to_string())
         );
         assert_eq!(
-            navigate(&rows, Some("GAMES/A.PCT"), &c, NavKey::Up),
+            navigate(&rows, Some("GAMES/A.PCT"), &c, NavKey::Up, 10),
             TreeNav::MoveTo("GAMES".to_string())
         );
     }
@@ -355,11 +426,11 @@ mod tests {
         let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         let c = BTreeSet::new();
         assert_eq!(
-            navigate(&rows, Some("GAMES"), &c, NavKey::Up),
+            navigate(&rows, Some("GAMES"), &c, NavKey::Up, 10),
             TreeNav::Nothing
         );
         assert_eq!(
-            navigate(&rows, Some("HELLO.BAS"), &c, NavKey::Down),
+            navigate(&rows, Some("HELLO.BAS"), &c, NavKey::Down, 10),
             TreeNav::Nothing
         );
     }
@@ -369,12 +440,12 @@ mod tests {
         let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         let c = BTreeSet::new();
         assert_eq!(
-            navigate(&rows, None, &c, NavKey::Down),
+            navigate(&rows, None, &c, NavKey::Down, 10),
             TreeNav::MoveTo("GAMES".to_string())
         );
         // A stale cursor (row no longer visible) is treated the same way.
         assert_eq!(
-            navigate(&rows, Some("GONE.TXT"), &c, NavKey::Up),
+            navigate(&rows, Some("GONE.TXT"), &c, NavKey::Up, 10),
             TreeNav::MoveTo("GAMES".to_string())
         );
     }
@@ -385,13 +456,13 @@ mod tests {
         let rows = flatten_visible(&sample(), &collapsed, None, None);
         // Collapsed: Right expands it (cursor stays).
         assert_eq!(
-            navigate(&rows, Some("GAMES"), &collapsed, NavKey::Right),
+            navigate(&rows, Some("GAMES"), &collapsed, NavKey::Right, 10),
             TreeNav::SetCollapsed("GAMES".to_string(), false)
         );
         // Once expanded, Right steps onto the first child.
         let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         assert_eq!(
-            navigate(&rows, Some("GAMES"), &BTreeSet::new(), NavKey::Right),
+            navigate(&rows, Some("GAMES"), &BTreeSet::new(), NavKey::Right, 10),
             TreeNav::MoveTo("GAMES/A.PCT".to_string())
         );
     }
@@ -400,7 +471,13 @@ mod tests {
     fn right_on_a_file_does_nothing() {
         let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         assert_eq!(
-            navigate(&rows, Some("HELLO.BAS"), &BTreeSet::new(), NavKey::Right),
+            navigate(
+                &rows,
+                Some("HELLO.BAS"),
+                &BTreeSet::new(),
+                NavKey::Right,
+                10
+            ),
             TreeNav::Nothing
         );
     }
@@ -409,7 +486,7 @@ mod tests {
     fn left_collapses_an_expanded_dir() {
         let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         assert_eq!(
-            navigate(&rows, Some("GAMES"), &BTreeSet::new(), NavKey::Left),
+            navigate(&rows, Some("GAMES"), &BTreeSet::new(), NavKey::Left, 10),
             TreeNav::SetCollapsed("GAMES".to_string(), true)
         );
     }
@@ -420,16 +497,162 @@ mod tests {
         let c = BTreeSet::new();
         // A file jumps to its containing directory.
         assert_eq!(
-            navigate(&rows, Some("GAMES/A.PCT"), &c, NavKey::Left),
+            navigate(&rows, Some("GAMES/A.PCT"), &c, NavKey::Left, 10),
             TreeNav::MoveTo("GAMES".to_string())
         );
         // A collapsed dir jumps to its parent.
         let collapsed = BTreeSet::from(["UTILS/SUB".to_string()]);
         let rows = flatten_visible(&sample(), &collapsed, None, None);
         assert_eq!(
-            navigate(&rows, Some("UTILS/SUB"), &collapsed, NavKey::Left),
+            navigate(&rows, Some("UTILS/SUB"), &collapsed, NavKey::Left, 10),
             TreeNav::MoveTo("UTILS".to_string())
         );
+    }
+
+    #[test]
+    fn page_keys_jump_a_viewport_and_clamp_at_edges() {
+        // 7 rows: GAMES, A.PCT, B.PCT, UTILS, SUB, C.COM, HELLO.BAS
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
+        let c = BTreeSet::new();
+        // A 3-row page from the top jumps 3 down.
+        assert_eq!(
+            navigate(&rows, Some("GAMES"), &c, NavKey::PageDown, 3),
+            TreeNav::MoveTo("UTILS".to_string())
+        );
+        // Past the end clamps to the last row.
+        assert_eq!(
+            navigate(&rows, Some("UTILS/SUB"), &c, NavKey::PageDown, 10),
+            TreeNav::MoveTo("HELLO.BAS".to_string())
+        );
+        // PageUp clamps to the first row.
+        assert_eq!(
+            navigate(&rows, Some("GAMES/B.PCT"), &c, NavKey::PageUp, 10),
+            TreeNav::MoveTo("GAMES".to_string())
+        );
+        // Already at an edge: no move (so key repeat doesn't reload the file).
+        assert_eq!(
+            navigate(&rows, Some("HELLO.BAS"), &c, NavKey::PageDown, 3),
+            TreeNav::Nothing
+        );
+        assert_eq!(
+            navigate(&rows, Some("GAMES"), &c, NavKey::PageUp, 3),
+            TreeNav::Nothing
+        );
+        // A degenerate 0-row page still moves one row.
+        assert_eq!(
+            navigate(&rows, Some("GAMES"), &c, NavKey::PageDown, 0),
+            TreeNav::MoveTo("GAMES/A.PCT".to_string())
+        );
+    }
+
+    #[test]
+    fn home_and_end_jump_to_the_extremes() {
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
+        let c = BTreeSet::new();
+        assert_eq!(
+            navigate(&rows, Some("UTILS/SUB"), &c, NavKey::Home, 10),
+            TreeNav::MoveTo("GAMES".to_string())
+        );
+        assert_eq!(
+            navigate(&rows, Some("UTILS/SUB"), &c, NavKey::End, 10),
+            TreeNav::MoveTo("HELLO.BAS".to_string())
+        );
+        // Already there: no move.
+        assert_eq!(
+            navigate(&rows, Some("GAMES"), &c, NavKey::Home, 10),
+            TreeNav::Nothing
+        );
+        assert_eq!(
+            navigate(&rows, Some("HELLO.BAS"), &c, NavKey::End, 10),
+            TreeNav::Nothing
+        );
+    }
+
+    #[test]
+    fn activate_toggles_a_directory_and_ignores_files_and_root() {
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
+        // Expanded dir -> collapse.
+        assert_eq!(
+            navigate(&rows, Some("GAMES"), &BTreeSet::new(), NavKey::Activate, 10),
+            TreeNav::SetCollapsed("GAMES".to_string(), true)
+        );
+        // Collapsed dir -> expand.
+        let collapsed = BTreeSet::from(["GAMES".to_string()]);
+        let rows2 = flatten_visible(&sample(), &collapsed, None, None);
+        assert_eq!(
+            navigate(&rows2, Some("GAMES"), &collapsed, NavKey::Activate, 10),
+            TreeNav::SetCollapsed("GAMES".to_string(), false)
+        );
+        // A file: nothing (it is already loaded on highlight).
+        assert_eq!(
+            navigate(
+                &rows,
+                Some("HELLO.BAS"),
+                &BTreeSet::new(),
+                NavKey::Activate,
+                10
+            ),
+            TreeNav::Nothing
+        );
+        // The synthetic root is not collapsible.
+        let rooted = flatten_visible(&sample(), &BTreeSet::new(), Some(""), None);
+        assert_eq!(
+            navigate(&rooted, Some(""), &BTreeSet::new(), NavKey::Activate, 10),
+            TreeNav::Nothing
+        );
+    }
+
+    #[test]
+    fn parent_jumps_to_the_containing_directory() {
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
+        let c = BTreeSet::new();
+        assert_eq!(
+            navigate(&rows, Some("UTILS/SUB/C.COM"), &c, NavKey::Parent, 10),
+            TreeNav::MoveTo("UTILS/SUB".to_string())
+        );
+        // Works on an expanded directory too (unlike Left, which collapses it).
+        assert_eq!(
+            navigate(&rows, Some("UTILS/SUB"), &c, NavKey::Parent, 10),
+            TreeNav::MoveTo("UTILS".to_string())
+        );
+        // Top-level rows have no parent.
+        assert_eq!(
+            navigate(&rows, Some("HELLO.BAS"), &c, NavKey::Parent, 10),
+            TreeNav::Nothing
+        );
+    }
+
+    #[test]
+    fn type_ahead_finds_the_next_match_wrapping_around() {
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
+        // Case-insensitive prefix on the base name.
+        assert_eq!(type_ahead(&rows, None, "he"), Some("HELLO.BAS".to_string()));
+        // Starts after the cursor, so repeating a letter steps through matches:
+        // from A.PCT, "b" finds B.PCT...
+        assert_eq!(
+            type_ahead(&rows, Some("GAMES/A.PCT"), "b"),
+            Some("GAMES/B.PCT".to_string())
+        );
+        // ...and it wraps: from HELLO.BAS (last row), "games" wraps to GAMES.
+        assert_eq!(
+            type_ahead(&rows, Some("HELLO.BAS"), "games"),
+            Some("GAMES".to_string())
+        );
+        // From a match itself, the same prefix moves to the NEXT match.
+        assert_eq!(
+            type_ahead(&rows, Some("GAMES/A.PCT"), "a"),
+            Some("GAMES/A.PCT".to_string()),
+            "wraps all the way back when it is the only match"
+        );
+        // A growing multi-letter prefix anchors on the current row while it
+        // still matches ("b" landed on B.PCT; extending to "b." stays).
+        assert_eq!(
+            type_ahead(&rows, Some("GAMES/B.PCT"), "b."),
+            Some("GAMES/B.PCT".to_string())
+        );
+        // No match / empty prefix.
+        assert_eq!(type_ahead(&rows, None, "zzz"), None);
+        assert_eq!(type_ahead(&rows, None, ""), None);
     }
 
     #[test]
@@ -437,13 +660,13 @@ mod tests {
         let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         // HELLO.BAS is top-level (no parent), and so is a collapsed top dir.
         assert_eq!(
-            navigate(&rows, Some("HELLO.BAS"), &BTreeSet::new(), NavKey::Left),
+            navigate(&rows, Some("HELLO.BAS"), &BTreeSet::new(), NavKey::Left, 10),
             TreeNav::Nothing
         );
         let collapsed = BTreeSet::from(["GAMES".to_string()]);
         let rows = flatten_visible(&sample(), &collapsed, None, None);
         assert_eq!(
-            navigate(&rows, Some("GAMES"), &collapsed, NavKey::Left),
+            navigate(&rows, Some("GAMES"), &collapsed, NavKey::Left, 10),
             TreeNav::Nothing
         );
     }

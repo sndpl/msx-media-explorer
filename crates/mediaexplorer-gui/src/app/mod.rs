@@ -50,6 +50,9 @@ pub(crate) use views::*;
 /// every real entry path and used as the "add to root" target.
 const ROOT_PATH: &str = "";
 
+/// Seconds of typing pause after which the tree's type-ahead prefix resets.
+pub(crate) const TYPE_AHEAD_TIMEOUT: f64 = 1.0;
+
 /// A standard MSX disk size as a human label for the geometry-mismatch popup.
 fn size_label(bytes: usize) -> String {
     match bytes {
@@ -413,6 +416,8 @@ pub struct MediaExplorerApp {
     show_inspector: bool,
     /// Whether the About window is open.
     show_about: bool,
+    /// Whether the keyboard-shortcuts help window is open.
+    show_shortcuts: bool,
     /// Whether the "New disk" type-chooser popup is open.
     show_new_disk: bool,
     /// Cached app-icon texture for the About window, decoded on first open.
@@ -434,6 +439,13 @@ pub struct MediaExplorerApp {
     filter: String,
     /// One-shot request to scroll the cursor row into view after a key move.
     scroll_to_cursor: bool,
+    /// How many rows fit in the tree viewport, measured each frame; the
+    /// PageUp/PageDown jump distance.
+    tree_page_rows: usize,
+    /// Type-ahead buffer: letters typed while the tree owns the keyboard, and
+    /// the time of the last keystroke (a pause resets the prefix).
+    type_ahead: String,
+    type_ahead_at: f64,
     /// New-directory dialog state, when the user is naming a directory to add.
     new_dir: Option<NewDirTarget>,
     /// A detected boot-sector/image-size mismatch awaiting the user's decision.
@@ -518,6 +530,7 @@ impl Default for MediaExplorerApp {
             sector_hex: HexUiState::default(),
             show_inspector: false,
             show_about: false,
+            show_shortcuts: false,
             show_new_disk: false,
             about_icon: None,
             settings: Settings::default(),
@@ -527,6 +540,9 @@ impl Default for MediaExplorerApp {
             collapsed: BTreeSet::new(),
             filter: String::new(),
             scroll_to_cursor: false,
+            tree_page_rows: 10,
+            type_ahead: String::new(),
+            type_ahead_at: 0.0,
             new_dir: None,
             size_fix: None,
             drop_targets: Vec::new(),
@@ -618,6 +634,7 @@ impl eframe::App for MediaExplorerApp {
         self.new_disk_dialog(ui.ctx());
         self.size_fix_dialog(ui.ctx());
         self.about_dialog(ui.ctx());
+        self.shortcuts_dialog(ui.ctx());
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         self.process_drag_out(frame);

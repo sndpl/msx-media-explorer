@@ -233,6 +233,31 @@ fn real_dsk_directory_extracts_with_structure_and_timestamps() {
 }
 
 #[test]
+fn select_all_files_selects_visible_files_not_directories() {
+    let mut app = app_with_disk(
+        &["UTILS"],
+        &[
+            ("HELLO.TXT", b"hi"),
+            ("UTILS/GAME.COM", b"game"),
+            ("UTILS/README.TXT", b"doc"),
+        ],
+    );
+    app.select_all_files();
+    let selected: Vec<&str> = app.selection.iter().map(String::as_str).collect();
+    assert_eq!(
+        selected,
+        vec!["HELLO.TXT", "UTILS/GAME.COM", "UTILS/README.TXT"]
+    );
+
+    // With a filter active, only the visible (matching) files are selected.
+    app.selection.clear();
+    app.filter = "*.TXT".to_string();
+    app.select_all_files();
+    let selected: Vec<&str> = app.selection.iter().map(String::as_str).collect();
+    assert_eq!(selected, vec!["HELLO.TXT", "UTILS/README.TXT"]);
+}
+
+#[test]
 fn control_char_filenames_sanitize_to_pictures() {
     // Skip-if-absent: jaarg-hw.di1 has crafted directory entries whose names are
     // C0 control bytes (BEL/CR/LF/FF/SUB).

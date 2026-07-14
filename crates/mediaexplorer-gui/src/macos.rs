@@ -314,7 +314,16 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
     // Window menu (macOS injects Minimize/Zoom/Bring All to Front).
     let window = Submenu::new("Window", true);
 
-    let _ = menu.append_items(&[&app_menu, &file, &view, &encoding, &window]);
+    // Help menu.
+    let help = Submenu::new("Help", true);
+    let _ = help.append(&MenuItem::with_id(
+        "help.shortcuts",
+        "Keyboard Shortcuts",
+        true,
+        None,
+    ));
+
+    let _ = menu.append_items(&[&app_menu, &file, &view, &encoding, &window, &help]);
     menu.init_for_nsapp();
     window.set_as_windows_menu_for_nsapp();
 

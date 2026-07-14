@@ -74,6 +74,10 @@ impl MediaExplorerApp {
         // means no filter; `Some(empty)` means the filter matched nothing.
         let keep = self.filter_keep_set();
         let mut events = RowEvents::default();
+        // The tree viewport height, captured from the scroll area below so
+        // PageUp/PageDown know how many rows fit on one screen.
+        let row_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+        let mut viewport_height = None;
         // Scope `ctx` so its immutable borrows of `self` are released before the
         // event handling below mutates `self.cursor` / `self.collapsed`.
         {
@@ -89,7 +93,7 @@ impl MediaExplorerApp {
             if keep.as_ref().is_some_and(|k| k.is_empty()) {
                 ui.weak(format!("No files match \"{}\".", self.filter));
             } else if let Some(disk) = &self.disk {
-                egui::ScrollArea::vertical()
+                let out = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         if disk.is_partitioned() {
@@ -101,15 +105,20 @@ impl MediaExplorerApp {
                             render_tree_with_root(ui, &disk.tree, &ctx, &mut events);
                         }
                     });
+                viewport_height = Some(out.inner_rect.height());
             } else if let Some(tape) = &self.tape {
-                egui::ScrollArea::vertical()
+                let out = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         render_tape_files(ui, tape, &ctx, &mut events);
                     });
+                viewport_height = Some(out.inner_rect.height());
             } else {
                 ui.weak("No disk open.");
             }
+        }
+        if let Some(height) = viewport_height {
+            self.tree_page_rows = ((height / row_height) as usize).max(1);
         }
         // The cursor scroll is a one-shot; clear it once the tree has drawn.
         self.scroll_to_cursor = false;
@@ -221,34 +230,51 @@ impl MediaExplorerApp {
         })
     }
 
-    /// Drive the tree with the arrow keys while the Files or Stats view is up:
-    /// Up/Down move the highlight one row (loading a file as it lands on one),
-    /// Left/Right collapse/expand directories or step to the parent/first child.
+    /// Whether any modal dialog/window is open. Keyboard shortcuts stop while
+    /// one is up (each dialog handles its own Escape/Enter).
+    pub(crate) fn modal_open(&self) -> bool {
+        self.rename_target.is_some()
+            || self.confirm_delete.is_some()
+            || self.new_dir.is_some()
+            || self.size_fix.is_some()
+            || self.show_new_disk
+            || self.show_about
+            || self.show_shortcuts
+    }
+
+    /// Drive the tree with the keyboard while the Files or Stats view is up:
+    /// arrows move the highlight (loading a file as it lands on one) and
+    /// collapse/expand directories; PageUp/PageDown/Home/End jump; Enter toggles
+    /// a directory; Backspace jumps to the parent; typing letters jumps to the
+    /// next matching name; and F2/Delete/Cmd+A/Cmd+E/Cmd+F/Escape/F1 trigger the
+    /// corresponding actions.
     pub(crate) fn handle_tree_keys(&mut self, ctx: &egui::Context) {
         if !matches!(self.app_view, AppView::Files | AppView::Stats) {
             return;
         }
-        // A modal dialog or a text field (the Find box, rename) owns the
-        // keyboard; don't steal arrow keys from them. `wants_keyboard_input` is
-        // true only for text entry, so a merely-focused row (which egui focuses
-        // on click) does not block navigation.
-        if self.rename_target.is_some()
-            || self.confirm_delete.is_some()
-            || self.new_dir.is_some()
-            || self.size_fix.is_some()
-        {
+        // A modal dialog or a text field (the Find box, rename, filter) owns the
+        // keyboard; don't steal keys from them. `wants_keyboard_input` is true
+        // only for text entry, so a merely-focused row (which egui focuses on
+        // click) does not block navigation.
+        if self.modal_open() || ctx.egui_wants_keyboard_input() {
             return;
         }
-        if ctx.egui_wants_keyboard_input() {
+        if self.handle_action_keys(ctx) {
             return;
         }
-        // Consume the arrow key so the scroll area doesn't also scroll on it.
+        // Consume the navigation key so the scroll area doesn't also scroll.
         let key = ctx.input_mut(|i| {
             for (k, nav) in [
                 (egui::Key::ArrowDown, NavKey::Down),
                 (egui::Key::ArrowUp, NavKey::Up),
                 (egui::Key::ArrowLeft, NavKey::Left),
                 (egui::Key::ArrowRight, NavKey::Right),
+                (egui::Key::PageDown, NavKey::PageDown),
+                (egui::Key::PageUp, NavKey::PageUp),
+                (egui::Key::Home, NavKey::Home),
+                (egui::Key::End, NavKey::End),
+                (egui::Key::Enter, NavKey::Activate),
+                (egui::Key::Backspace, NavKey::Parent),
             ] {
                 if i.consume_key(egui::Modifiers::NONE, k) {
                     return Some(nav);
@@ -257,6 +283,7 @@ impl MediaExplorerApp {
             None
         });
         let Some(key) = key else {
+            self.handle_type_ahead(ctx);
             return;
         };
         // Drop any lingering focus ring left on a previously-clicked row, so the
@@ -266,18 +293,15 @@ impl MediaExplorerApp {
         }
 
         let rows = self.visible_tree_rows();
-        match tree_nav::navigate(&rows, self.cursor.as_deref(), &self.collapsed, key) {
-            TreeNav::MoveTo(path) => {
-                let is_file = rows.iter().any(|r| r.path == path && !r.is_dir);
-                self.scroll_to_cursor = true;
-                if is_file {
-                    // Load-on-highlight: landing on a file previews it like a click.
-                    self.select_file(path.clone(), false);
-                    self.cursor = Some(path);
-                } else {
-                    self.focus_directory(path);
-                }
-            }
+        let nav = tree_nav::navigate(
+            &rows,
+            self.cursor.as_deref(),
+            &self.collapsed,
+            key,
+            self.tree_page_rows,
+        );
+        match nav {
+            TreeNav::MoveTo(path) => self.move_cursor_to(&rows, path),
             TreeNav::SetCollapsed(path, collapsed) => {
                 if collapsed {
                     self.collapsed.insert(path);
@@ -287,6 +311,129 @@ impl MediaExplorerApp {
                 self.scroll_to_cursor = true;
             }
             TreeNav::Nothing => {}
+        }
+    }
+
+    /// Move the keyboard cursor to `path`: files load on highlight (like a
+    /// click), directories only take the highlight.
+    fn move_cursor_to(&mut self, rows: &[tree_nav::VisibleRow], path: String) {
+        let is_file = rows.iter().any(|r| r.path == path && !r.is_dir);
+        self.scroll_to_cursor = true;
+        if is_file {
+            self.select_file(path.clone(), false);
+            self.cursor = Some(path);
+        } else {
+            self.focus_directory(path);
+        }
+    }
+
+    /// Action shortcuts on the file tree. Returns `true` when a shortcut fired
+    /// (so navigation-key handling is skipped this frame).
+    fn handle_action_keys(&mut self, ctx: &egui::Context) -> bool {
+        use egui::{Key, Modifiers};
+        // COMMAND is Cmd on macOS and Ctrl elsewhere.
+        let (rename, delete, select_all, extract, find, escape, help) = ctx.input_mut(|i| {
+            (
+                i.consume_key(Modifiers::NONE, Key::F2)
+                    || i.consume_key(Modifiers::COMMAND, Key::R),
+                i.consume_key(Modifiers::NONE, Key::Delete)
+                    || i.consume_key(Modifiers::COMMAND, Key::Backspace),
+                i.consume_key(Modifiers::COMMAND, Key::A),
+                i.consume_key(Modifiers::COMMAND, Key::E),
+                i.consume_key(Modifiers::COMMAND, Key::F),
+                i.consume_key(Modifiers::NONE, Key::Escape),
+                i.consume_key(Modifiers::NONE, Key::F1),
+            )
+        });
+        // The cursor row, when it is a real directory entry (not the "/" root).
+        let cursor = self
+            .cursor
+            .clone()
+            .filter(|c| c != ROOT_PATH && !c.is_empty());
+        if rename {
+            if let Some(path) = cursor.filter(|_| self.disk_writable()) {
+                if self.entry_for_path(&path).is_some() {
+                    // Edit the decoded display name; re-encoded on save.
+                    let name = charset::decode_fs_name(self.charset, &base_name(&path));
+                    self.rename_target = Some(RenameTarget {
+                        path,
+                        name,
+                        charset: self.charset,
+                    });
+                }
+            }
+        } else if delete {
+            if let Some(path) = cursor.filter(|_| self.disk_writable()) {
+                // Same split as the context menu: directories go through
+                // remove_directory (immediate when empty, confirm otherwise).
+                if self.entry_for_path(&path).is_some_and(|e| e.is_dir) {
+                    self.remove_directory(&path);
+                } else if self.entry_for_path(&path).is_some() {
+                    self.confirm_delete = Some(self.paths_for_row(&path));
+                }
+            }
+        } else if select_all {
+            self.select_all_files();
+        } else if extract {
+            let paths = match &cursor {
+                Some(c) => self.paths_for_row(c),
+                None => self.selection_paths(),
+            };
+            if !paths.is_empty() {
+                self.extract_paths(&paths);
+            }
+        } else if find {
+            ctx.memory_mut(|m| m.request_focus(egui::Id::new("tree_filter_input")));
+        } else if escape {
+            // No modal is open here (guarded above): clear the filter first,
+            // then the multi-selection.
+            if !self.filter.is_empty() {
+                self.filter.clear();
+            } else {
+                self.selection.clear();
+            }
+        } else if help {
+            self.show_shortcuts = true;
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// Type-ahead: letters typed while the tree owns the keyboard jump the
+    /// cursor to the next row whose name starts with the growing prefix; a
+    /// pause resets the prefix.
+    fn handle_type_ahead(&mut self, ctx: &egui::Context) {
+        let typed: String = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect()
+        });
+        if typed.is_empty() {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        if now - self.type_ahead_at > TYPE_AHEAD_TIMEOUT {
+            self.type_ahead.clear();
+        }
+        self.type_ahead.push_str(&typed);
+        self.type_ahead_at = now;
+        let rows = self.visible_tree_rows();
+        if let Some(path) = tree_nav::type_ahead(&rows, self.cursor.as_deref(), &self.type_ahead) {
+            self.move_cursor_to(&rows, path);
+        }
+    }
+
+    /// Put every visible file (not directories) into the multi-selection.
+    pub(crate) fn select_all_files(&mut self) {
+        for row in self.visible_tree_rows() {
+            if !row.is_dir {
+                self.selection.insert(row.path);
+            }
         }
     }
 
