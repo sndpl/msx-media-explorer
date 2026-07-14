@@ -485,6 +485,20 @@ fn dark_castle_screen5_pics_decode_when_forced() {
 }
 
 #[test]
+fn gl5_pic_is_auto_detected_by_content() {
+    use msx_disk::recoil::{self, NoCompanions};
+    let path = skip_if_absent!("blank-720.dsk");
+    let fs = DiskFs::from_image(&DiskImage::open(&path).expect("open")).expect("mount");
+
+    // PEACHUP3.PIC is a GL "shape" SCREEN 5 image, but `.PIC` maps to SCREEN 8.
+    // The content sniff must recognize and decode it via the extension-based
+    // entry point, without the caller forcing a format.
+    let bytes = fs.read_file("PEACHUP3.PIC").expect("read PEACHUP3.PIC");
+    let img = recoil::decode("PEACHUP3.PIC", &bytes, &NoCompanions).expect("auto-detected GL5");
+    assert_eq!((img.width, img.height), (256, 212));
+}
+
+#[test]
 fn plain_dsk_fixtures_mount_and_read_first_file() {
     for name in ["TOOLS.DSK", "MSX-DOS Hulp (1989)(Philips)(nl).dsk"] {
         let Some(path) = fixture(name) else {

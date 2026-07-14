@@ -404,12 +404,73 @@ pub fn is_supported(filename: &str) -> bool {
     format_for_extension(&extension(filename)).is_some()
 }
 
+/// Detect a self-describing MSX graphics format from its bytes alone, for files
+/// whose extension is missing or misleading (e.g. a GL "shape" SCREEN 5 image
+/// saved as `.PIC`, which the extension map treats as SCREEN 8).
+///
+/// Only formats with a distinctive magic (`G9B`/`MAG`/`PI`) or an exact,
+/// dimension-checked payload length (the GL shapes) are sniffed. The plain BSAVE
+/// screen dumps share a generic `0xfe` header and cannot be told apart from one
+/// another without the extension, so they are never guessed here.
+fn sniff(content: &[u8]) -> Option<ImageFormat> {
+    sniff_magic(content).or_else(|| sniff_gl(content))
+}
+
+/// Formats identified by a leading magic signature.
+fn sniff_magic(content: &[u8]) -> Option<ImageFormat> {
+    use ImageFormat::*;
+    if is_string_at(content, 0, b"G9B") && content.len() > 4 && content[3] == 11 && content[4] == 0
+    {
+        Some(G9b)
+    } else if is_string_at(content, 0, b"MAKI02  ") {
+        Some(MakiChan)
+    } else if is_string_at(content, 0, b"Pi") {
+        Some(Pi)
+    } else {
+        None
+    }
+}
+
+/// A GL "shape" image: a 4-byte little-endian (width, height) header followed by
+/// tightly-packed pixel data whose length pins down the bit depth. Width picks
+/// the SCREEN mode (256 = SCREEN 5/8, 512 = SCREEN 6/7); at most one bit depth
+/// matches the payload length, so the classification is unambiguous. A YJK GL
+/// shape shares the 8bpp layout, so an 8bpp match resolves to SCREEN 8 (the far
+/// more common case) — a YJK shape with a misleading extension must be forced.
+fn sniff_gl(content: &[u8]) -> Option<ImageFormat> {
+    use ImageFormat::*;
+    if content.len() < 5 {
+        return None;
+    }
+    let width = content[0] as usize | (content[1] as usize) << 8;
+    let height = content[2] as usize | (content[3] as usize) << 8;
+    if !matches!(width, 256 | 512) || height == 0 || height > 512 {
+        return None;
+    }
+    let pixels = width * height;
+    match content.len() - 4 {
+        n if n == pixels && width == 256 => Some(Gl8), // 8 bpp
+        n if n == (pixels + 1) >> 1 => Some(if width == 256 { Gl5 } else { Gl7 }), // 4 bpp
+        n if n == (pixels + 3) >> 2 && width == 512 => Some(Gl6), // 2 bpp
+        _ => None,
+    }
+}
+
 /// Decode an MSX-family graphics file into an [`Image`], or `None` if the file
-/// is not a recognized/supported format. The format is chosen by extension; use
-/// [`decode_as`] to force a specific format regardless of extension.
+/// is not a recognized/supported format. The format is chosen by extension; if
+/// the extension is unknown or its bytes do not decode under it, self-describing
+/// formats are detected from the content (see [`sniff`]). Use [`decode_as`] to
+/// force a specific format regardless of extension.
 pub fn decode(filename: &str, content: &[u8], companions: &dyn CompanionFiles) -> Option<Image> {
-    let format = format_for_extension(&extension(filename))?;
-    decode_as(format, content, companions)
+    if let Some(format) = format_for_extension(&extension(filename)) {
+        if let Some(image) = decode_as(format, content, companions) {
+            return Some(image);
+        }
+    }
+    // The extension was unknown, or its format could not decode these bytes.
+    // Fall back to content-based detection so e.g. a GL SCREEN 5 image saved as
+    // `.PIC` (an extension that otherwise means SCREEN 8) still renders.
+    decode_as(sniff(content)?, content, companions)
 }
 
 /// Decode `content` as an explicit [`ImageFormat`], ignoring the file's
@@ -569,6 +630,120 @@ mod tests {
     #[test]
     fn unrecognized_returns_none() {
         assert!(decode("x.sc2", &[0u8; 10], &NoCompanions).is_none());
+    }
+
+    /// A GL "shape" SCREEN 5 image (Graph Saurus / PEACH UP `.PIC`) has a 4-byte
+    /// little-endian (width, height) header, 4bpp pixel data, and no BSAVE
+    /// marker. Saved with a `.PIC` extension (which maps to SCREEN 8, and cannot
+    /// decode it), it must still be auto-detected by content and rendered.
+    #[test]
+    fn decode_sniffs_gl5_from_pic_extension() {
+        let (w, h) = (256usize, 212usize);
+        let mut buf = vec![0u8; 4 + ((w * h + 1) >> 1)];
+        buf[0] = (w & 0xff) as u8;
+        buf[1] = (w >> 8) as u8;
+        buf[2] = (h & 0xff) as u8;
+        buf[3] = (h >> 8) as u8;
+        let img = decode("PHOTO.PIC", &buf, &NoCompanions).expect("sniff GL5");
+        assert_eq!((img.width, img.height), (256, 212));
+    }
+
+    /// The sniff is a fallback only: a real SCREEN 8 `.PIC` (a `0xfe` BSAVE dump)
+    /// must keep decoding via its extension and not be shadowed by content
+    /// detection.
+    #[test]
+    fn decode_pic_still_prefers_screen8_bsave() {
+        // 256x212 SCREEN 8 BSAVE: marker 0xfe, end address = 256*212-1 = 0xd3ff.
+        let mut buf = vec![0u8; 7 + 256 * 212];
+        buf[0] = 0xfe;
+        buf[3] = 0xff;
+        buf[4] = 0xd3;
+        let img = decode("PHOTO.PIC", &buf, &NoCompanions).expect("screen8");
+        assert_eq!((img.width, img.height), (256, 212));
+    }
+
+    /// A self-describing image carrying an extension recoil cannot classify at
+    /// all is still decoded from its content.
+    #[test]
+    fn decode_sniffs_unknown_extension() {
+        let (w, h) = (256usize, 212usize);
+        let mut buf = vec![0u8; 4 + ((w * h + 1) >> 1)];
+        buf[0] = (w & 0xff) as u8;
+        buf[1] = (w >> 8) as u8;
+        buf[2] = (h & 0xff) as u8;
+        buf[3] = (h >> 8) as u8;
+        let img = decode("PHOTO.XYZ", &buf, &NoCompanions).expect("sniff by content");
+        assert_eq!((img.width, img.height), (256, 212));
+    }
+
+    /// Build a GL shape buffer: 4-byte (width, height) header + `payload` bytes.
+    fn gl_buf(width: usize, height: usize, payload: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; 4 + payload];
+        buf[0] = (width & 0xff) as u8;
+        buf[1] = (width >> 8) as u8;
+        buf[2] = (height & 0xff) as u8;
+        buf[3] = (height >> 8) as u8;
+        buf
+    }
+
+    /// Each GL bit depth and width resolves to exactly one format. Note GL5
+    /// (256 wide, 4bpp) and GL6 (512 wide, 2bpp) have the same payload size but
+    /// are told apart by the header width.
+    #[test]
+    fn sniff_classifies_gl_family_by_dimensions() {
+        let (w5, w6, h) = (256usize, 512usize, 212usize);
+        // GL5: 256 wide, 4 bpp.
+        assert_eq!(
+            sniff(&gl_buf(w5, h, (w5 * h + 1) >> 1)),
+            Some(ImageFormat::Gl5)
+        );
+        // GL7: 512 wide, 4 bpp.
+        assert_eq!(
+            sniff(&gl_buf(w6, h, (w6 * h + 1) >> 1)),
+            Some(ImageFormat::Gl7)
+        );
+        // GL6: 512 wide, 2 bpp (same payload size as GL5, disambiguated by width).
+        assert_eq!(
+            sniff(&gl_buf(w6, h, (w6 * h + 3) >> 2)),
+            Some(ImageFormat::Gl6)
+        );
+        // GL8: 256 wide, 8 bpp.
+        assert_eq!(sniff(&gl_buf(w5, h, w5 * h)), Some(ImageFormat::Gl8));
+    }
+
+    /// The GL sniff rejects implausible dimensions and inexact payload lengths,
+    /// and never mistakes an ordinary BSAVE dump or arbitrary bytes for an image.
+    #[test]
+    fn sniff_rejects_non_shapes() {
+        // Wrong width (not a SCREEN page).
+        assert!(sniff(&gl_buf(320, 200, 320 * 200)).is_none());
+        // Right dimensions, payload one byte short of any bit depth.
+        assert!(sniff(&gl_buf(256, 212, ((256 * 212 + 1) >> 1) - 1)).is_none());
+        // A plain SCREEN 8 BSAVE dump (0xfe header) is not a GL shape.
+        let mut bsave = vec![0u8; 7 + 256 * 212];
+        bsave[0] = 0xfe;
+        bsave[3] = 0xff;
+        bsave[4] = 0xd3;
+        assert!(sniff(&bsave).is_none());
+        // Too small, and unrelated bytes.
+        assert!(sniff(&[0u8; 4]).is_none());
+        assert!(sniff(b"just some text, not an image at all").is_none());
+    }
+
+    /// Magic-signature formats are recognized by their header regardless of
+    /// extension.
+    #[test]
+    fn sniff_classifies_magic_formats() {
+        assert_eq!(
+            sniff(b"MAKI02  rest of header"),
+            Some(ImageFormat::MakiChan)
+        );
+        let mut g9b = vec![0u8; 20];
+        g9b[0..3].copy_from_slice(b"G9B");
+        g9b[3] = 11;
+        g9b[4] = 0;
+        assert_eq!(sniff(&g9b), Some(ImageFormat::G9b));
+        assert_eq!(sniff(b"Pi\x1a comment"), Some(ImageFormat::Pi));
     }
 
     /// Same synthetic SCREEN 2 buffer as [`decodes_synthetic_sc2`], but carrying
