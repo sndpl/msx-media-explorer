@@ -49,7 +49,14 @@ impl MediaExplorerApp {
             return;
         };
         let modified = self.entry_for_path(path).and_then(|e| e.modified);
-        let default_name = base_name(path);
+        // A host-safe default (control bytes -> pictures, reserved -> `_`), from
+        // the decoded name so kana comes out right; the dialog lets it be edited.
+        let default_name = msx_disk::hostname::safe_component(
+            &self
+                .entry_for_path(path)
+                .map(|e| e.display_name(self.charset))
+                .unwrap_or_else(|| base_name(path)),
+        );
         if let Some(target) = rfd::FileDialog::new()
             .set_file_name(&default_name)
             .save_file()
@@ -94,7 +101,7 @@ impl MediaExplorerApp {
             match self.entry_for_path(path) {
                 Some(entry) => self.collect_entry(entry, Path::new(""), &mut out),
                 None => out.push(Planned {
-                    rel: PathBuf::from(base_name(path)),
+                    rel: PathBuf::from(msx_disk::hostname::safe_component(&base_name(path))),
                     disk_path: path.clone(),
                     modified: None,
                 }),
@@ -106,7 +113,9 @@ impl MediaExplorerApp {
     /// Append `entry` (and, for a directory, its descendants) to `out`, with each
     /// file's host path built under `prefix` from charset-decoded names.
     fn collect_entry(&self, entry: &DirEntry, prefix: &Path, out: &mut Vec<Planned>) {
-        let rel = prefix.join(entry.display_name(self.charset));
+        let rel = prefix.join(msx_disk::hostname::safe_component(
+            &entry.display_name(self.charset),
+        ));
         if entry.is_dir {
             for child in &entry.children {
                 self.collect_entry(child, &rel, out);
@@ -125,14 +134,16 @@ impl MediaExplorerApp {
     pub(crate) fn write_extractions(&self, dest: &Path, planned: &[Planned]) -> (usize, usize) {
         let (mut ok, mut failed) = (0usize, 0usize);
         for item in planned {
-            let target = dest.join(&item.rel);
             let Some(bytes) = self.read_doc_file(&item.disk_path) else {
                 failed += 1;
                 continue;
             };
+            let target = dest.join(&item.rel);
             if let Some(parent) = target.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
+            // Suffix a duplicate name so byte-identical entries don't overwrite.
+            let target = msx_disk::hostname::free_target(&target);
             if write_extracted(&target, &bytes, item.modified).is_ok() {
                 ok += 1;
             } else {

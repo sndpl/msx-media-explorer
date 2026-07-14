@@ -2,6 +2,7 @@
 
 use msx_disk::charset::MsxCharset;
 use msx_disk::fs::{DirEntry, DiskFs, Timestamp};
+use msx_disk::hostname;
 
 use crate::disk::{charset_or_detect, find_entry, to_fs_key, CmdResult};
 
@@ -48,7 +49,11 @@ fn collect(
     charset: MsxCharset,
     out: &mut Vec<Extraction>,
 ) -> CmdResult<()> {
-    let name = entry.display_name(charset);
+    // Make each component safe for the host filesystem: control bytes become
+    // visible pictures and reserved characters become `_`, so a crafted
+    // control-character name cannot create an illegal path or (via a NUL byte)
+    // abort the extraction.
+    let name = hostname::safe_component(&entry.display_name(charset));
     let rel = if prefix.is_empty() {
         name
     } else {
@@ -114,5 +119,32 @@ mod tests {
         .unwrap();
         let files = plan(&disk, None, false, None).unwrap();
         assert_eq!(files[0].0, "\u{FF71}\u{FF72}.BAS");
+    }
+
+    #[test]
+    fn control_char_names_extract_host_safe() {
+        // Skip-if-absent real fixture: jaarg-hw.di1 has crafted entries whose
+        // names are C0 control bytes (and null-extension NUL bytes).
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/jaarg-hw.di1");
+        if !path.exists() {
+            eprintln!("skipping: fixture 'jaarg-hw.di1' not present");
+            return;
+        }
+        let image = msx_disk::image::DiskImage::open(&path).expect("open");
+        let files = plan(image.data(), None, true, None).expect("plan");
+        assert!(!files.is_empty());
+        // No host path keeps a raw control byte (illegal on Windows, and a NUL
+        // would abort extraction); the crafted BEL entry becomes its picture.
+        for (rel, ..) in &files {
+            assert!(
+                !rel.chars().any(|c| (c as u32) < 0x20 || c == '\u{7F}'),
+                "control byte remained in host path: {rel:?}"
+            );
+        }
+        assert!(
+            files.iter().any(|(r, ..)| r.contains('\u{2407}')),
+            "expected a BEL control picture among the extracted names"
+        );
     }
 }

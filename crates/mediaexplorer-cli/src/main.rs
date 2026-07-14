@@ -80,6 +80,9 @@ fn run(cli: Cli) -> Result<(), String> {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("{}: {e}", parent.display()))?;
                 }
+                // Two byte-identical entries (crafted "fake" files) share a name;
+                // suffix the later one so it does not overwrite the first.
+                let target = msx_disk::hostname::free_target(&target);
                 disk::write_extracted(&target, bytes, *modified)
                     .map_err(|e| format!("{}: {e}", target.display()))?;
             }

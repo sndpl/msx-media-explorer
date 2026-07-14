@@ -11,6 +11,7 @@ pub mod charset;
 pub mod error;
 pub mod fileinfo;
 pub mod fs;
+pub mod hostname;
 pub mod image;
 pub mod recoil;
 pub mod search;
