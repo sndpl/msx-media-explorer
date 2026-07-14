@@ -4,11 +4,11 @@ impl MediaExplorerApp {
     /// "View disk by sector" — a hex view of one sector, optionally editable.
     pub(crate) fn sector_panel(&mut self, ui: &mut egui::Ui) {
         let Some(sector_count) = self.disk.as_ref().map(LoadedDisk::sector_count) else {
-            ui.weak("No disk open.");
+            ui.weak(t!("status.no_disk_open"));
             return;
         };
         if sector_count == 0 {
-            ui.weak("Empty disk.");
+            ui.weak(t!("disk.empty"));
             return;
         }
         if self.current_sector >= sector_count {
@@ -16,7 +16,7 @@ impl MediaExplorerApp {
         }
         let writable = self.disk_writable();
         ui.horizontal(|ui| {
-            ui.label("Sector:");
+            ui.label(t!("disk.sector"));
             let mut s = self.current_sector;
             if ui
                 .add(egui::DragValue::new(&mut s).range(0..=sector_count - 1))
@@ -42,13 +42,13 @@ impl MediaExplorerApp {
             ));
             if self.sector_edit.is_some() {
                 ui.separator();
-                if ui.button("Save sector").clicked() {
+                if ui.button(t!("disk.save_sector")).clicked() {
                     self.save_sector_edit();
                 }
-                if ui.button("Cancel").clicked() {
+                if ui.button(t!("button.cancel")).clicked() {
                     self.sector_edit = None;
                 }
-            } else if writable && ui.button("Edit sector").clicked() {
+            } else if writable && ui.button(t!("disk.edit_sector")).clicked() {
                 if let Some(b) = self
                     .disk
                     .as_ref()
@@ -59,16 +59,16 @@ impl MediaExplorerApp {
             }
             if self.sector_edit.is_none() {
                 ui.separator();
-                ui.checkbox(&mut self.show_inspector, "Inspector");
+                ui.checkbox(&mut self.show_inspector, t!("disk.inspector"));
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Find on disk:");
+            ui.label(t!("disk.find_on_disk"));
             let resp = ui
                 .add(egui::TextEdit::singleline(&mut self.disk_search_query).desired_width(160.0));
-            ui.checkbox(&mut self.disk_search_is_hex, "Hex");
+            ui.checkbox(&mut self.disk_search_is_hex, t!("disk.hex"));
             let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button("Find").clicked() || submit {
+            if ui.button(t!("disk.find")).clicked() || submit {
                 self.run_disk_search();
             }
             if !self.disk_search_matches.is_empty() {
@@ -153,7 +153,7 @@ impl MediaExplorerApp {
                     .map(|d| search::find_bytes(d.data(), &needle))
                     .unwrap_or_default(),
                 None => {
-                    self.status = "Invalid hex pattern".to_string();
+                    self.status = t!("disk.invalid_hex_pattern").to_string();
                     return;
                 }
             }
@@ -164,11 +164,12 @@ impl MediaExplorerApp {
                 .unwrap_or_default()
         };
         if matches.is_empty() {
-            self.status = format!("No matches for \"{}\"", self.disk_search_query);
+            self.status =
+                t!("status.no_matches", query => self.disk_search_query.clone()).to_string();
             self.disk_search_matches.clear();
             return;
         }
-        self.status = format!("{} match(es) on disk", matches.len());
+        self.status = tn!("disk.matches_on_disk", matches.len()).to_string();
         self.disk_search_matches = matches;
         self.disk_search_pos = 0;
         self.jump_to_disk_match();
@@ -204,24 +205,24 @@ impl MediaExplorerApp {
             return;
         };
         let Some(bytes) = search::parse_hex(&edited) else {
-            self.status = "Invalid hex: need whole byte pairs".to_string();
+            self.status = t!("disk.invalid_hex_pairs").to_string();
             return;
         };
         if bytes.len() != 512 {
-            self.status = format!("A sector is 512 bytes (got {})", bytes.len());
+            self.status = t!("disk.sector_size_got", count => bytes.len()).to_string();
             return;
         }
         let idx = self.current_sector;
         let result = self.disk.as_mut().unwrap().write_sector(idx, &bytes);
         match result {
             Ok(()) => {
-                self.status = format!("Saved sector {idx}");
+                self.status = t!("disk.saved_sector", sector => idx).to_string();
                 self.sector_edit = None;
                 self.content = None;
                 self.selected = None;
                 self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
             }
-            Err(e) => self.status = format!("Write failed: {e}"),
+            Err(e) => self.status = t!("status.write_failed", error => e).to_string(),
         }
     }
 
@@ -229,7 +230,7 @@ impl MediaExplorerApp {
     /// platter, per [`MapStyle`]; the selected file's sectors are outlined.
     pub(crate) fn map_panel(&mut self, ui: &mut egui::Ui) {
         if self.disk_map.is_none() {
-            ui.weak("No disk map available.");
+            ui.weak(t!("disk.no_map"));
             return;
         }
         let file_set: std::collections::HashSet<usize> = self
@@ -248,11 +249,11 @@ impl MediaExplorerApp {
 
         ui.horizontal_wrapped(|ui| {
             for (label, color) in [
-                ("Reserved", kind_color(SectorKind::Reserved)),
-                ("FAT", kind_color(SectorKind::Fat)),
-                ("Root", kind_color(SectorKind::RootDir)),
-                ("Used", kind_color(SectorKind::DataUsed)),
-                ("Free", kind_color(SectorKind::DataFree)),
+                (t!("disk.legend_reserved"), kind_color(SectorKind::Reserved)),
+                (t!("disk.legend_fat"), kind_color(SectorKind::Fat)),
+                (t!("disk.legend_root"), kind_color(SectorKind::RootDir)),
+                (t!("disk.legend_used"), kind_color(SectorKind::DataUsed)),
+                (t!("disk.legend_free"), kind_color(SectorKind::DataFree)),
             ] {
                 ui.colored_label(color, "\u{25A0}");
                 ui.label(label);
@@ -260,12 +261,12 @@ impl MediaExplorerApp {
             }
             if !file_set.is_empty() {
                 ui.separator();
-                ui.label("white outline = selected file");
+                ui.label(t!("disk.white_outline"));
             }
         });
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.map_style, MapStyle::Grid, "Grid");
-            ui.selectable_value(&mut self.map_style, MapStyle::Disk, "Disk");
+            ui.selectable_value(&mut self.map_style, MapStyle::Grid, t!("disk.map_grid"));
+            ui.selectable_value(&mut self.map_style, MapStyle::Disk, t!("disk.map_disk"));
         });
         ui.separator();
 
@@ -278,7 +279,7 @@ impl MediaExplorerApp {
             MapStyle::Disk => match geometry {
                 Some(geo) => Self::map_disk(ui, map, geo, &file_set),
                 None => {
-                    ui.weak("No geometry available.");
+                    ui.weak(t!("disk.no_geometry"));
                     None
                 }
             },
@@ -422,7 +423,7 @@ impl MediaExplorerApp {
                 painter.text(
                     center,
                     egui::Align2::CENTER_CENTER,
-                    format!("Side {h}"),
+                    t!("disk.side", n => h),
                     egui::FontId::proportional(13.0),
                     egui::Color32::from_gray(160),
                 );
@@ -467,48 +468,45 @@ impl MediaExplorerApp {
             };
             ui.label(egui::RichText::new(description).weak());
             ui.horizontal(|ui| {
-                ui.label(format!(
-                    "Size: {}",
-                    humanize_bytes(geo.total_bytes() as u64)
-                ));
+                ui.label(t!("disk.size", value => humanize_bytes(geo.total_bytes() as u64)));
                 if disk.is_partitioned() {
                     ui.separator();
-                    ui.label(format!("Sectors: {}", geo.total_sectors()));
+                    ui.label(t!("disk.sectors", count => geo.total_sectors()));
                 } else if let Some(fs) = self.disk_fs_geometry {
                     ui.separator();
-                    ui.label(format!("Free: {}", humanize_bytes(fs.free_bytes())));
+                    ui.label(t!("disk.free", value => humanize_bytes(fs.free_bytes())));
                     ui.separator();
-                    ui.label(format!("Clusters: {}", fs.cluster_count));
+                    ui.label(t!("disk.clusters", count => fs.cluster_count));
                     ui.separator();
-                    ui.label(format!("Sectors/cluster: {}", fs.sectors_per_cluster));
+                    ui.label(t!("disk.sectors_per_cluster", count => fs.sectors_per_cluster));
                     ui.separator();
-                    ui.label(format!("Bytes/sector: {}", fs.bytes_per_sector));
+                    ui.label(t!("disk.bytes_per_sector", count => fs.bytes_per_sector));
                     ui.separator();
-                    ui.label(format!("Sectors: {}", fs.total_sectors));
+                    ui.label(t!("disk.sectors", count => fs.total_sectors));
                 } else {
                     ui.separator();
-                    ui.label(format!("Sectors: {}", geo.total_sectors()));
+                    ui.label(t!("disk.sectors", count => geo.total_sectors()));
                 }
                 if let Some(label) = &disk.label {
                     ui.separator();
-                    ui.label(format!("Vol: {label}"));
+                    ui.label(t!("disk.vol", label => label));
                 }
                 if !disk.writable() {
                     ui.separator();
-                    ui.weak("read-only");
+                    ui.weak(t!("disk.read_only"));
                 }
                 ui.separator();
                 ui.label(&self.status);
             });
         } else if let Some(tape) = &self.tape {
             ui.horizontal(|ui| {
-                ui.label(format!("Tape ({})", tape.format.label()));
+                ui.label(t!("disk.tape", format => tape.format.label()));
                 ui.separator();
-                ui.label(format!("Files: {}", tape.file_count()));
+                ui.label(t!("disk.tape_files", count => tape.file_count()));
                 ui.separator();
-                ui.label(format!("Data: {} bytes", tape.total_bytes()));
+                ui.label(t!("disk.tape_data", count => tape.total_bytes()));
                 ui.separator();
-                ui.weak("read-only");
+                ui.weak(t!("disk.read_only"));
                 ui.separator();
                 ui.label(&self.status);
             });
@@ -520,7 +518,7 @@ impl MediaExplorerApp {
     /// The DMK per-track analysis table (only shown for `.dmk` disks).
     pub(crate) fn analyze_panel(&mut self, ui: &mut egui::Ui) {
         let Some(analysis) = &self.dmk_analysis else {
-            ui.weak("No DMK analysis available.");
+            ui.weak(t!("disk.no_dmk"));
             return;
         };
         let standard = analysis
@@ -561,7 +559,7 @@ impl MediaExplorerApp {
     /// The tape block overview (only shown for tapes).
     pub(crate) fn blocks_panel(&mut self, ui: &mut egui::Ui) {
         let Some(tape) = &self.tape else {
-            ui.weak("No tape open.");
+            ui.weak(t!("disk.no_tape_open"));
             return;
         };
         egui::ScrollArea::vertical()

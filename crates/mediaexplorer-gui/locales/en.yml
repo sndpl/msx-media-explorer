@@ -108,6 +108,7 @@ status:
     one: "%{count} match"
     other: "%{count} matches"
   no_disk_open: No disk open.
+  write_failed: "Write failed: %{error}"
   files_selected:
     one: "%{count} file selected"
     other: "%{count} files selected"
@@ -140,3 +141,91 @@ file_dialog:
   disk_images: MSX disk images
   tape_images: MSX tape images
   all_files: All files
+
+info:
+  file: File
+  directory: Directory
+  disk_root: Disk root
+  name: "Name:"
+  size: "Size:"
+  modified: "Modified:"
+  path: "Path:"
+  attributes: Attributes
+  read_only: Read-only
+  hidden: Hidden
+  system: System
+  archive: Archive
+  description: Description
+  bsave_header: Binary (BSAVE) header
+  # start/end/exec get a ":" appended in code, so no colon here.
+  start: Start
+  end: End
+  exec: Exec
+  length: "Length:"
+  graphics: Graphics
+  music: Music
+  format: "Format:"
+  title: "Title:"
+  author: "Author:"
+  positions: "Positions:"
+  channels: "Channels:"
+  subsongs: "Subsongs:"
+  checksums: Checksums
+  crc32: "CRC32"
+  sha1: "SHA-1"
+  control_characters: Control characters
+  control_chars_explain: "This filename contains control characters that manipulate an MSX terminal when the directory is listed (e.g. via the BASIC files command):"
+  raw_bytes: "Raw bytes:"
+  contents: Contents
+  files: "Files:"
+  subdirectories: "Subdirectories:"
+  files_nested: "Files (incl. nested):"
+  subdirectories_all: "Subdirectories (all):"
+  total_size: "Total size:"
+  bytes: "%{count} bytes"
+  size_with_bytes: "%{human} (%{bytes} bytes)"
+
+common:
+  yes: "yes"
+  no: "no"
+
+disk:
+  sector: "Sector:"
+  save_sector: Save sector
+  edit_sector: Edit sector
+  inspector: Inspector
+  find_on_disk: "Find on disk:"
+  hex: Hex
+  find: Find
+  empty: Empty disk.
+  no_map: No disk map available.
+  no_geometry: No geometry available.
+  no_dmk: No DMK analysis available.
+  no_tape_open: No tape open.
+  white_outline: white outline = selected file
+  map_grid: Grid
+  map_disk: Disk
+  legend_reserved: Reserved
+  legend_fat: FAT
+  legend_root: Root
+  legend_used: Used
+  legend_free: Free
+  side: "Side %{n}"
+  size: "Size: %{value}"
+  sectors: "Sectors: %{count}"
+  free: "Free: %{value}"
+  clusters: "Clusters: %{count}"
+  sectors_per_cluster: "Sectors/cluster: %{count}"
+  bytes_per_sector: "Bytes/sector: %{count}"
+  vol: "Vol: %{label}"
+  read_only: read-only
+  tape: "Tape (%{format})"
+  tape_files: "Files: %{count}"
+  tape_data: "Data: %{count} bytes"
+  invalid_hex_pattern: Invalid hex pattern
+  invalid_hex_pairs: "Invalid hex: need whole byte pairs"
+  sector_size_got: "A sector is 512 bytes (got %{count})"
+  saved_sector: "Saved sector %{sector}"
+  matches_on_disk:
+    one: "%{count} match on disk"
+    other: "%{count} matches on disk"

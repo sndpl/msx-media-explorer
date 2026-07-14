@@ -103,6 +103,7 @@ status:
     one: "%{count} resultaat"
     other: "%{count} resultaten"
   no_disk_open: Geen schijf geopend.
+  write_failed: "Schrijven mislukt: %{error}"
   files_selected:
     one: "%{count} bestand geselecteerd"
     other: "%{count} bestanden geselecteerd"
@@ -135,3 +136,90 @@ file_dialog:
   disk_images: MSX-schijfimages
   tape_images: MSX-tape-images
   all_files: Alle bestanden
+
+info:
+  file: Bestand
+  directory: Map
+  disk_root: Schijfwortel
+  name: "Naam:"
+  size: "Grootte:"
+  modified: "Gewijzigd:"
+  path: "Pad:"
+  attributes: Kenmerken
+  read_only: Alleen-lezen
+  hidden: Verborgen
+  system: Systeem
+  archive: Archief
+  description: Beschrijving
+  bsave_header: Binair (BSAVE)-kopblok
+  start: Start
+  end: Einde
+  exec: Uitvoer
+  length: "Lengte:"
+  graphics: Afbeelding
+  music: Muziek
+  format: "Formaat:"
+  title: "Titel:"
+  author: "Auteur:"
+  positions: "Posities:"
+  channels: "Kanalen:"
+  subsongs: "Subnummers:"
+  checksums: Controlegetallen
+  crc32: "CRC32"
+  sha1: "SHA-1"
+  control_characters: Stuurtekens
+  control_chars_explain: "Deze bestandsnaam bevat stuurtekens die een MSX-terminal manipuleren wanneer de map wordt getoond (bijv. via de BASIC-opdracht files):"
+  raw_bytes: "Ruwe bytes:"
+  contents: Inhoud
+  files: "Bestanden:"
+  subdirectories: "Submappen:"
+  files_nested: "Bestanden (incl. genest):"
+  subdirectories_all: "Submappen (alle):"
+  total_size: "Totale grootte:"
+  bytes: "%{count} bytes"
+  size_with_bytes: "%{human} (%{bytes} bytes)"
+
+common:
+  yes: "ja"
+  no: "nee"
+
+disk:
+  sector: "Sector:"
+  save_sector: Sector opslaan
+  edit_sector: Sector bewerken
+  inspector: Inspecteur
+  find_on_disk: "Op schijf zoeken:"
+  hex: Hex
+  find: Zoeken
+  empty: Lege schijf.
+  no_map: Geen schijfkaart beschikbaar.
+  no_geometry: Geen geometrie beschikbaar.
+  no_dmk: Geen DMK-analyse beschikbaar.
+  no_tape_open: Geen tape geopend.
+  white_outline: witte omlijning = geselecteerd bestand
+  map_grid: Raster
+  map_disk: Schijf
+  legend_reserved: Gereserveerd
+  legend_fat: FAT
+  legend_root: Root
+  legend_used: Gebruikt
+  legend_free: Vrij
+  side: "Kant %{n}"
+  size: "Grootte: %{value}"
+  sectors: "Sectoren: %{count}"
+  free: "Vrij: %{value}"
+  clusters: "Clusters: %{count}"
+  sectors_per_cluster: "Sectoren/cluster: %{count}"
+  bytes_per_sector: "Bytes/sector: %{count}"
+  vol: "Vol: %{label}"
+  read_only: alleen-lezen
+  tape: "Tape (%{format})"
+  tape_files: "Bestanden: %{count}"
+  tape_data: "Data: %{count} bytes"
+  invalid_hex_pattern: Ongeldig hexpatroon
+  invalid_hex_pairs: "Ongeldige hex: hele byteparen vereist"
+  sector_size_got: "Een sector is 512 bytes (was %{count})"
+  saved_sector: "Sector %{sector} opgeslagen"
+  matches_on_disk:
+    one: "%{count} resultaat op schijf"
+    other: "%{count} resultaten op schijf"

@@ -352,7 +352,11 @@ pub(crate) fn parse_offset(s: &str) -> Option<usize> {
 }
 
 /// A two-column label/value grid row.
-pub(crate) fn kv_row(ui: &mut egui::Ui, key: &str, value: impl Into<String>) {
+pub(crate) fn kv_row(
+    ui: &mut egui::Ui,
+    key: impl Into<egui::WidgetText>,
+    value: impl Into<String>,
+) {
     ui.label(key);
     ui.monospace(value.into());
     ui.end_row();

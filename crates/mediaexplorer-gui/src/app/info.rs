@@ -184,27 +184,27 @@ pub(crate) fn render_root_info(ui: &mut egui::Ui, entries: &[DirEntry]) {
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.heading("Disk root");
+            ui.heading(t!("info.disk_root"));
             egui::Grid::new("root_info").num_columns(2).show(ui, |ui| {
-                ui.label("Files:");
+                ui.label(t!("info.files"));
                 ui.monospace(files.to_string());
                 ui.end_row();
-                ui.label("Subdirectories:");
+                ui.label(t!("info.subdirectories"));
                 ui.monospace(dirs.to_string());
                 ui.end_row();
                 if total_dirs > 0 {
-                    ui.label("Files (incl. nested):");
+                    ui.label(t!("info.files_nested"));
                     ui.monospace(total_files.to_string());
                     ui.end_row();
-                    ui.label("Subdirectories (all):");
+                    ui.label(t!("info.subdirectories_all"));
                     ui.monospace(total_dirs.to_string());
                     ui.end_row();
                 }
-                ui.label("Total size:");
-                ui.monospace(format!(
-                    "{} ({} bytes)",
-                    humanize_bytes(total_bytes),
-                    total_bytes
+                ui.label(t!("info.total_size"));
+                ui.monospace(t!(
+                    "info.size_with_bytes",
+                    human => humanize_bytes(total_bytes),
+                    bytes => total_bytes
                 ));
                 ui.end_row();
             });
@@ -213,21 +213,21 @@ pub(crate) fn render_root_info(ui: &mut egui::Ui, entries: &[DirEntry]) {
 
 pub(crate) fn render_directory_info(ui: &mut egui::Ui, dir: &DirEntry, charset: MsxCharset) {
     let stats = directory_stats(dir);
-    let yes_no = |b: bool| if b { "yes" } else { "no" };
+    let yes_no = |b: bool| if b { t!("common.yes") } else { t!("common.no") };
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.heading("Directory");
+            ui.heading(t!("info.directory"));
             egui::Grid::new("dir_info").num_columns(2).show(ui, |ui| {
-                ui.label("Name:");
+                ui.label(t!("info.name"));
                 ui.monospace(dir.display_name(charset));
                 ui.end_row();
-                ui.label("Path:");
+                ui.label(t!("info.path"));
                 ui.monospace(charset::decode_fs_name(charset, &dir.path));
                 ui.end_row();
                 let ts = format_timestamp(dir.modified);
                 if !ts.is_empty() {
-                    ui.label("Modified:");
+                    ui.label(t!("info.modified"));
                     ui.monospace(ts);
                     ui.end_row();
                 }
@@ -235,13 +235,13 @@ pub(crate) fn render_directory_info(ui: &mut egui::Ui, dir: &DirEntry, charset: 
 
             let a = dir.attributes;
             ui.add_space(4.0);
-            ui.label("Attributes");
+            ui.label(t!("info.attributes"));
             egui::Grid::new("dir_attrs").num_columns(2).show(ui, |ui| {
                 for (name, set) in [
-                    ("Read-only", a.read_only),
-                    ("Hidden", a.hidden),
-                    ("System", a.system),
-                    ("Archive", a.archive),
+                    (t!("info.read_only"), a.read_only),
+                    (t!("info.hidden"), a.hidden),
+                    (t!("info.system"), a.system),
+                    (t!("info.archive"), a.archive),
                 ] {
                     ui.label(format!("{name}:"));
                     ui.monospace(yes_no(set));
@@ -250,31 +250,31 @@ pub(crate) fn render_directory_info(ui: &mut egui::Ui, dir: &DirEntry, charset: 
             });
 
             ui.add_space(8.0);
-            ui.heading("Contents");
+            ui.heading(t!("info.contents"));
             egui::Grid::new("dir_contents")
                 .num_columns(2)
                 .show(ui, |ui| {
-                    ui.label("Files:");
+                    ui.label(t!("info.files"));
                     ui.monospace(stats.files.to_string());
                     ui.end_row();
-                    ui.label("Subdirectories:");
+                    ui.label(t!("info.subdirectories"));
                     ui.monospace(stats.dirs.to_string());
                     ui.end_row();
                     // Recursive totals only add information when there are nested
                     // folders; for a flat directory they equal the immediate counts.
                     if stats.total_dirs > 0 {
-                        ui.label("Files (incl. nested):");
+                        ui.label(t!("info.files_nested"));
                         ui.monospace(stats.total_files.to_string());
                         ui.end_row();
-                        ui.label("Subdirectories (all):");
+                        ui.label(t!("info.subdirectories_all"));
                         ui.monospace(stats.total_dirs.to_string());
                         ui.end_row();
                     }
-                    ui.label("Total size:");
-                    ui.monospace(format!(
-                        "{} ({} bytes)",
-                        humanize_bytes(stats.total_bytes),
-                        stats.total_bytes
+                    ui.label(t!("info.total_size"));
+                    ui.monospace(t!(
+                        "info.size_with_bytes",
+                        human => humanize_bytes(stats.total_bytes),
+                        bytes => stats.total_bytes
                     ));
                     ui.end_row();
                 });
@@ -290,25 +290,25 @@ pub(crate) fn render_info(
     checksums: &msx_disk::Checksums,
     info: &msx_disk::fileinfo::FileInfo,
 ) {
-    let yes_no = |b: bool| if b { "yes" } else { "no" };
+    let yes_no = |b: bool| if b { t!("common.yes") } else { t!("common.no") };
 
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.heading("File");
+            ui.heading(t!("info.file"));
             egui::Grid::new("info_file").num_columns(2).show(ui, |ui| {
-                ui.label("Name:");
+                ui.label(t!("info.name"));
                 ui.monospace(charset::display_control_safe(&info_display_name(
                     entry, path, charset,
                 )));
                 ui.end_row();
                 let size = entry.map(|e| e.size).unwrap_or(bytes.len() as u64);
-                ui.label("Size:");
-                ui.monospace(format!("{size} bytes"));
+                ui.label(t!("info.size"));
+                ui.monospace(t!("info.bytes", count => size));
                 ui.end_row();
                 if let Some(ts) = entry.map(|e| format_timestamp(e.modified)) {
                     if !ts.is_empty() {
-                        ui.label("Modified:");
+                        ui.label(t!("info.modified"));
                         ui.monospace(ts);
                         ui.end_row();
                     }
@@ -329,11 +329,8 @@ pub(crate) fn render_info(
             controls.dedup();
             if !controls.is_empty() {
                 ui.add_space(8.0);
-                ui.heading("Control characters");
-                ui.label(
-                    "This filename contains control characters that manipulate an MSX terminal \
-                     when the directory is listed (e.g. via the BASIC files command):",
-                );
+                ui.heading(t!("info.control_characters"));
+                ui.label(t!("info.control_chars_explain"));
                 egui::Grid::new("info_controls")
                     .num_columns(2)
                     .show(ui, |ui| {
@@ -352,7 +349,7 @@ pub(crate) fn render_info(
                     .join(" ");
                 ui.add_space(2.0);
                 ui.horizontal(|ui| {
-                    ui.label("Raw bytes:");
+                    ui.label(t!("info.raw_bytes"));
                     ui.monospace(hex);
                 });
             }
@@ -360,13 +357,13 @@ pub(crate) fn render_info(
             if let Some(e) = entry {
                 let a = e.attributes;
                 ui.add_space(4.0);
-                ui.label("Attributes");
+                ui.label(t!("info.attributes"));
                 egui::Grid::new("info_attrs").num_columns(2).show(ui, |ui| {
                     for (name, set) in [
-                        ("Read-only", a.read_only),
-                        ("Hidden", a.hidden),
-                        ("System", a.system),
-                        ("Archive", a.archive),
+                        (t!("info.read_only"), a.read_only),
+                        (t!("info.hidden"), a.hidden),
+                        (t!("info.system"), a.system),
+                        (t!("info.archive"), a.archive),
                     ] {
                         ui.label(format!("{name}:"));
                         ui.monospace(yes_no(set));
@@ -377,61 +374,65 @@ pub(crate) fn render_info(
 
             if let Some(desc) = info.description {
                 ui.add_space(8.0);
-                ui.heading("Description");
+                ui.heading(t!("info.description"));
                 ui.label(desc);
             }
 
             if let Some(b) = &info.bload {
                 ui.add_space(8.0);
-                ui.heading("Binary (BSAVE) header");
+                ui.heading(t!("info.bsave_header"));
                 egui::Grid::new("info_bload").num_columns(2).show(ui, |ui| {
-                    for (name, addr) in [("Start", b.start), ("End", b.end), ("Exec", b.exec)] {
+                    for (name, addr) in [
+                        (t!("info.start"), b.start),
+                        (t!("info.end"), b.end),
+                        (t!("info.exec"), b.exec),
+                    ] {
                         ui.label(format!("{name}:"));
                         ui.monospace(format!("0x{addr:04X}"));
                         ui.end_row();
                     }
-                    ui.label("Length:");
-                    ui.monospace(format!("{} bytes", b.data_len()));
+                    ui.label(t!("info.length"));
+                    ui.monospace(t!("info.bytes", count => b.data_len()));
                     ui.end_row();
                 });
             }
 
             if let Some(g) = &info.graphics {
                 ui.add_space(8.0);
-                ui.heading("Graphics");
+                ui.heading(t!("info.graphics"));
                 ui.label(g.label.as_str());
             }
 
             if let Some(m) = &info.music {
                 ui.add_space(8.0);
-                ui.heading("Music");
+                ui.heading(t!("info.music"));
                 egui::Grid::new("info_music").num_columns(2).show(ui, |ui| {
-                    ui.label("Format:");
+                    ui.label(t!("info.format"));
                     ui.monospace(m.format);
                     ui.end_row();
                     if let Some(t) = &m.title {
-                        ui.label("Title:");
+                        ui.label(t!("info.title"));
                         ui.monospace(t.as_str());
                         ui.end_row();
                     }
                     if let Some(a) = &m.author {
-                        ui.label("Author:");
+                        ui.label(t!("info.author"));
                         ui.monospace(a.as_str());
                         ui.end_row();
                     }
                     if let Some(p) = m.positions {
-                        ui.label("Positions:");
+                        ui.label(t!("info.positions"));
                         ui.monospace(p.to_string());
                         ui.end_row();
                     }
                     if let Some(c) = m.channels {
-                        ui.label("Channels:");
+                        ui.label(t!("info.channels"));
                         ui.monospace(c.to_string());
                         ui.end_row();
                     }
                     if let Some(s) = m.subsongs {
                         if s > 0 {
-                            ui.label("Subsongs:");
+                            ui.label(t!("info.subsongs"));
                             ui.monospace(s.to_string());
                             ui.end_row();
                         }
@@ -445,12 +446,12 @@ pub(crate) fn render_info(
             }
 
             ui.add_space(8.0);
-            ui.heading("Checksums");
+            ui.heading(t!("info.checksums"));
             egui::Grid::new("info_checksums")
                 .num_columns(2)
                 .show(ui, |ui| {
-                    kv_row(ui, "CRC32", checksums.crc32_hex());
-                    kv_row(ui, "SHA-1", checksums.sha1_hex());
+                    kv_row(ui, t!("info.crc32"), checksums.crc32_hex());
+                    kv_row(ui, t!("info.sha1"), checksums.sha1_hex());
                 });
         });
 }
