@@ -17,6 +17,10 @@ fatfs = { version = "0.3.6", default-features = false, features = ["std", "alloc
 # need: lh0/lh1/lh4/lh5/lh6/lh7 (.lzh), lzs/lz4/lz5 (.lzs), and pm0 (.pma).
 # PMA pm1/pm2 are not supported by delharc and are handled by `archive::pma`.
 delharc = "0.6"
+# Local-timezone conversion for restoring a FAT file's date on extraction.
+# Already in the tree via delharc; the `clock` feature adds OS timezone access
+# (thread-safe, unlike the `time` crate — this runs in the multithreaded GUI).
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 [dev-dependencies]
 image.workspace = true

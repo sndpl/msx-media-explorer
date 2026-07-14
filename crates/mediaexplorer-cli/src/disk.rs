@@ -4,7 +4,7 @@ use std::io;
 use std::path::Path;
 
 use msx_disk::charset::{self, MsxCharset};
-use msx_disk::fs::DirEntry;
+use msx_disk::fs::{DirEntry, Timestamp};
 
 /// Errors surfaced to the user; commands return these as plain messages.
 pub type CmdResult<T> = Result<T, String>;
@@ -52,6 +52,21 @@ pub fn detect_charset(tree: &[DirEntry]) -> MsxCharset {
 /// The charset to use: an explicit choice, or auto-detection from the tree.
 pub fn charset_or_detect(explicit: Option<MsxCharset>, tree: &[DirEntry]) -> MsxCharset {
     explicit.unwrap_or_else(|| detect_charset(tree))
+}
+
+/// Write an extracted file to `target`, then restore its original directory-
+/// entry modification time so it keeps its disk date instead of "now". Applying
+/// the timestamp is best-effort: a failure to set it (e.g. a filesystem that
+/// does not support it) must not fail the extraction, so it is ignored.
+pub fn write_extracted(target: &Path, bytes: &[u8], modified: Option<Timestamp>) -> io::Result<()> {
+    std::fs::write(target, bytes)?;
+    if let Some(time) = modified.and_then(|t| t.to_system_time()) {
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .open(target)
+            .and_then(|f| f.set_modified(time));
+    }
+    Ok(())
 }
 
 /// Write `bytes` to `path` atomically: write a sibling temp file, then rename
@@ -154,6 +169,28 @@ mod tests {
         let ascii = write::create_blank(DiskFormat::Ds720).unwrap();
         let ascii = write::add_files(&ascii, &[("PLAIN.TXT", b"x")]).unwrap();
         assert_eq!(detect_charset(&tree_of(&ascii)), MsxCharset::International);
+    }
+
+    #[test]
+    fn write_extracted_preserves_the_fat_modification_time() {
+        use msx_disk::fs::Timestamp;
+        let dir = std::env::temp_dir().join(format!("mecli-mtime-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("OLD.TXT");
+
+        let modified = Timestamp {
+            year: 1990,
+            month: 5,
+            day: 12,
+            hour: 14,
+            minute: 30,
+        };
+        write_extracted(&target, b"vintage", Some(modified)).unwrap();
+
+        assert_eq!(std::fs::read(&target).unwrap(), b"vintage");
+        let got = std::fs::metadata(&target).unwrap().modified().unwrap();
+        assert_eq!(got, modified.to_system_time().unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

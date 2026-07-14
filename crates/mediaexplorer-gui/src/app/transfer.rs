@@ -1,5 +1,24 @@
 use super::*;
 
+/// Write an extracted file to `target`, then restore its original directory-
+/// entry modification time so the host copy keeps its disk date instead of
+/// "now". Setting the time is best-effort: any failure is ignored so it can
+/// never fail the extraction itself.
+pub(crate) fn write_extracted(
+    target: &Path,
+    bytes: &[u8],
+    modified: Option<msx_disk::fs::Timestamp>,
+) -> std::io::Result<()> {
+    std::fs::write(target, bytes)?;
+    if let Some(time) = modified.and_then(|t| t.to_system_time()) {
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .open(target)
+            .and_then(|f| f.set_modified(time));
+    }
+    Ok(())
+}
+
 impl MediaExplorerApp {
     /// Extract the given files to the host: a save-as dialog for one, a folder
     /// picker for several.
@@ -17,12 +36,13 @@ impl MediaExplorerApp {
             self.status = format!("Cannot read {path}");
             return;
         };
+        let modified = self.entry_for_path(path).and_then(|e| e.modified);
         let default_name = base_name(path);
         if let Some(target) = rfd::FileDialog::new()
             .set_file_name(&default_name)
             .save_file()
         {
-            self.status = match std::fs::write(&target, &bytes) {
+            self.status = match write_extracted(&target, &bytes, modified) {
                 Ok(()) => format!("Extracted {} to {}", default_name, target.display()),
                 Err(e) => format!("Failed to extract: {e}"),
             };
@@ -37,8 +57,11 @@ impl MediaExplorerApp {
         let mut ok = 0usize;
         let mut failed = 0usize;
         for path in paths {
+            let modified = self.entry_for_path(path).and_then(|e| e.modified);
             match self.read_doc_file(path) {
-                Some(bytes) if std::fs::write(dir.join(base_name(path)), &bytes).is_ok() => {
+                Some(bytes)
+                    if write_extracted(&dir.join(base_name(path)), &bytes, modified).is_ok() =>
+                {
                     ok += 1;
                 }
                 _ => failed += 1,
@@ -180,8 +203,9 @@ impl MediaExplorerApp {
             let bytes = self
                 .read_doc_file(path)
                 .ok_or_else(|| format!("cannot read {path}"))?;
+            let modified = self.entry_for_path(path).and_then(|e| e.modified);
             let target = dir.join(base_name(path));
-            std::fs::write(&target, &bytes)
+            write_extracted(&target, &bytes, modified)
                 .map_err(|e| format!("write {}: {e}", target.display()))?;
             staged.push(target);
         }

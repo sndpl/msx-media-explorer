@@ -72,7 +72,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 args.recursive,
                 args.charset.map(MsxCharset::from),
             )?;
-            for (rel, bytes) in &planned {
+            for (rel, bytes, modified) in &planned {
                 let target = args
                     .out
                     .join(rel.split('/').collect::<std::path::PathBuf>());
@@ -80,7 +80,8 @@ fn run(cli: Cli) -> Result<(), String> {
                     std::fs::create_dir_all(parent)
                         .map_err(|e| format!("{}: {e}", parent.display()))?;
                 }
-                std::fs::write(&target, bytes).map_err(|e| format!("{}: {e}", target.display()))?;
+                disk::write_extracted(&target, bytes, *modified)
+                    .map_err(|e| format!("{}: {e}", target.display()))?;
             }
             println!(
                 "extracted {} file(s) to {}",

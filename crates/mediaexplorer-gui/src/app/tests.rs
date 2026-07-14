@@ -1,6 +1,27 @@
 use super::*;
 
 #[test]
+fn extracted_file_keeps_its_fat_modification_time() {
+    let dir = std::env::temp_dir().join(format!("megui-mtime-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let target = dir.join("VINTAGE.PIC");
+
+    let modified = msx_disk::fs::Timestamp {
+        year: 1990,
+        month: 5,
+        day: 12,
+        hour: 14,
+        minute: 30,
+    };
+    super::transfer::write_extracted(&target, b"pixels", Some(modified)).unwrap();
+
+    assert_eq!(std::fs::read(&target).unwrap(), b"pixels");
+    let got = std::fs::metadata(&target).unwrap().modified().unwrap();
+    assert_eq!(got, modified.to_system_time().unwrap());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn about_icon_asset_decodes() {
     // The About window decodes this embedded PNG on first open; guard
     // against a broken or wrong asset being bundled.

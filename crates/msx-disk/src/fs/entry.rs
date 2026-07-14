@@ -1,5 +1,9 @@
 //! Plain, UI-free data structures describing the contents of a disk.
 
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use chrono::{Local, LocalResult, TimeZone};
+
 use crate::charset::{self, MsxCharset};
 
 /// A DOS-style file attribute set.
@@ -19,6 +23,36 @@ pub struct Timestamp {
     pub day: u8,
     pub hour: u8,
     pub minute: u8,
+}
+
+impl Timestamp {
+    /// This timestamp as a [`SystemTime`], for stamping an extracted host file's
+    /// modification time so it keeps its disk date instead of "now".
+    ///
+    /// FAT stores wall-clock time with no timezone, so the civil fields are
+    /// interpreted in the host's local timezone: the date and time the OS then
+    /// shows for the extracted file match what the app shows for it inside the
+    /// image. Returns `None` for a date that does not exist — an out-of-range
+    /// field, or a local time skipped by a daylight-saving transition.
+    pub fn to_system_time(&self) -> Option<SystemTime> {
+        let local = Local.with_ymd_and_hms(
+            self.year as i32,
+            self.month as u32,
+            self.day as u32,
+            self.hour as u32,
+            self.minute as u32,
+            0,
+        );
+        let secs = match local {
+            LocalResult::Single(dt) | LocalResult::Ambiguous(dt, _) => dt.timestamp(),
+            LocalResult::None => return None,
+        };
+        Some(if secs >= 0 {
+            UNIX_EPOCH + Duration::from_secs(secs as u64)
+        } else {
+            UNIX_EPOCH - Duration::from_secs(secs.unsigned_abs())
+        })
+    }
 }
 
 /// One entry (file or directory) in the disk's directory tree.
@@ -66,5 +100,56 @@ impl DirEntry {
             }
             Some(next)
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{Datelike, Timelike};
+
+    fn ts(year: u16, month: u8, day: u8, hour: u8, minute: u8) -> Timestamp {
+        Timestamp {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+        }
+    }
+
+    #[test]
+    fn to_system_time_round_trips_through_local_time() {
+        // A mid-May afternoon is never inside a daylight-saving transition, so
+        // the civil fields survive the round-trip whatever the test machine's
+        // timezone is.
+        let t = ts(1990, 5, 12, 14, 30);
+        let secs = t
+            .to_system_time()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let back = Local.timestamp_opt(secs, 0).single().unwrap();
+        assert_eq!(
+            (
+                back.year(),
+                back.month(),
+                back.day(),
+                back.hour(),
+                back.minute()
+            ),
+            (1990, 5, 12, 14, 30)
+        );
+    }
+
+    #[test]
+    fn to_system_time_rejects_impossible_dates() {
+        assert!(ts(1990, 0, 1, 0, 0).to_system_time().is_none());
+        assert!(ts(1990, 13, 1, 0, 0).to_system_time().is_none());
+        assert!(ts(1990, 2, 30, 0, 0).to_system_time().is_none());
+        assert!(ts(1990, 1, 32, 0, 0).to_system_time().is_none());
+        assert!(ts(1990, 1, 1, 24, 0).to_system_time().is_none());
+        assert!(ts(1990, 1, 1, 0, 60).to_system_time().is_none());
     }
 }

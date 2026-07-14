@@ -2404,6 +2404,7 @@ dependencies = [
 name = "msx-disk"
 version = "0.4.0"
 dependencies = [
+ "chrono",
  "delharc",
  "fatfs",
  "image",

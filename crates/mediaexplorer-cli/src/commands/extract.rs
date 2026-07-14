@@ -1,13 +1,14 @@
 //! `extract` — plan which files to copy out of a disk image.
 
 use msx_disk::charset::MsxCharset;
-use msx_disk::fs::{DirEntry, DiskFs};
+use msx_disk::fs::{DirEntry, DiskFs, Timestamp};
 
 use crate::disk::{charset_or_detect, find_entry, to_fs_key, CmdResult};
 
 /// One file to write on the host: a relative path (display-decoded, so kana
-/// names come out as real kana) and its bytes.
-pub type Extraction = (String, Vec<u8>);
+/// names come out as real kana), its bytes, and its original directory-entry
+/// modification time (so the host copy keeps the disk date, not "now").
+pub type Extraction = (String, Vec<u8>, Option<Timestamp>);
 
 /// Plan the extraction of `path` (a file, or a directory with `recursive`),
 /// or of the whole image when `path` is `None`.
@@ -59,7 +60,7 @@ fn collect(
         }
     } else {
         let bytes = fs.read_file(&entry.path).map_err(|e| e.to_string())?;
-        out.push((rel, bytes));
+        out.push((rel, bytes, entry.modified));
     }
     Ok(())
 }
@@ -72,7 +73,9 @@ mod tests {
     #[test]
     fn extracts_a_single_file_by_name() {
         let files = plan(&testdisk::populated(), Some("hello.txt"), false, None).unwrap();
-        assert_eq!(files, vec![("HELLO.TXT".to_string(), b"hi there".to_vec())]);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "HELLO.TXT");
+        assert_eq!(files[0].1, b"hi there");
     }
 
     #[test]
@@ -88,7 +91,7 @@ mod tests {
     #[test]
     fn whole_image_extraction_walks_everything() {
         let files = plan(&testdisk::populated(), None, false, None).unwrap();
-        let mut names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        let mut names: Vec<&str> = files.iter().map(|(n, ..)| n.as_str()).collect();
         names.sort_unstable();
         assert_eq!(names, vec!["HELLO.TXT", "UTILS/GAME.COM"]);
     }
