@@ -8,6 +8,7 @@ mod hexlayout;
 mod macos;
 mod settings;
 mod state;
+mod tree_filter;
 mod tree_nav;
 
 use app::MediaExplorerApp;

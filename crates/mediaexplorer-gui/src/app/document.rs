@@ -40,6 +40,7 @@ impl MediaExplorerApp {
         self.selection.clear();
         self.cursor = None;
         self.collapsed.clear();
+        self.filter.clear();
         self.scroll_to_cursor = false;
         self.new_dir = None;
         self.size_fix = None;

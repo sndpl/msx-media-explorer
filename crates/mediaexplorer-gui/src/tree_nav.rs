@@ -52,10 +52,17 @@ pub enum TreeNav {
 /// placed first and `entries` become its children (depth 1, parent = `path`);
 /// collapsing the root path hides them all. When `root` is `None` the entries
 /// render flat at depth 0 (used for partition lists, which have no single root).
+///
+/// When `keep` is `Some(set)` a filter is active: only entries whose path is in
+/// the set are shown, and directories are descended regardless of `collapsed`
+/// (a kept directory is an ancestor of a match, so its matches must be revealed).
+/// `keep` must not be empty — callers short-circuit an empty keep-set to a
+/// "no matches" state. The synthetic root row is always shown.
 pub fn flatten_visible(
     entries: &[DirEntry],
     collapsed: &BTreeSet<String>,
     root: Option<&str>,
+    keep: Option<&BTreeSet<String>>,
 ) -> Vec<VisibleRow> {
     let mut rows = Vec::new();
     match root {
@@ -69,9 +76,9 @@ pub fn flatten_visible(
             });
             // The root is always expanded (not collapsible), so its children
             // show regardless of the collapsed set.
-            push_rows(entries, collapsed, 1, Some(root_path), &mut rows);
+            push_rows(entries, collapsed, 1, Some(root_path), keep, &mut rows);
         }
-        None => push_rows(entries, collapsed, 0, None, &mut rows),
+        None => push_rows(entries, collapsed, 0, None, keep, &mut rows),
     }
     rows
 }
@@ -81,9 +88,13 @@ fn push_rows(
     collapsed: &BTreeSet<String>,
     depth: usize,
     parent: Option<&str>,
+    keep: Option<&BTreeSet<String>>,
     rows: &mut Vec<VisibleRow>,
 ) {
     for entry in entries {
+        if keep.is_some_and(|k| !k.contains(&entry.path)) {
+            continue;
+        }
         rows.push(VisibleRow {
             path: entry.path.clone(),
             is_dir: entry.is_dir,
@@ -91,12 +102,16 @@ fn push_rows(
             parent: parent.map(str::to_string),
             collapsible: true,
         });
-        if entry.is_dir && !collapsed.contains(&entry.path) {
+        // While filtering, descend every kept directory so matches inside a
+        // collapsed folder are still revealed.
+        let descend = keep.is_some() || !collapsed.contains(&entry.path);
+        if entry.is_dir && descend {
             push_rows(
                 &entry.children,
                 collapsed,
                 depth + 1,
                 Some(&entry.path),
+                keep,
                 rows,
             );
         }
@@ -198,7 +213,7 @@ mod tests {
 
     #[test]
     fn flatten_lists_everything_when_nothing_collapsed() {
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), None);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         assert_eq!(
             paths(&rows),
             vec![
@@ -222,7 +237,7 @@ mod tests {
 
     #[test]
     fn flatten_with_root_nests_entries_under_it() {
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), Some(""));
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), Some(""), None);
         // The synthetic root comes first: a depth-0 directory, no parent, and
         // not collapsible (a disk has exactly one root).
         assert_eq!(rows[0].path, "");
@@ -241,14 +256,14 @@ mod tests {
     fn root_is_not_collapsible_so_children_always_show() {
         // Even if the root path were in the collapsed set, its children show.
         let collapsed = BTreeSet::from([String::new()]);
-        let rows = flatten_visible(&sample(), &collapsed, Some(""));
+        let rows = flatten_visible(&sample(), &collapsed, Some(""), None);
         assert!(rows.iter().any(|r| r.path == "GAMES"));
         assert!(rows.len() > 1);
     }
 
     #[test]
     fn navigate_around_the_root_row() {
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), Some(""));
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), Some(""), None);
         let c = BTreeSet::new();
         // Right steps from root into its first child.
         assert_eq!(
@@ -276,7 +291,7 @@ mod tests {
     #[test]
     fn flatten_hides_children_of_collapsed_dirs() {
         let collapsed = BTreeSet::from(["GAMES".to_string()]);
-        let rows = flatten_visible(&sample(), &collapsed, None);
+        let rows = flatten_visible(&sample(), &collapsed, None, None);
         assert_eq!(
             paths(&rows),
             vec![
@@ -290,8 +305,40 @@ mod tests {
     }
 
     #[test]
+    fn filter_keeps_only_matches_and_their_ancestors() {
+        // Keep C.COM and its ancestor chain; everything else is hidden.
+        let keep = BTreeSet::from([
+            "UTILS".to_string(),
+            "UTILS/SUB".to_string(),
+            "UTILS/SUB/C.COM".to_string(),
+        ]);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, Some(&keep));
+        assert_eq!(paths(&rows), vec!["UTILS", "UTILS/SUB", "UTILS/SUB/C.COM"]);
+    }
+
+    #[test]
+    fn filter_descends_collapsed_directories() {
+        // UTILS is collapsed, but a filter must still reveal the match inside it.
+        let collapsed = BTreeSet::from(["UTILS".to_string(), "UTILS/SUB".to_string()]);
+        let keep = BTreeSet::from([
+            "UTILS".to_string(),
+            "UTILS/SUB".to_string(),
+            "UTILS/SUB/C.COM".to_string(),
+        ]);
+        let rows = flatten_visible(&sample(), &collapsed, None, Some(&keep));
+        assert_eq!(paths(&rows), vec!["UTILS", "UTILS/SUB", "UTILS/SUB/C.COM"]);
+    }
+
+    #[test]
+    fn filter_with_root_keeps_root_row() {
+        let keep = BTreeSet::from(["HELLO.BAS".to_string()]);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), Some(""), Some(&keep));
+        assert_eq!(paths(&rows), vec!["", "HELLO.BAS"]);
+    }
+
+    #[test]
     fn down_and_up_step_through_visible_rows() {
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), None);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         let c = BTreeSet::new();
         assert_eq!(
             navigate(&rows, Some("GAMES"), &c, NavKey::Down),
@@ -305,7 +352,7 @@ mod tests {
 
     #[test]
     fn up_and_down_stop_at_the_edges() {
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), None);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         let c = BTreeSet::new();
         assert_eq!(
             navigate(&rows, Some("GAMES"), &c, NavKey::Up),
@@ -319,7 +366,7 @@ mod tests {
 
     #[test]
     fn no_cursor_drops_onto_the_first_row() {
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), None);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         let c = BTreeSet::new();
         assert_eq!(
             navigate(&rows, None, &c, NavKey::Down),
@@ -335,14 +382,14 @@ mod tests {
     #[test]
     fn right_expands_a_collapsed_dir_then_steps_into_it() {
         let collapsed = BTreeSet::from(["GAMES".to_string()]);
-        let rows = flatten_visible(&sample(), &collapsed, None);
+        let rows = flatten_visible(&sample(), &collapsed, None, None);
         // Collapsed: Right expands it (cursor stays).
         assert_eq!(
             navigate(&rows, Some("GAMES"), &collapsed, NavKey::Right),
             TreeNav::SetCollapsed("GAMES".to_string(), false)
         );
         // Once expanded, Right steps onto the first child.
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), None);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         assert_eq!(
             navigate(&rows, Some("GAMES"), &BTreeSet::new(), NavKey::Right),
             TreeNav::MoveTo("GAMES/A.PCT".to_string())
@@ -351,7 +398,7 @@ mod tests {
 
     #[test]
     fn right_on_a_file_does_nothing() {
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), None);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         assert_eq!(
             navigate(&rows, Some("HELLO.BAS"), &BTreeSet::new(), NavKey::Right),
             TreeNav::Nothing
@@ -360,7 +407,7 @@ mod tests {
 
     #[test]
     fn left_collapses_an_expanded_dir() {
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), None);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         assert_eq!(
             navigate(&rows, Some("GAMES"), &BTreeSet::new(), NavKey::Left),
             TreeNav::SetCollapsed("GAMES".to_string(), true)
@@ -369,7 +416,7 @@ mod tests {
 
     #[test]
     fn left_jumps_to_parent_from_a_file_or_collapsed_dir() {
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), None);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         let c = BTreeSet::new();
         // A file jumps to its containing directory.
         assert_eq!(
@@ -378,7 +425,7 @@ mod tests {
         );
         // A collapsed dir jumps to its parent.
         let collapsed = BTreeSet::from(["UTILS/SUB".to_string()]);
-        let rows = flatten_visible(&sample(), &collapsed, None);
+        let rows = flatten_visible(&sample(), &collapsed, None, None);
         assert_eq!(
             navigate(&rows, Some("UTILS/SUB"), &collapsed, NavKey::Left),
             TreeNav::MoveTo("UTILS".to_string())
@@ -387,14 +434,14 @@ mod tests {
 
     #[test]
     fn left_at_top_level_does_nothing() {
-        let rows = flatten_visible(&sample(), &BTreeSet::new(), None);
+        let rows = flatten_visible(&sample(), &BTreeSet::new(), None, None);
         // HELLO.BAS is top-level (no parent), and so is a collapsed top dir.
         assert_eq!(
             navigate(&rows, Some("HELLO.BAS"), &BTreeSet::new(), NavKey::Left),
             TreeNav::Nothing
         );
         let collapsed = BTreeSet::from(["GAMES".to_string()]);
-        let rows = flatten_visible(&sample(), &collapsed, None);
+        let rows = flatten_visible(&sample(), &collapsed, None, None);
         assert_eq!(
             navigate(&rows, Some("GAMES"), &collapsed, NavKey::Left),
             TreeNav::Nothing

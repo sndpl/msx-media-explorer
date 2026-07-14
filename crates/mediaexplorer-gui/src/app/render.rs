@@ -167,6 +167,11 @@ pub(crate) struct TreeRender<'a> {
     pub(crate) scroll_to_cursor: bool,
     pub(crate) writable: bool,
     pub(crate) charset: MsxCharset,
+    /// When a filter is active, the set of paths to show (matching files plus
+    /// their ancestor directories). Entries not in the set are skipped, and
+    /// directories are drawn expanded regardless of `collapsed` so matches are
+    /// revealed. `None` means no filter (draw the whole tree).
+    pub(crate) filter: Option<&'a BTreeSet<String>>,
 }
 
 /// A selectable tree row drawn with an explicit, stable `id` rather than egui's
@@ -315,6 +320,11 @@ pub(crate) fn render_entries(
     events: &mut RowEvents,
 ) {
     for entry in entries {
+        // While a filter is active, show only kept paths (matching files and the
+        // ancestor directories on their way).
+        if ctx.filter.is_some_and(|keep| !keep.contains(&entry.path)) {
+            continue;
+        }
         let is_cursor = ctx.cursor == Some(entry.path.as_str());
         // Stable, path-keyed id so the row keeps its identity across reflows.
         let id = ui.make_persistent_id(&entry.path);
@@ -328,7 +338,9 @@ pub(crate) fn render_entries(
             // (measured from a constant sample prefix, so expanded/collapsed
             // rows align too); an absent timestamp (e.g. synthetic partition
             // nodes) renders blank.
-            let expanded = !ctx.collapsed.contains(&entry.path);
+            // While filtering, a kept directory is an ancestor of a match, so
+            // draw it expanded regardless of its collapsed state.
+            let expanded = ctx.filter.is_some() || !ctx.collapsed.contains(&entry.path);
             let arrow = if expanded { '\u{25BC}' } else { '\u{25B6}' };
             let header = egui::RichText::new(format!(
                 "{arrow} \u{1F4C1} {}",
@@ -438,6 +450,9 @@ pub(crate) fn render_tape_files(
         return;
     }
     for (key, file) in tape.entries() {
+        if ctx.filter.is_some_and(|keep| !keep.contains(key)) {
+            continue;
+        }
         let is_cursor = ctx.cursor == Some(key);
         let is_selected = is_cursor || ctx.selection.contains(key);
         // Same fixed-pixel columns as the disk tree (see `tree_row_cols`): a

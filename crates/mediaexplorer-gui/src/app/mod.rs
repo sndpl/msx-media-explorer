@@ -19,6 +19,7 @@ use msx_disk::{charset, DirEntry, ImageFormat, MsxCharset};
 use crate::hexlayout::{HexLayout, HexRegion};
 use crate::settings::{ByteGrouping, HexViewOptions, Settings, SETTINGS_KEY};
 use crate::state::{humanize_bytes, LoadedDisk, LoadedTape};
+use crate::tree_filter;
 use crate::tree_nav::{self, NavKey, TreeNav};
 
 // `MediaExplorerApp`'s methods are split across these submodules; each holds a
@@ -428,6 +429,9 @@ pub struct MediaExplorerApp {
     /// Directory paths the user has collapsed in the tree; empty means all
     /// expanded. This is the source of truth for the tree's open/closed state.
     collapsed: BTreeSet<String>,
+    /// Glob typed in the file-tree filter box (`*.PIC`, `img%.sc5`); empty means
+    /// no filter. Ephemeral (per-session), cleared when a new document opens.
+    filter: String,
     /// One-shot request to scroll the cursor row into view after a key move.
     scroll_to_cursor: bool,
     /// New-directory dialog state, when the user is naming a directory to add.
@@ -521,6 +525,7 @@ impl Default for MediaExplorerApp {
             mac_menu: None,
             cursor: None,
             collapsed: BTreeSet::new(),
+            filter: String::new(),
             scroll_to_cursor: false,
             new_dir: None,
             size_fix: None,

@@ -112,6 +112,79 @@ fn stage_files_for_drag_stages_a_directory_tree() {
 }
 
 #[test]
+fn file_filter_shows_only_matches_and_their_ancestors() {
+    let mut app = app_with_disk(
+        &["GAMES", "UTILS", "UTILS/SUB"],
+        &[
+            ("GAMES/A.PIC", b"a"),
+            ("GAMES/B.SC5", b"b"),
+            ("UTILS/SUB/C.PIC", b"c"),
+            ("HELLO.BAS", b"h"),
+        ],
+    );
+
+    // `*.PIC` keeps the two .PIC files and every folder on the way to them (plus
+    // the synthetic "/" root), and hides everything else. This is the exact path
+    // the renderer and keyboard nav consume.
+    app.filter = "*.PIC".to_string();
+    let mut rows: Vec<String> = app
+        .visible_tree_rows()
+        .into_iter()
+        .map(|r| r.path)
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            "",
+            "GAMES",
+            "GAMES/A.PIC",
+            "UTILS",
+            "UTILS/SUB",
+            "UTILS/SUB/C.PIC"
+        ]
+    );
+
+    // A pattern that matches nothing hides the whole tree.
+    app.filter = "*.XYZ".to_string();
+    assert!(app.visible_tree_rows().is_empty());
+
+    // Clearing the filter restores the full tree.
+    app.filter.clear();
+    let all: Vec<String> = app
+        .visible_tree_rows()
+        .into_iter()
+        .map(|r| r.path)
+        .collect();
+    assert!(all.contains(&"GAMES/B.SC5".to_string()));
+    assert!(all.contains(&"HELLO.BAS".to_string()));
+}
+
+#[test]
+fn file_filter_single_char_wildcard_aliases() {
+    let mut app = app_with_disk(
+        &[],
+        &[
+            ("IMG1.SC5", b"1"),
+            ("IMG9.SC5", b"9"),
+            ("IMG10.SC5", b"0"),
+            ("IMG.SC5", b"x"),
+        ],
+    );
+    for pattern in ["img%.sc5", "img?.sc5"] {
+        app.filter = pattern.to_string();
+        let mut rows: Vec<String> = app
+            .visible_tree_rows()
+            .into_iter()
+            .map(|r| r.path)
+            .collect();
+        rows.sort();
+        // `%`/`?` is exactly one char: IMG1/IMG9 match, IMG10 and IMG do not.
+        assert_eq!(rows, vec!["", "IMG1.SC5", "IMG9.SC5"], "pattern {pattern}");
+    }
+}
+
+#[test]
 fn real_dsk_directory_extracts_with_structure_and_timestamps() {
     // Skip-if-absent, like the msx-disk real-fixture tests: the .dsk is not
     // committed but gives real-world coverage on machines that have it.

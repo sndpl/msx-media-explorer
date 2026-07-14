@@ -31,6 +31,29 @@ impl MediaExplorerApp {
     }
 
     pub(crate) fn tree_panel(&mut self, ui: &mut egui::Ui) {
+        // Filter box: a glob typed here (e.g. `*.PIC`, `img%.sc5`) live-filters
+        // the file list below. Only shown once a document is open.
+        if self.disk.is_some() || self.tape.is_some() {
+            ui.horizontal(|ui| {
+                ui.label("Filter:");
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if !self.filter.is_empty()
+                        && ui
+                            .button("\u{2715}")
+                            .on_hover_text("Clear filter")
+                            .clicked()
+                    {
+                        self.filter.clear();
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.filter)
+                            .hint_text("*.PIC")
+                            .desired_width(f32::INFINITY),
+                    );
+                });
+            });
+            ui.separator();
+        }
         if self.selection.len() > 1 {
             ui.horizontal(|ui| {
                 ui.label(format!("{} files selected", self.selection.len()));
@@ -41,6 +64,10 @@ impl MediaExplorerApp {
             ui.separator();
         }
         let charset = self.charset;
+        // The set of paths to show under the active filter: matching files plus
+        // their ancestor directories (disk), or matching keys (tape). `None`
+        // means no filter; `Some(empty)` means the filter matched nothing.
+        let keep = self.filter_keep_set();
         let mut events = RowEvents::default();
         // Scope `ctx` so its immutable borrows of `self` are released before the
         // event handling below mutates `self.cursor` / `self.collapsed`.
@@ -52,8 +79,11 @@ impl MediaExplorerApp {
                 scroll_to_cursor: self.scroll_to_cursor,
                 writable: self.disk_writable(),
                 charset,
+                filter: keep.as_ref(),
             };
-            if let Some(disk) = &self.disk {
+            if keep.as_ref().is_some_and(|k| k.is_empty()) {
+                ui.weak(format!("No files match \"{}\".", self.filter));
+            } else if let Some(disk) = &self.disk {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -138,13 +168,18 @@ impl MediaExplorerApp {
     /// navigation. A disk yields its (possibly collapsed) directory tree; a tape
     /// yields its flat file list.
     pub(crate) fn visible_tree_rows(&self) -> Vec<tree_nav::VisibleRow> {
+        let keep = self.filter_keep_set();
+        if keep.as_ref().is_some_and(|k| k.is_empty()) {
+            return Vec::new();
+        }
         if let Some(disk) = &self.disk {
             // Non-partitioned disks get a synthetic "/" root row; an HD's
             // partition nodes are themselves the roots, so no extra row.
             let root = (!disk.is_partitioned()).then_some(ROOT_PATH);
-            tree_nav::flatten_visible(&disk.tree, &self.collapsed, root)
+            tree_nav::flatten_visible(&disk.tree, &self.collapsed, root, keep.as_ref())
         } else if let Some(tape) = &self.tape {
             tape.entries()
+                .filter(|(key, _)| keep.as_ref().is_none_or(|k| k.contains(*key)))
                 .map(|(key, _)| tree_nav::VisibleRow {
                     path: key.to_string(),
                     is_dir: false,
@@ -156,6 +191,29 @@ impl MediaExplorerApp {
         } else {
             Vec::new()
         }
+    }
+
+    /// The set of paths to show under the active filter: for a disk, every file
+    /// whose display name matches the glob plus their ancestor directories; for a
+    /// tape, the matching keys. `None` when the filter box is empty (show all);
+    /// `Some(empty)` when the pattern matches nothing.
+    fn filter_keep_set(&self) -> Option<BTreeSet<String>> {
+        if self.filter.is_empty() {
+            return None;
+        }
+        if let Some(disk) = &self.disk {
+            return Some(tree_filter::matching_paths(
+                &disk.tree,
+                &self.filter,
+                self.charset,
+            ));
+        }
+        self.tape.as_ref().map(|tape| {
+            tape.entries()
+                .filter(|(key, _)| tree_filter::glob_match(&self.filter, key))
+                .map(|(key, _)| key.to_string())
+                .collect()
+        })
     }
 
     /// Drive the tree with the arrow keys while the Files or Stats view is up:
