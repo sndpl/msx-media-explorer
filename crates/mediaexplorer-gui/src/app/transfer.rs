@@ -1,5 +1,14 @@
 use super::*;
 
+/// One planned host write from [`MediaExplorerApp::plan_extraction`]: a path
+/// relative to the chosen destination, the disk path to read the bytes from, and
+/// the file's original FAT modification time.
+pub(crate) struct Planned {
+    pub(crate) rel: PathBuf,
+    pub(crate) disk_path: String,
+    pub(crate) modified: Option<msx_disk::fs::Timestamp>,
+}
+
 /// Write an extracted file to `target`, then restore its original directory-
 /// entry modification time so the host copy keeps its disk date instead of
 /// "now". Setting the time is best-effort: any failure is ignored so it can
@@ -20,13 +29,16 @@ pub(crate) fn write_extracted(
 }
 
 impl MediaExplorerApp {
-    /// Extract the given files to the host: a save-as dialog for one, a folder
-    /// picker for several.
+    /// Extract the given rows to the host. A single file uses a save-as dialog
+    /// (so it can be renamed); a directory or any multi-selection uses a folder
+    /// picker and writes the tree recursively, preserving subdirectories.
     pub(crate) fn extract_paths(&mut self, paths: &[String]) {
+        let is_single_file = matches!(paths, [p]
+            if self.entry_for_path(p).map(|e| !e.is_dir).unwrap_or(true));
         match paths {
             [] => {}
-            [path] => self.extract_one(path),
-            many => self.extract_many(many),
+            [path] if is_single_file => self.extract_one(path),
+            many => self.extract_tree(many),
         }
     }
 
@@ -49,24 +61,18 @@ impl MediaExplorerApp {
         }
     }
 
-    /// Extract several files into a chosen folder, keeping their disk names.
-    pub(crate) fn extract_many(&mut self, paths: &[String]) {
+    /// Extract `paths` (files and/or directories) into a chosen folder,
+    /// recreating each directory's subtree under it.
+    pub(crate) fn extract_tree(&mut self, paths: &[String]) {
+        let planned = self.plan_extraction(paths);
+        if planned.is_empty() {
+            self.status = "Nothing to extract".to_string();
+            return;
+        }
         let Some(dir) = rfd::FileDialog::new().pick_folder() else {
             return;
         };
-        let mut ok = 0usize;
-        let mut failed = 0usize;
-        for path in paths {
-            let modified = self.entry_for_path(path).and_then(|e| e.modified);
-            match self.read_doc_file(path) {
-                Some(bytes)
-                    if write_extracted(&dir.join(base_name(path)), &bytes, modified).is_ok() =>
-                {
-                    ok += 1;
-                }
-                _ => failed += 1,
-            }
-        }
+        let (ok, failed) = self.write_extractions(&dir, &planned);
         self.status = if failed == 0 {
             format!("Extracted {ok} file(s) to {}", dir.display())
         } else {
@@ -75,6 +81,65 @@ impl MediaExplorerApp {
                 dir.display()
             )
         };
+    }
+
+    /// Flatten `paths` into the files to write on the host. A directory expands
+    /// into its whole subtree, each file's destination rooted at the directory's
+    /// own name (`UTILS/SUB/X.BIN`); a plain file maps to its base name. Names
+    /// are decoded for the host under the active charset. Paths not found in a
+    /// disk tree (e.g. tape files) are treated as a single flat file.
+    pub(crate) fn plan_extraction(&self, paths: &[String]) -> Vec<Planned> {
+        let mut out = Vec::new();
+        for path in paths {
+            match self.entry_for_path(path) {
+                Some(entry) => self.collect_entry(entry, Path::new(""), &mut out),
+                None => out.push(Planned {
+                    rel: PathBuf::from(base_name(path)),
+                    disk_path: path.clone(),
+                    modified: None,
+                }),
+            }
+        }
+        out
+    }
+
+    /// Append `entry` (and, for a directory, its descendants) to `out`, with each
+    /// file's host path built under `prefix` from charset-decoded names.
+    fn collect_entry(&self, entry: &DirEntry, prefix: &Path, out: &mut Vec<Planned>) {
+        let rel = prefix.join(entry.display_name(self.charset));
+        if entry.is_dir {
+            for child in &entry.children {
+                self.collect_entry(child, &rel, out);
+            }
+        } else {
+            out.push(Planned {
+                rel,
+                disk_path: entry.path.clone(),
+                modified: entry.modified,
+            });
+        }
+    }
+
+    /// Write every planned file under `dest`, creating parent directories and
+    /// preserving timestamps. Returns `(written, failed)`.
+    pub(crate) fn write_extractions(&self, dest: &Path, planned: &[Planned]) -> (usize, usize) {
+        let (mut ok, mut failed) = (0usize, 0usize);
+        for item in planned {
+            let target = dest.join(&item.rel);
+            let Some(bytes) = self.read_doc_file(&item.disk_path) else {
+                failed += 1;
+                continue;
+            };
+            if let Some(parent) = target.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if write_extracted(&target, &bytes, item.modified).is_ok() {
+                ok += 1;
+            } else {
+                failed += 1;
+            }
+        }
+        (ok, failed)
     }
 
     /// Extract one archive member (decompressed) via a save-as dialog.
@@ -190,26 +255,40 @@ impl MediaExplorerApp {
         }
     }
 
-    /// Extract `paths` to a per-instance temp directory (the OS drag transfers
-    /// file paths, not bytes) and return their absolute locations. The pid
-    /// subdirectory keeps two concurrently running instances from overwriting
-    /// each other's staged files.
+    /// Stage `paths` (files and/or directories) into a per-instance temp
+    /// directory — the OS drag transfers file paths, not bytes — and return the
+    /// top-level staged entries to hand to the drag: the folder itself for a
+    /// directory, the file for a file, so a folder is dropped with its whole
+    /// subtree. The pid subdirectory keeps two concurrently running instances
+    /// from overwriting each other's staged files.
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) fn stage_files_for_drag(&self, paths: &[String]) -> Result<Vec<PathBuf>, String> {
         let dir = drag_staging_root().join(std::process::id().to_string());
         std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
-        let mut staged = Vec::with_capacity(paths.len());
-        for path in paths {
+        let planned = self.plan_extraction(paths);
+        for item in &planned {
             let bytes = self
-                .read_doc_file(path)
-                .ok_or_else(|| format!("cannot read {path}"))?;
-            let modified = self.entry_for_path(path).and_then(|e| e.modified);
-            let target = dir.join(base_name(path));
-            write_extracted(&target, &bytes, modified)
+                .read_doc_file(&item.disk_path)
+                .ok_or_else(|| format!("cannot read {}", item.disk_path))?;
+            let target = dir.join(&item.rel);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| format!("temp dir: {e}"))?;
+            }
+            write_extracted(&target, &bytes, item.modified)
                 .map_err(|e| format!("write {}: {e}", target.display()))?;
-            staged.push(target);
         }
-        Ok(staged)
+        // Hand the OS the top-level staged entries (a folder or a file), not the
+        // individual leaf files, de-duplicated in first-seen order.
+        let mut roots = Vec::new();
+        for item in &planned {
+            if let Some(first) = item.rel.components().next() {
+                let root = dir.join(first);
+                if !roots.contains(&root) {
+                    roots.push(root);
+                }
+            }
+        }
+        Ok(roots)
     }
 
     pub(crate) fn ensure_clipboard(&mut self) -> Option<&mut arboard::Clipboard> {

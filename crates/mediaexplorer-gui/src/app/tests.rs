@@ -1,5 +1,164 @@
 use super::*;
 
+/// Build an app with a mounted synthetic floppy: `dirs` created first (parents
+/// before children), then `files` added.
+#[cfg(test)]
+fn app_with_disk(dirs: &[&str], files: &[(&str, &[u8])]) -> MediaExplorerApp {
+    use msx_disk::fs::write;
+    use msx_disk::image::geometry::DiskFormat;
+    let mut bytes = write::create_blank(DiskFormat::Ds720).unwrap();
+    for d in dirs {
+        bytes = write::create_dir(&bytes, d).unwrap();
+    }
+    bytes = write::add_files(&bytes, files).unwrap();
+    let image = msx_disk::image::DiskImage::open_bytes(msx_disk::ImageFormat::Dsk, bytes).unwrap();
+    let disk = LoadedDisk::from_image(image, None).unwrap();
+    MediaExplorerApp {
+        disk: Some(disk),
+        charset: MsxCharset::International,
+        ..Default::default()
+    }
+}
+
+/// Relative host paths of a plan, as `/`-joined strings, sorted for comparison.
+#[cfg(test)]
+fn rels(planned: &[super::transfer::Planned]) -> Vec<String> {
+    let mut v: Vec<String> = planned
+        .iter()
+        .map(|p| p.rel.to_string_lossy().replace('\\', "/"))
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn plan_extraction_walks_a_directory_preserving_structure() {
+    let app = app_with_disk(
+        &["UTILS", "UTILS/SUB"],
+        &[
+            ("HELLO.TXT", b"hi"),
+            ("UTILS/GAME.COM", b"game"),
+            ("UTILS/SUB/DEEP.BIN", b"deep"),
+        ],
+    );
+    let plan = app.plan_extraction(&["UTILS".to_string()]);
+    assert_eq!(rels(&plan), vec!["UTILS/GAME.COM", "UTILS/SUB/DEEP.BIN"]);
+    // Each planned item reads from its real disk path.
+    assert!(plan.iter().all(|p| p.disk_path.starts_with("UTILS/")));
+}
+
+#[test]
+fn plan_extraction_file_uses_base_name_not_full_path() {
+    let app = app_with_disk(&["UTILS"], &[("UTILS/GAME.COM", b"game")]);
+    let plan = app.plan_extraction(&["UTILS/GAME.COM".to_string()]);
+    assert_eq!(rels(&plan), vec!["GAME.COM"]);
+    assert_eq!(plan[0].disk_path, "UTILS/GAME.COM");
+}
+
+#[test]
+fn write_extractions_creates_subdirectories_and_applies_timestamps() {
+    let app = app_with_disk(&[], &[("HELLO.TXT", b"payload")]);
+    let modified = msx_disk::fs::Timestamp {
+        year: 1990,
+        month: 5,
+        day: 12,
+        hour: 14,
+        minute: 30,
+    };
+    let plan = vec![
+        super::transfer::Planned {
+            rel: std::path::PathBuf::from("UTILS/SUB/DEEP.TXT"),
+            disk_path: "HELLO.TXT".to_string(),
+            modified: Some(modified),
+        },
+        super::transfer::Planned {
+            rel: std::path::PathBuf::from("TOP.TXT"),
+            disk_path: "HELLO.TXT".to_string(),
+            modified: None,
+        },
+    ];
+    let dest = std::env::temp_dir().join(format!("megui-tree-{}", std::process::id()));
+    std::fs::create_dir_all(&dest).unwrap();
+
+    let (ok, failed) = app.write_extractions(&dest, &plan);
+    assert_eq!((ok, failed), (2, 0));
+
+    let deep = dest.join("UTILS/SUB/DEEP.TXT");
+    assert_eq!(std::fs::read(&deep).unwrap(), b"payload");
+    assert_eq!(
+        std::fs::metadata(&deep).unwrap().modified().unwrap(),
+        modified.to_system_time().unwrap()
+    );
+    assert!(dest.join("TOP.TXT").exists());
+    std::fs::remove_dir_all(&dest).unwrap();
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[test]
+fn stage_files_for_drag_stages_a_directory_tree() {
+    let app = app_with_disk(
+        &["UTILS", "UTILS/SUB"],
+        &[("UTILS/GAME.COM", b"game"), ("UTILS/SUB/DEEP.BIN", b"deep")],
+    );
+    let roots = app.stage_files_for_drag(&["UTILS".to_string()]).unwrap();
+    // The OS drag is handed the folder itself, not each file.
+    assert_eq!(roots.len(), 1);
+    let root = &roots[0];
+    assert_eq!(root.file_name().unwrap(), "UTILS");
+    assert!(root.is_dir());
+    assert_eq!(std::fs::read(root.join("GAME.COM")).unwrap(), b"game");
+    assert_eq!(std::fs::read(root.join("SUB/DEEP.BIN")).unwrap(), b"deep");
+    std::fs::remove_dir_all(root).ok();
+}
+
+#[test]
+fn real_dsk_directory_extracts_with_structure_and_timestamps() {
+    // Skip-if-absent, like the msx-disk real-fixture tests: the .dsk is not
+    // committed but gives real-world coverage on machines that have it.
+    let path =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/MSX-DOS2 TOOLS.dsk");
+    if !path.exists() {
+        eprintln!("skipping: fixture 'MSX-DOS2 TOOLS.dsk' not present");
+        return;
+    }
+    let image = msx_disk::image::DiskImage::open(&path).unwrap();
+    let app = MediaExplorerApp {
+        disk: Some(LoadedDisk::from_image(image, None).unwrap()),
+        charset: MsxCharset::International,
+        ..Default::default()
+    };
+
+    let plan = app.plan_extraction(&["TOOLS".to_string()]);
+    assert!(!plan.is_empty(), "TOOLS/ should contain files");
+    assert!(
+        plan.iter().all(|p| p.rel.starts_with("TOOLS")),
+        "every file is rooted at the TOOLS folder"
+    );
+    // The disk's TOOLS files carry real 1989-1992 dates, not "now".
+    assert!(
+        plan.iter()
+            .filter_map(|p| p.modified)
+            .any(|t| t.year < 2000),
+        "expected vintage FAT timestamps"
+    );
+
+    let dest = std::env::temp_dir().join(format!("megui-realdir-{}", std::process::id()));
+    std::fs::create_dir_all(&dest).unwrap();
+    let (ok, failed) = app.write_extractions(&dest, &plan);
+    assert_eq!((ok, failed), (plan.len(), 0));
+
+    let sample = &plan[0];
+    let out = dest.join(&sample.rel);
+    assert!(out.exists() && out.starts_with(dest.join("TOOLS")));
+    if let Some(ts) = sample.modified {
+        assert_eq!(
+            std::fs::metadata(&out).unwrap().modified().unwrap(),
+            ts.to_system_time().unwrap()
+        );
+    }
+    std::fs::remove_dir_all(&dest).ok();
+}
+
 #[test]
 fn extracted_file_keeps_its_fat_modification_time() {
     let dir = std::env::temp_dir().join(format!("megui-mtime-{}", std::process::id()));
