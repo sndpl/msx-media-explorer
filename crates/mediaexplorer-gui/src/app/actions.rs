@@ -18,7 +18,7 @@ impl MediaExplorerApp {
             match search::parse_hex(&self.search_query) {
                 Some(needle) => search::find_bytes(&content.bytes, &needle),
                 None => {
-                    self.status = "Invalid hex pattern".to_string();
+                    self.status = t!("disk.invalid_hex_pattern").to_string();
                     return;
                 }
             }
@@ -144,7 +144,7 @@ impl MediaExplorerApp {
                 self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
                 self.disk_fs_geometry = self.disk.as_ref().and_then(LoadedDisk::fs_geometry);
             }
-            Err(e) => self.status = format!("Write failed: {e}"),
+            Err(e) => self.status = t!("status.write_failed", error => e).to_string(),
         }
     }
 
@@ -199,9 +199,9 @@ impl MediaExplorerApp {
         let dialog = rfd::FileDialog::new();
         #[cfg(not(target_os = "macos"))]
         let dialog = dialog
-            .add_filter("MSX disk images", DISK_IMAGE_EXTS)
-            .add_filter("MSX tape images", TAPE_EXTS)
-            .add_filter("All files", &["*"]);
+            .add_filter(t!("file_dialog.disk_images"), DISK_IMAGE_EXTS)
+            .add_filter(t!("file_dialog.tape_images"), TAPE_EXTS)
+            .add_filter(t!("file_dialog.all_files"), &["*"]);
         if let Some(path) = dialog.pick_file() {
             self.open_path(&path);
         }
@@ -223,7 +223,7 @@ impl MediaExplorerApp {
         if path.exists() {
             self.open_path(&path);
         } else {
-            self.status = format!("File no longer exists: {}", path.display());
+            self.status = t!("status.file_gone", path => path.display()).to_string();
             self.settings.recent.retain(|p| p != &path);
             self.refresh_recent_menu();
         }
@@ -247,7 +247,7 @@ impl MediaExplorerApp {
     /// Close the open disk/tape, returning to the empty state.
     pub(crate) fn close_document(&mut self) {
         self.reset_document();
-        self.status = "Open a disk image (or drag one in) to get started.".to_string();
+        self.status = t!("status.get_started").to_string();
         self.search_query.clear();
         self.search_matches.clear();
         self.search_pos = 0;
@@ -568,14 +568,14 @@ impl MediaExplorerApp {
         let bytes = match encoded {
             Ok(b) => b,
             Err(e) => {
-                self.status = format!("Cannot convert to .{ext}: {e}");
+                self.status = t!("status.convert_failed", ext => ext, error => e).to_string();
                 return;
             }
         };
         if let Some(path) = rfd::FileDialog::new().set_file_name(&default).save_file() {
             self.status = match std::fs::write(&path, &bytes) {
-                Ok(()) => format!("Saved {}", path.display()),
-                Err(e) => format!("Failed to save: {e}"),
+                Ok(()) => t!("status.saved", path => path.display()).to_string(),
+                Err(e) => t!("status.save_failed", error => e).to_string(),
             };
         }
     }
@@ -584,8 +584,7 @@ impl MediaExplorerApp {
     /// tree's "Add files here…" menu.
     pub(crate) fn add_files_into(&mut self, target: &str) {
         if !self.disk_writable() {
-            self.status =
-                "This image is read-only (.dmk, partitioned, or no source file).".to_string();
+            self.status = t!("status.read_only_image").to_string();
             return;
         }
         if let Some(paths) = rfd::FileDialog::new().pick_files() {
@@ -597,8 +596,7 @@ impl MediaExplorerApp {
     /// sanitized 8.3 name. Used by the right-click menu and drag-in.
     pub(crate) fn add_paths_into(&mut self, paths: &[PathBuf], target: &str) {
         if !self.disk_writable() {
-            self.status =
-                "This image is read-only (.dmk, partitioned, or no source file).".to_string();
+            self.status = t!("status.read_only_image").to_string();
             return;
         }
         let mut files = Vec::new();
@@ -612,7 +610,8 @@ impl MediaExplorerApp {
                     files.push((child_path(target, &sanitize_msx_name(&raw)), bytes));
                 }
                 Err(e) => {
-                    self.status = format!("Could not read {}: {e}", path.display());
+                    self.status =
+                        t!("status.could_not_read", path => path.display(), error => e).to_string();
                     return;
                 }
             }
@@ -620,7 +619,8 @@ impl MediaExplorerApp {
         let count = files.len();
         let result = self.disk.as_mut().unwrap().add_files(&files);
         let dest = if target.is_empty() { "/" } else { target };
-        self.after_mutation(result, format!("Added {count} file(s) to {dest}"));
+        let msg = tn!("status.added_files", count, dest => dest).to_string();
+        self.after_mutation(result, msg);
     }
 
     /// Remove a directory: empty ones go immediately; non-empty ones open the
@@ -634,7 +634,7 @@ impl MediaExplorerApp {
         };
         if empty {
             let result = self.disk.as_mut().unwrap().delete(&[path.to_string()]);
-            self.after_mutation(result, format!("Removed {path}"));
+            self.after_mutation(result, t!("status.removed", path => path).to_string());
         } else {
             self.confirm_delete = Some(paths);
         }
@@ -650,13 +650,16 @@ impl MediaExplorerApp {
         let charset = self.charset;
         let display = sanitize_8_3(&target.name, |c| is_rename_char(c, charset));
         if msx_name_stem(&display).is_empty() {
-            self.status = "Enter a directory name".to_string();
+            self.status = t!("status.enter_dir_name").to_string();
             return;
         }
         let base = charset::encode_fs_name(charset, &display).unwrap_or_else(|| display.clone());
         let path = child_path(&target.parent, &base);
         let result = self.disk.as_mut().unwrap().create_dir(&path);
-        self.after_mutation(result, format!("Created directory {display}"));
+        self.after_mutation(
+            result,
+            t!("status.created_directory", name => display).to_string(),
+        );
     }
 
     pub(crate) fn apply_rename(&mut self) {
@@ -673,7 +676,7 @@ impl MediaExplorerApp {
             None => new_base,
         };
         let result = self.disk.as_mut().unwrap().rename(&target.path, &new_path);
-        self.after_mutation(result, format!("Renamed to {display}"));
+        self.after_mutation(result, t!("status.renamed_to", name => display).to_string());
     }
 
     pub(crate) fn confirm_delete_now(&mut self) {
@@ -698,8 +701,7 @@ impl MediaExplorerApp {
             return;
         };
         let Some(bytes) = search::parse_hex(&edited) else {
-            self.status =
-                "Invalid hex: need whole byte pairs (0-9, A-F), whitespace ignored".to_string();
+            self.status = t!("status.invalid_hex_bytes").to_string();
             return;
         };
         let result = self
@@ -707,7 +709,7 @@ impl MediaExplorerApp {
             .as_mut()
             .unwrap()
             .add_files(&[(path.clone(), bytes)]);
-        self.after_mutation(result, format!("Saved edits to {path}"));
+        self.after_mutation(result, t!("status.saved_edits", path => path).to_string());
     }
 
     /// Render the delete-confirmation modal if a deletion is pending.
@@ -913,7 +915,7 @@ impl MediaExplorerApp {
         let result = self.disk.as_mut().unwrap().apply_size_fix(&m);
         self.after_mutation(
             result,
-            format!("Fixed disk geometry to {}", size_label(m.real_bytes)),
+            t!("status.fixed_geometry", size => size_label(m.real_bytes)).to_string(),
         );
         // Re-check the (reloaded) disk; a successful repair leaves it consistent.
         self.size_fix = self.disk.as_ref().and_then(LoadedDisk::size_mismatch);

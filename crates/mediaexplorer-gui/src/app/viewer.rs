@@ -24,14 +24,26 @@ impl MediaExplorerApp {
         let writable = self.disk_writable();
         let prev_mode = self.view_mode;
         ui.horizontal(|ui| {
-            ui.selectable_value(&mut self.view_mode, ViewMode::Info, "Info");
-            ui.selectable_value(&mut self.view_mode, ViewMode::Hex, "Hex");
-            ui.selectable_value(&mut self.view_mode, ViewMode::Text, "Text");
-            ui.selectable_value(&mut self.view_mode, ViewMode::Basic, "BASIC");
-            ui.selectable_value(&mut self.view_mode, ViewMode::Disasm, "Disasm");
-            ui.selectable_value(&mut self.view_mode, ViewMode::Screen, "Screen");
+            ui.selectable_value(&mut self.view_mode, ViewMode::Info, t!("view_mode.info"));
+            ui.selectable_value(&mut self.view_mode, ViewMode::Hex, t!("view_mode.hex"));
+            ui.selectable_value(&mut self.view_mode, ViewMode::Text, t!("view_mode.text"));
+            ui.selectable_value(&mut self.view_mode, ViewMode::Basic, t!("view_mode.basic"));
+            ui.selectable_value(
+                &mut self.view_mode,
+                ViewMode::Disasm,
+                t!("view_mode.disasm"),
+            );
+            ui.selectable_value(
+                &mut self.view_mode,
+                ViewMode::Screen,
+                t!("view_mode.screen"),
+            );
             if self.archive.is_some() {
-                ui.selectable_value(&mut self.view_mode, ViewMode::Archive, "Archive");
+                ui.selectable_value(
+                    &mut self.view_mode,
+                    ViewMode::Archive,
+                    t!("view_mode.archive"),
+                );
             }
             // Find results are per-view (hex matches are file offsets, listing
             // matches are listing-text offsets), so a view switch clears them.
@@ -46,10 +58,10 @@ impl MediaExplorerApp {
                 ViewMode::Hex => {
                     ui.separator();
                     if self.hex_edit.is_some() {
-                        if ui.button("Save edits").clicked() {
+                        if ui.button(t!("viewer.save_edits")).clicked() {
                             self.save_hex_edit();
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(t!("button.cancel")).clicked() {
                             self.hex_edit = None;
                         }
                     } else {
@@ -64,25 +76,25 @@ impl MediaExplorerApp {
                         // without the button it would double up with the one
                         // after the view tabs.
                         if editable {
-                            if ui.button("Edit hex").clicked() {
+                            if ui.button(t!("viewer.edit_hex")).clicked() {
                                 let text =
                                     format_hex_for_edit(&self.content.as_ref().unwrap().bytes);
                                 self.hex_edit = Some(text);
                             }
                             ui.separator();
                         }
-                        ui.label("Go to:");
+                        ui.label(t!("viewer.go_to"));
                         let resp = ui.add(
                             egui::TextEdit::singleline(&mut self.hex.goto_input)
                                 .desired_width(70.0)
-                                .hint_text("hex"),
+                                .hint_text(t!("viewer.hex_hint")),
                         );
                         let submit =
                             resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if ui.button("Go").clicked() || submit {
+                        if ui.button(t!("viewer.go")).clicked() || submit {
                             self.goto_hex_offset();
                         }
-                        ui.checkbox(&mut self.show_inspector, "Inspector");
+                        ui.checkbox(&mut self.show_inspector, t!("disk.inspector"));
                         if SHOW_HEX_BOOKMARKS {
                             self.hex_bookmarks_menu(ui);
                         }
@@ -90,7 +102,7 @@ impl MediaExplorerApp {
                 }
                 ViewMode::Text => {
                     ui.separator();
-                    ui.checkbox(&mut self.text_show_all, "Show all characters");
+                    ui.checkbox(&mut self.text_show_all, t!("viewer.show_all_chars"));
                 }
                 ViewMode::Basic
                 | ViewMode::Disasm
@@ -104,7 +116,7 @@ impl MediaExplorerApp {
                 && !matches!(self.view_mode, ViewMode::Archive | ViewMode::Screen)
             {
                 ui.separator();
-                if ui.button("Copy").clicked() {
+                if ui.button(t!("button.copy")).clicked() {
                     self.copy_current_view();
                 }
             }
@@ -119,15 +131,15 @@ impl MediaExplorerApp {
         );
         if self.content.is_some() && searchable {
             ui.horizontal(|ui| {
-                ui.label("Find:");
+                ui.label(t!("viewer.find_label"));
                 let resp =
                     ui.add(egui::TextEdit::singleline(&mut self.search_query).desired_width(180.0));
                 // Hex-pattern search only makes sense against raw bytes.
                 if self.view_mode == ViewMode::Hex {
-                    ui.checkbox(&mut self.search_is_hex, "Hex");
+                    ui.checkbox(&mut self.search_is_hex, t!("disk.hex"));
                 }
                 let submit = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if ui.button("Find").clicked() || submit {
+                if ui.button(t!("disk.find")).clicked() || submit {
                     self.run_search();
                 }
                 if !self.search_matches.is_empty() {
@@ -195,7 +207,7 @@ impl MediaExplorerApp {
                     action = render.action;
                 }
                 _ => {
-                    ui.weak("Select a file to view its contents.");
+                    ui.weak(t!("viewer.select_file"));
                 }
             }
             self.screen_tex = cache;
@@ -237,7 +249,7 @@ impl MediaExplorerApp {
         };
         match &self.content {
             None => {
-                ui.weak("Select a file to view its contents.");
+                ui.weak(t!("viewer.select_file"));
             }
             Some(content) => match mode {
                 ViewMode::Info => render_info(
@@ -305,7 +317,7 @@ impl MediaExplorerApp {
         highlight: Option<usize>,
     ) {
         if self.content.is_none() {
-            ui.weak("Select a file to view its contents.");
+            ui.weak(t!("viewer.select_file"));
             return;
         }
         let charset = self.charset;
@@ -386,9 +398,12 @@ impl MediaExplorerApp {
     /// The Bookmarks menu for the file hex view: add the cursor offset, jump to
     /// a saved one, or delete it.
     pub(crate) fn hex_bookmarks_menu(&mut self, ui: &mut egui::Ui) {
-        ui.menu_button("Bookmarks", |ui| {
+        ui.menu_button(t!("viewer.bookmarks"), |ui| {
             if let Some(cur) = self.hex.cursor {
-                if ui.button(format!("Add bookmark at 0x{cur:06X}")).clicked() {
+                if ui
+                    .button(t!("viewer.add_bookmark", offset => format!("{cur:06X}")))
+                    .clicked()
+                {
                     self.hex.bookmarks.push(Bookmark {
                         offset: cur,
                         name: format!("0x{cur:06X}"),
@@ -396,7 +411,7 @@ impl MediaExplorerApp {
                     ui.close();
                 }
             } else {
-                ui.weak("Click a byte to set the cursor first.");
+                ui.weak(t!("viewer.click_byte_first"));
             }
             if self.hex.bookmarks.is_empty() {
                 return;
@@ -430,7 +445,7 @@ impl MediaExplorerApp {
     /// file-type breakdown, largest files, and FAT-chain integrity.
     pub(crate) fn stats_panel(&mut self, ui: &mut egui::Ui) {
         let Some(disk) = self.disk.as_ref() else {
-            ui.weak("No disk open.");
+            ui.weak(t!("status.no_disk_open"));
             return;
         };
         let mut copy: Option<String> = None;
@@ -439,7 +454,7 @@ impl MediaExplorerApp {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.heading("Image checksums");
+                ui.heading(t!("stats.image_checksums"));
                 checksum_grid(ui, "stats_image_cks", disk.checksums(), &mut copy);
 
                 if disk.is_partitioned() {
@@ -449,7 +464,7 @@ impl MediaExplorerApp {
                             .tree
                             .get(i)
                             .map(|n| n.name.clone())
-                            .unwrap_or_else(|| format!("Partition {}", i + 1));
+                            .unwrap_or_else(|| t!("stats.partition", n => i + 1).into_owned());
                         egui::CollapsingHeader::new(title)
                             .id_salt(("partition_stats", i))
                             .default_open(i == 0)
@@ -463,7 +478,7 @@ impl MediaExplorerApp {
                                     &mut jump,
                                 ),
                                 None => {
-                                    ui.weak("No statistics for this partition.");
+                                    ui.weak(t!("stats.no_partition_stats"));
                                 }
                             });
                     }
@@ -472,7 +487,7 @@ impl MediaExplorerApp {
                     match disk.stats() {
                         Some(s) => render_disk_stats(ui, s, 0, "", charset, &mut jump),
                         None => {
-                            ui.weak("No filesystem statistics (no FAT BPB).");
+                            ui.weak(t!("stats.no_fs_stats"));
                         }
                     }
                 }
@@ -495,28 +510,28 @@ impl MediaExplorerApp {
 
         match self.archive.as_ref() {
             None => {
-                ui.weak("Not an archive.");
+                ui.weak(t!("archive.not_an_archive"));
             }
             Some(listing) => match &listing.result {
                 Err(msg) => {
                     ui.colored_label(
                         egui::Color32::LIGHT_RED,
-                        format!("Cannot read archive: {msg}"),
+                        t!("archive.cannot_read", error => msg),
                     );
                 }
                 Ok(members) if members.is_empty() => {
-                    ui.weak("Archive is empty.");
+                    ui.weak(t!("archive.empty"));
                 }
                 Ok(members) => {
                     ui.horizontal(|ui| {
                         let any = members.iter().any(|m| m.decodable && !m.is_directory);
                         if ui
-                            .add_enabled(any, egui::Button::new("Extract all…"))
+                            .add_enabled(any, egui::Button::new(t!("archive.extract_all")))
                             .clicked()
                         {
                             action = Some(ArchiveAction::ExtractAll);
                         }
-                        ui.weak(format!("{} member(s)", members.len()));
+                        ui.weak(tn!("archive.members", members.len()));
                     });
                     ui.separator();
                     ui.monospace(format!(
@@ -554,7 +569,10 @@ impl MediaExplorerApp {
                                 let extractable = m.decodable && !m.is_directory;
                                 resp.context_menu(|ui| {
                                     if ui
-                                        .add_enabled(extractable, egui::Button::new("Extract…"))
+                                        .add_enabled(
+                                            extractable,
+                                            egui::Button::new(t!("button.extract")),
+                                        )
                                         .clicked()
                                     {
                                         action = Some(ArchiveAction::ExtractOne(i));

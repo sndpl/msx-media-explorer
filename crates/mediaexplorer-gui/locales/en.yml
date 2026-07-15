@@ -52,6 +52,7 @@ button:
   rename: Rename
   create: Create
   clear: Clear
+  copy: Copy
   apply_fix: Apply fix
   ignore: Ignore
   find: Find
@@ -109,6 +110,37 @@ status:
     other: "%{count} matches"
   no_disk_open: No disk open.
   write_failed: "Write failed: %{error}"
+  enter_dir_name: Enter a directory name
+  created_directory: "Created directory %{name}"
+  renamed_to: "Renamed to %{name}"
+  invalid_hex_bytes: "Invalid hex: need whole byte pairs (0-9, A-F), whitespace ignored"
+  saved_edits: "Saved edits to %{path}"
+  fixed_geometry: "Fixed disk geometry to %{size}"
+  opened_disk: "Opened %{title} (%{format}, %{count} sectors)"
+  opened_tape:
+    one: "Opened %{title} (%{format} — %{count} file)"
+    other: "Opened %{title} (%{format} — %{count} files)"
+  failed_to_open: "Failed to open %{path}: %{error}"
+  selected_file: "%{path} — %{count} bytes"
+  file_gone: "File no longer exists: %{path}"
+  get_started: "Open a disk image (or drag one in) to get started."
+  read_only_image: "This image is read-only (.dmk, partitioned, or no source file)."
+  could_not_read: "Could not read %{path}: %{error}"
+  convert_failed: "Cannot convert to .%{ext}: %{error}"
+  saved: "Saved %{path}"
+  save_failed: "Failed to save: %{error}"
+  save_png_failed: "Failed to save PNG: %{error}"
+  drag_failed: "Drag failed: %{error}"
+  nothing_to_copy: Nothing to copy
+  copied_image: Copied image to clipboard
+  not_decodable: Not a decodable MSX image
+  image_buffer_error: Image buffer error
+  extracted_member: "Extracted %{name} (%{count} bytes)%{warn} to %{dir}"
+  crc_mismatch_suffix: " (warning: CRC mismatch)"
+  added_files:
+    one: "Added %{count} file to %{dest}"
+    other: "Added %{count} files to %{dest}"
+  removed: "Removed %{path}"
   files_selected:
     one: "%{count} file selected"
     other: "%{count} files selected"
@@ -219,6 +251,10 @@ disk:
   bytes_per_sector: "Bytes/sector: %{count}"
   vol: "Vol: %{label}"
   read_only: read-only
+  hard_disk: Hard disk image
+  hard_disk_desc:
+    one: "Hard disk image: %{count} partition (%{list})"
+    other: "Hard disk image: %{count} partitions (%{list})"
   tape: "Tape (%{format})"
   tape_files: "Files: %{count}"
   tape_data: "Data: %{count} bytes"
@@ -229,3 +265,86 @@ disk:
   matches_on_disk:
     one: "%{count} match on disk"
     other: "%{count} matches on disk"
+
+# The per-file view tabs (Info/Hex/Text/BASIC/Disasm/Screen/Archive).
+view_mode:
+  info: Info
+  hex: Hex
+  text: Text
+  basic: BASIC
+  disasm: Disasm
+  screen: Screen
+  archive: Archive
+
+viewer:
+  save_edits: Save edits
+  edit_hex: Edit hex
+  go_to: "Go to:"
+  go: Go
+  hex_hint: hex
+  show_all_chars: Show all characters
+  find_label: "Find:"
+  bookmarks: Bookmarks
+  add_bookmark: "Add bookmark at 0x%{offset}"
+  click_byte_first: Click a byte to set the cursor first.
+  select_file: Select a file to view its contents.
+
+screen:
+  try_decoding_as: "Try decoding as:"
+  auto_from_ext: Auto (from extension)
+  decode_failed: "Could not decode as %{format}. Try another format below."
+  not_recognized: "Not a recognized MSX graphics file. Pick a format below to try decoding it anyway."
+
+stats:
+  image_checksums: Image checksums
+  partition: "Partition %{n}"
+  no_partition_stats: No statistics for this partition.
+  no_fs_stats: No filesystem statistics (no FAT BPB).
+  total: Total
+  used: Used
+  free: Free
+  files: Files
+  directories: Directories
+  fragmentation: Fragmentation
+  fat_integrity: FAT integrity
+  clean: "Clean — no lost, cross-linked, or bad clusters."
+  lost_clusters: "Lost clusters: %{count}"
+  cross_linked: "Cross-linked clusters: %{count}"
+  bad_pointers: "Bad chain pointers: %{count}"
+  by_file_type: By file type
+  largest_files: Largest files
+  crc32: "CRC32:"
+  sha1: "SHA-1:"
+
+archive:
+  not_an_archive: Not an archive.
+  cannot_read: "Cannot read archive: %{error}"
+  empty: Archive is empty.
+  extract_all: Extract all…
+  members:
+    one: "%{count} member"
+    other: "%{count} members"
+
+# The hex data inspector. Primitive type names (u8, i16 (LE), …) stay in code as
+# universal programming terms and are not translated.
+inspector:
+  title: Data inspector
+  cursor_past_end: Cursor is past the end of the data.
+  bsave_header: BSAVE header
+  boot_sector: Boot sector (BPB)
+  bytes_per_sector: Bytes/sector
+  sectors_per_cluster: Sectors/cluster
+  reserved_sectors: Reserved sectors
+  fat_copies: FAT copies
+  root_entries: Root entries
+  sectors_per_fat: Sectors/FAT
+  drive: Drive
+  drive_default: default
+  name: Name
+  current_block: Current block
+  record_size: Record size
+  file_size: File size
+
+render:
+  empty_fat: "This disk's FAT directory is empty — no files to list.\n\nIt may be a blank disk or a sector-based (non-DOS) disk. Use the Sectors or Map view to inspect its raw contents."
+  no_tape_files: Tape has no recognizable files.

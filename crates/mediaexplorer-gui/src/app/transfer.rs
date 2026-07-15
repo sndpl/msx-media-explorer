@@ -186,19 +186,20 @@ impl MediaExplorerApp {
                         .and_then(|c| msx_disk::archive::crc_ok(&c.bytes, index))
                         == Some(false)
                     {
-                        " (warning: CRC mismatch)"
+                        t!("status.crc_mismatch_suffix").into_owned()
                     } else {
-                        ""
+                        String::new()
                     };
                     self.status = match std::fs::write(&target, &data) {
-                        Ok(()) => format!(
-                            "Extracted {} ({} bytes){} to {}",
-                            default_name,
-                            data.len(),
-                            crc_warn,
-                            target.display()
-                        ),
-                        Err(e) => format!("Failed to extract: {e}"),
+                        Ok(()) => t!(
+                            "status.extracted_member",
+                            name => default_name,
+                            count => data.len(),
+                            warn => crc_warn,
+                            dir => target.display(),
+                        )
+                        .to_string(),
+                        Err(e) => t!("status.extract_failed", error => e).to_string(),
                     };
                 }
             }
@@ -260,7 +261,7 @@ impl MediaExplorerApp {
         match self.stage_files_for_drag(&paths) {
             Ok(staged) => {
                 if let Err(e) = crate::dnd::start_file_drag(frame, staged) {
-                    self.status = format!("Drag failed: {e}");
+                    self.status = t!("status.drag_failed", error => e).to_string();
                 }
             }
             Err(e) => self.status = e,
@@ -342,15 +343,16 @@ impl MediaExplorerApp {
     pub(crate) fn screen_format_picker(&mut self, ui: &mut egui::Ui) {
         ui.separator();
         ui.horizontal(|ui| {
-            ui.label("Try decoding as:");
+            ui.label(t!("screen.try_decoding_as"));
+            let auto_label = t!("screen.auto_from_ext");
             let selected = self
                 .forced_format
-                .map(|f| f.label())
-                .unwrap_or("Auto (from extension)");
+                .map(|f| f.label().to_string())
+                .unwrap_or_else(|| auto_label.to_string());
             egui::ComboBox::from_id_salt("screen_format")
                 .selected_text(selected)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.forced_format, None, "Auto (from extension)");
+                    ui.selectable_value(&mut self.forced_format, None, auto_label);
                     for &fmt in recoil::ImageFormat::all() {
                         ui.selectable_value(&mut self.forced_format, Some(fmt), fmt.label());
                     }
@@ -363,7 +365,7 @@ impl MediaExplorerApp {
     pub(crate) fn copy_current_view(&mut self) {
         if self.view_mode == ViewMode::Screen {
             let Some(img) = self.decode_current_screen() else {
-                self.status = "Nothing to copy".to_string();
+                self.status = t!("status.nothing_to_copy").to_string();
                 return;
             };
             let image = arboard::ImageData {
@@ -376,8 +378,8 @@ impl MediaExplorerApp {
                 None => Err("clipboard unavailable".to_string()),
             };
             self.status = match result {
-                Ok(()) => "Copied image to clipboard".to_string(),
-                Err(e) => format!("Clipboard error: {e}"),
+                Ok(()) => t!("status.copied_image").to_string(),
+                Err(e) => t!("status.clipboard_error", error => e).to_string(),
             };
             return;
         }
@@ -418,7 +420,7 @@ impl MediaExplorerApp {
     /// Save the currently-viewed MSX image as a PNG.
     pub(crate) fn save_screen_png(&mut self) {
         let Some(img) = self.decode_current_screen() else {
-            self.status = "Not a decodable MSX image".to_string();
+            self.status = t!("status.not_decodable").to_string();
             return;
         };
         let default = self
@@ -434,12 +436,12 @@ impl MediaExplorerApp {
         let Some(buffer) =
             image::RgbaImage::from_raw(img.width as u32, img.height as u32, img.to_rgba())
         else {
-            self.status = "Image buffer error".to_string();
+            self.status = t!("status.image_buffer_error").to_string();
             return;
         };
         self.status = match buffer.save(&target) {
-            Ok(()) => format!("Saved {}", target.display()),
-            Err(e) => format!("Failed to save PNG: {e}"),
+            Ok(()) => t!("status.saved", path => target.display()).to_string(),
+            Err(e) => t!("status.save_png_failed", error => e).to_string(),
         };
     }
 }

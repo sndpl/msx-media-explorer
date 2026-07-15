@@ -47,6 +47,7 @@ button:
   rename: Hernoemen
   create: Aanmaken
   clear: Wissen
+  copy: Kopiëren
   apply_fix: Reparatie toepassen
   ignore: Negeren
   find: Zoeken
@@ -104,6 +105,37 @@ status:
     other: "%{count} resultaten"
   no_disk_open: Geen schijf geopend.
   write_failed: "Schrijven mislukt: %{error}"
+  enter_dir_name: Voer een mapnaam in
+  created_directory: "Map %{name} aangemaakt"
+  renamed_to: "Hernoemd naar %{name}"
+  invalid_hex_bytes: "Ongeldige hex: hele byteparen vereist (0-9, A-F), witruimte genegeerd"
+  saved_edits: "Bewerkingen opgeslagen in %{path}"
+  fixed_geometry: "Schijfgeometrie gecorrigeerd naar %{size}"
+  opened_disk: "%{title} geopend (%{format}, %{count} sectoren)"
+  opened_tape:
+    one: "%{title} geopend (%{format} — %{count} bestand)"
+    other: "%{title} geopend (%{format} — %{count} bestanden)"
+  failed_to_open: "Openen van %{path} mislukt: %{error}"
+  selected_file: "%{path} — %{count} bytes"
+  file_gone: "Bestand bestaat niet meer: %{path}"
+  get_started: "Open een schijf-image (of sleep er een in) om te beginnen."
+  read_only_image: "Deze image is alleen-lezen (.dmk, gepartitioneerd of geen bronbestand)."
+  could_not_read: "Kon %{path} niet lezen: %{error}"
+  convert_failed: "Kan niet converteren naar .%{ext}: %{error}"
+  saved: "%{path} opgeslagen"
+  save_failed: "Opslaan mislukt: %{error}"
+  save_png_failed: "PNG opslaan mislukt: %{error}"
+  drag_failed: "Slepen mislukt: %{error}"
+  nothing_to_copy: Niets om te kopiëren
+  copied_image: Afbeelding naar klembord gekopieerd
+  not_decodable: Geen decodeerbare MSX-afbeelding
+  image_buffer_error: Fout in afbeeldingsbuffer
+  extracted_member: "%{name} (%{count} bytes)%{warn} uitgepakt naar %{dir}"
+  crc_mismatch_suffix: " (waarschuwing: CRC komt niet overeen)"
+  added_files:
+    one: "%{count} bestand toegevoegd aan %{dest}"
+    other: "%{count} bestanden toegevoegd aan %{dest}"
+  removed: "%{path} verwijderd"
   files_selected:
     one: "%{count} bestand geselecteerd"
     other: "%{count} bestanden geselecteerd"
@@ -213,6 +245,10 @@ disk:
   bytes_per_sector: "Bytes/sector: %{count}"
   vol: "Vol: %{label}"
   read_only: alleen-lezen
+  hard_disk: Harde-schijf-image
+  hard_disk_desc:
+    one: "Harde-schijf-image: %{count} partitie (%{list})"
+    other: "Harde-schijf-image: %{count} partities (%{list})"
   tape: "Tape (%{format})"
   tape_files: "Bestanden: %{count}"
   tape_data: "Data: %{count} bytes"
@@ -223,3 +259,86 @@ disk:
   matches_on_disk:
     one: "%{count} resultaat op schijf"
     other: "%{count} resultaten op schijf"
+
+# De tabbladen per bestand (Info/Hex/Tekst/BASIC/Disasm/Scherm/Archief).
+view_mode:
+  info: Info
+  hex: Hex
+  text: Tekst
+  basic: BASIC
+  disasm: Disasm
+  screen: Scherm
+  archive: Archief
+
+viewer:
+  save_edits: Bewerkingen opslaan
+  edit_hex: Hex bewerken
+  go_to: "Ga naar:"
+  go: Ga
+  hex_hint: hex
+  show_all_chars: Alle tekens tonen
+  find_label: "Zoeken:"
+  bookmarks: Bladwijzers
+  add_bookmark: "Bladwijzer toevoegen bij 0x%{offset}"
+  click_byte_first: Klik eerst op een byte om de cursor te plaatsen.
+  select_file: Selecteer een bestand om de inhoud te bekijken.
+
+screen:
+  try_decoding_as: "Decoderen als:"
+  auto_from_ext: Automatisch (uit extensie)
+  decode_failed: "Kan niet decoderen als %{format}. Probeer hieronder een ander formaat."
+  not_recognized: "Geen herkend MSX-grafisch bestand. Kies hieronder een formaat om het toch te proberen te decoderen."
+
+stats:
+  image_checksums: Image-controlegetallen
+  partition: "Partitie %{n}"
+  no_partition_stats: Geen statistiek voor deze partitie.
+  no_fs_stats: Geen bestandssysteemstatistiek (geen FAT-BPB).
+  total: Totaal
+  used: Gebruikt
+  free: Vrij
+  files: Bestanden
+  directories: Mappen
+  fragmentation: Fragmentatie
+  fat_integrity: FAT-integriteit
+  clean: "Schoon — geen verloren, gekruiste of slechte clusters."
+  lost_clusters: "Verloren clusters: %{count}"
+  cross_linked: "Gekruiste clusters: %{count}"
+  bad_pointers: "Slechte kettingverwijzingen: %{count}"
+  by_file_type: Per bestandstype
+  largest_files: Grootste bestanden
+  crc32: "CRC32:"
+  sha1: "SHA-1:"
+
+archive:
+  not_an_archive: Geen archief.
+  cannot_read: "Kan archief niet lezen: %{error}"
+  empty: Archief is leeg.
+  extract_all: Alles uitpakken…
+  members:
+    one: "%{count} item"
+    other: "%{count} items"
+
+# De hex-data-inspecteur. Primitieve typenamen (u8, i16 (LE), …) blijven in de
+# code staan als universele programmeertermen en worden niet vertaald.
+inspector:
+  title: Data-inspecteur
+  cursor_past_end: Cursor staat voorbij het einde van de data.
+  bsave_header: BSAVE-kopblok
+  boot_sector: Bootsector (BPB)
+  bytes_per_sector: Bytes/sector
+  sectors_per_cluster: Sectoren/cluster
+  reserved_sectors: Gereserveerde sectoren
+  fat_copies: FAT-kopieën
+  root_entries: Root-items
+  sectors_per_fat: Sectoren/FAT
+  drive: Station
+  drive_default: standaard
+  name: Naam
+  current_block: Huidig blok
+  record_size: Recordgrootte
+  file_size: Bestandsgrootte
+
+render:
+  empty_fat: "De FAT-map van deze schijf is leeg — geen bestanden om te tonen.\n\nHet kan een lege schijf zijn of een sectorgebaseerde (niet-DOS) schijf. Gebruik de weergave Sectoren of Kaart om de ruwe inhoud te bekijken."
+  no_tape_files: Tape bevat geen herkenbare bestanden.

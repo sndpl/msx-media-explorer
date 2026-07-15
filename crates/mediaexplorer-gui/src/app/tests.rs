@@ -647,6 +647,9 @@ fn synthetic_sc2() -> Vec<u8> {
 
 #[test]
 fn screen_failure_message_distinguishes_forced_attempt() {
+    // Translated now; pin the locale (shared lock avoids racing the Dutch test).
+    let _guard = crate::i18n::LOCALE_LOCK.lock().unwrap();
+    rust_i18n::set_locale("en");
     // A failed manual attempt names the format, so picking a type that does
     // not decode produces a visibly different message (proving an attempt
     // was made) rather than the constant "not recognized" placeholder.
@@ -936,6 +939,10 @@ fn file_row_width_matches_panel_sizing_constant() {
 
 #[test]
 fn empty_fat_message_names_fat_and_points_to_raw_views() {
+    // The message is now translated; pin the locale (shared lock keeps this from
+    // racing the one test that flips the global locale to Dutch).
+    let _guard = crate::i18n::LOCALE_LOCK.lock().unwrap();
+    rust_i18n::set_locale("en");
     let msg = empty_fat_message();
     assert!(msg.to_lowercase().contains("fat"), "msg: {msg}");
     assert!(msg.contains("Sectors"), "msg: {msg}");
@@ -1033,6 +1040,9 @@ fn describe_geometry_falls_back_to_arithmetic_for_unknown() {
 
 #[test]
 fn describe_hard_disk_lists_partition_sizes() {
+    // Translated now; pin the locale (shared lock avoids racing the Dutch test).
+    let _guard = crate::i18n::LOCALE_LOCK.lock().unwrap();
+    rust_i18n::set_locale("en");
     // 4 x 32 MiB partitions, as on a typical MSX-IDE hard disk; sizes use the
     // app-wide decimal humanize_bytes, so 33,554,432 bytes reads as 33.55 MB
     // (matching the per-partition labels in the tree).

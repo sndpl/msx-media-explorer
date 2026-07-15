@@ -14,6 +14,9 @@ impl MediaExplorerApp {
         // menu below is built from it): the explicit choice, else the OS locale,
         // else English.
         rust_i18n::set_locale(app.active_language().code());
+        // The default status was built under the fallback locale; restate it now
+        // that the real locale is set.
+        app.status = t!("status.get_started").to_string();
         #[cfg(target_os = "macos")]
         {
             app.mac_menu = Some(crate::macos::build_menu(&cc.egui_ctx, &app.settings));
@@ -63,12 +66,13 @@ impl MediaExplorerApp {
         match LoadedDisk::open(path) {
             Ok(disk) => {
                 self.reset_document();
-                self.status = format!(
-                    "Opened {} ({:?}, {} sectors)",
-                    disk.title(),
-                    disk.format,
-                    disk.geometry.total_sectors()
-                );
+                self.status = t!(
+                    "status.opened_disk",
+                    title => disk.title(),
+                    format => format!("{:?}", disk.format),
+                    count => disk.geometry.total_sectors(),
+                )
+                .to_string();
                 // A .dmk gets a per-track analysis from the raw container bytes.
                 if disk.format == ImageFormat::Dmk {
                     self.dmk_analysis =
@@ -82,7 +86,10 @@ impl MediaExplorerApp {
                 self.size_fix = self.disk.as_ref().and_then(LoadedDisk::size_mismatch);
                 self.record_recent(path);
             }
-            Err(e) => self.status = format!("Failed to open {}: {e}", path.display()),
+            Err(e) => {
+                self.status =
+                    t!("status.failed_to_open", path => path.display(), error => e).to_string()
+            }
         }
     }
 
@@ -108,16 +115,20 @@ impl MediaExplorerApp {
         match LoadedTape::open(path) {
             Ok(tape) => {
                 self.reset_document();
-                self.status = format!(
-                    "Opened {} ({} — {} file(s))",
-                    tape.title(),
-                    tape.format.label(),
-                    tape.file_count()
-                );
+                self.status = tn!(
+                    "status.opened_tape",
+                    tape.file_count(),
+                    title => tape.title(),
+                    format => tape.format.label(),
+                )
+                .to_string();
                 self.tape = Some(tape);
                 self.record_recent(path);
             }
-            Err(e) => self.status = format!("Failed to open {}: {e}", path.display()),
+            Err(e) => {
+                self.status =
+                    t!("status.failed_to_open", path => path.display(), error => e).to_string()
+            }
         }
     }
 
@@ -136,10 +147,10 @@ impl MediaExplorerApp {
     /// it from the multi-selection; otherwise it becomes the sole selection.
     pub(crate) fn select_file(&mut self, path: String, toggle: bool) {
         let Some(bytes) = self.read_doc_file(&path) else {
-            self.status = format!("Cannot read {path}");
+            self.status = t!("status.cannot_read", path => path).to_string();
             return;
         };
-        self.status = format!("{path} — {} bytes", bytes.len());
+        self.status = t!("status.selected_file", path => path, count => bytes.len()).to_string();
         self.view_mode = default_view_mode(&path);
         self.forced_format = None;
         self.search_matches.clear();

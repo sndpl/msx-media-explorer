@@ -72,6 +72,11 @@ impl Lang {
     }
 }
 
+/// Serializes tests that mutate the process-global `rust_i18n` locale so they
+/// never overlap a test reading translated output on another thread.
+#[cfg(test)]
+pub(crate) static LOCALE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,6 +159,7 @@ mod tests {
     fn interpolation_and_plurals_render() {
         use rust_i18n::t;
         // Serialize the locale mutation: `set_locale` is global.
+        let _guard = LOCALE_LOCK.lock().unwrap();
         rust_i18n::set_locale("en");
         assert_eq!(
             t!("status.cannot_read", path => "A.TXT"),

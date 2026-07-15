@@ -365,10 +365,18 @@ pub(crate) fn kv_row(
 /// The BSAVE-header grid, shared by the Info view and the data inspector.
 pub(crate) fn bload_grid(ui: &mut egui::Ui, b: &msx_disk::fileinfo::BloadHeader, id_salt: &str) {
     egui::Grid::new(id_salt).num_columns(2).show(ui, |ui| {
-        for (name, addr) in [("Start", b.start), ("End", b.end), ("Exec", b.exec)] {
-            kv_row(ui, name, format!("0x{addr:04X}"));
+        for (name, addr) in [
+            (t!("info.start"), b.start),
+            (t!("info.end"), b.end),
+            (t!("info.exec"), b.exec),
+        ] {
+            kv_row(ui, format!("{name}:"), format!("0x{addr:04X}"));
         }
-        kv_row(ui, "Length", format!("{} bytes", b.data_len()));
+        kv_row(
+            ui,
+            t!("info.length"),
+            t!("info.bytes", count => b.data_len()).into_owned(),
+        );
     });
 }
 
@@ -382,7 +390,7 @@ pub(crate) fn render_inspector(
     charset: MsxCharset,
 ) {
     ui.horizontal(|ui| {
-        ui.strong("Data inspector");
+        ui.strong(t!("inspector.title"));
         ui.weak(format!("@ 0x{origin:06X}"));
     });
     ui.separator();
@@ -391,7 +399,7 @@ pub(crate) fn render_inspector(
         .show(ui, |ui| {
             let at = bytes.get(origin..).unwrap_or(&[]);
             if at.is_empty() {
-                ui.weak("Cursor is past the end of the data.");
+                ui.weak(t!("inspector.cursor_past_end"));
                 return;
             }
             egui::Grid::new("inspector_prims")
@@ -420,21 +428,41 @@ pub(crate) fn render_inspector(
 
             if let Some(h) = msx_disk::fileinfo::bload::parse(at) {
                 ui.add_space(6.0);
-                ui.strong("BSAVE header");
+                ui.strong(t!("inspector.bsave_header"));
                 bload_grid(ui, &h, "inspect_bload");
             }
             if let Some(bpb) = msx_disk::fs::map::Bpb::parse(at) {
                 ui.add_space(6.0);
-                ui.strong("Boot sector (BPB)");
+                ui.strong(t!("inspector.boot_sector"));
                 egui::Grid::new("inspect_bpb")
                     .num_columns(2)
                     .show(ui, |ui| {
-                        kv_row(ui, "Bytes/sector", bpb.bytes_per_sector.to_string());
-                        kv_row(ui, "Sectors/cluster", bpb.sectors_per_cluster.to_string());
-                        kv_row(ui, "Reserved sectors", bpb.reserved.to_string());
-                        kv_row(ui, "FAT copies", bpb.num_fats.to_string());
-                        kv_row(ui, "Root entries", bpb.root_entries.to_string());
-                        kv_row(ui, "Sectors/FAT", bpb.sectors_per_fat.to_string());
+                        kv_row(
+                            ui,
+                            t!("inspector.bytes_per_sector"),
+                            bpb.bytes_per_sector.to_string(),
+                        );
+                        kv_row(
+                            ui,
+                            t!("inspector.sectors_per_cluster"),
+                            bpb.sectors_per_cluster.to_string(),
+                        );
+                        kv_row(
+                            ui,
+                            t!("inspector.reserved_sectors"),
+                            bpb.reserved.to_string(),
+                        );
+                        kv_row(ui, t!("inspector.fat_copies"), bpb.num_fats.to_string());
+                        kv_row(
+                            ui,
+                            t!("inspector.root_entries"),
+                            bpb.root_entries.to_string(),
+                        );
+                        kv_row(
+                            ui,
+                            t!("inspector.sectors_per_fat"),
+                            bpb.sectors_per_fat.to_string(),
+                        );
                     });
             }
             if let Some(fcb) = msx_disk::fileinfo::fcb::parse(at) {
@@ -444,15 +472,23 @@ pub(crate) fn render_inspector(
                     .num_columns(2)
                     .show(ui, |ui| {
                         let drive = if fcb.drive == 0 {
-                            "default".to_string()
+                            t!("inspector.drive_default").into_owned()
                         } else {
                             format!("{} ({}:)", fcb.drive, (b'A' + fcb.drive - 1) as char)
                         };
-                        kv_row(ui, "Drive", drive);
-                        kv_row(ui, "Name", fcb.name);
-                        kv_row(ui, "Current block", fcb.current_block.to_string());
-                        kv_row(ui, "Record size", fcb.record_size.to_string());
-                        kv_row(ui, "File size", format!("{} bytes", fcb.file_size));
+                        kv_row(ui, t!("inspector.drive"), drive);
+                        kv_row(ui, t!("inspector.name"), fcb.name);
+                        kv_row(
+                            ui,
+                            t!("inspector.current_block"),
+                            fcb.current_block.to_string(),
+                        );
+                        kv_row(ui, t!("inspector.record_size"), fcb.record_size.to_string());
+                        kv_row(
+                            ui,
+                            t!("inspector.file_size"),
+                            t!("info.bytes", count => fcb.file_size).into_owned(),
+                        );
                     });
             }
         });
@@ -480,15 +516,15 @@ pub(crate) fn checksum_grid(
     copy: &mut Option<String>,
 ) {
     egui::Grid::new(id_salt).num_columns(3).show(ui, |ui| {
-        ui.label("CRC32:");
+        ui.label(t!("stats.crc32"));
         ui.monospace(cks.crc32_hex());
-        if ui.small_button("Copy").clicked() {
+        if ui.small_button(t!("button.copy")).clicked() {
             *copy = Some(cks.crc32_hex());
         }
         ui.end_row();
-        ui.label("SHA-1:");
+        ui.label(t!("stats.sha1"));
         ui.monospace(cks.sha1_hex());
-        if ui.small_button("Copy").clicked() {
+        if ui.small_button(t!("button.copy")).clicked() {
             *copy = Some(cks.sha1_hex());
         }
         ui.end_row();
@@ -517,47 +553,48 @@ pub(crate) fn render_disk_stats(
     egui::Grid::new(("disk_stats_summary", salt))
         .num_columns(2)
         .show(ui, |ui| {
-            kv_row(ui, "Total", humanize_bytes(s.total_bytes));
-            kv_row(ui, "Used", humanize_bytes(s.used_bytes));
-            kv_row(ui, "Free", humanize_bytes(s.free_bytes));
-            kv_row(ui, "Files", s.file_count.to_string());
-            kv_row(ui, "Directories", s.dir_count.to_string());
-            kv_row(ui, "Fragmentation", format!("{:.1}%", s.fragmentation_pct));
+            kv_row(ui, t!("stats.total"), humanize_bytes(s.total_bytes));
+            kv_row(ui, t!("stats.used"), humanize_bytes(s.used_bytes));
+            kv_row(ui, t!("stats.free"), humanize_bytes(s.free_bytes));
+            kv_row(ui, t!("stats.files"), s.file_count.to_string());
+            kv_row(ui, t!("stats.directories"), s.dir_count.to_string());
+            kv_row(
+                ui,
+                t!("stats.fragmentation"),
+                format!("{:.1}%", s.fragmentation_pct),
+            );
         });
 
     ui.add_space(8.0);
-    ui.label("FAT integrity");
+    ui.label(t!("stats.fat_integrity"));
     let integ = &s.integrity;
     if integ.is_clean() {
-        ui.colored_label(
-            egui::Color32::from_rgb(0x4C, 0xAF, 0x50),
-            "Clean \u{2014} no lost, cross-linked, or bad clusters.",
-        );
+        ui.colored_label(egui::Color32::from_rgb(0x4C, 0xAF, 0x50), t!("stats.clean"));
     } else {
         let warn = ui.visuals().warn_fg_color;
         if !integ.lost_clusters.is_empty() {
             ui.colored_label(
                 warn,
-                format!("Lost clusters: {}", integ.lost_clusters.len()),
+                t!("stats.lost_clusters", count => integ.lost_clusters.len()),
             );
         }
         if !integ.cross_linked.is_empty() {
             ui.colored_label(
                 warn,
-                format!("Cross-linked clusters: {}", integ.cross_linked.len()),
+                t!("stats.cross_linked", count => integ.cross_linked.len()),
             );
         }
         if !integ.bad_pointers.is_empty() {
             ui.colored_label(
                 warn,
-                format!("Bad chain pointers: {}", integ.bad_pointers.len()),
+                t!("stats.bad_pointers", count => integ.bad_pointers.len()),
             );
         }
     }
 
     if !s.extensions.is_empty() {
         ui.add_space(8.0);
-        ui.label("By file type");
+        ui.label(t!("stats.by_file_type"));
         ui.monospace(format!(
             "{:<7} {:>5} {:>12}  {}",
             "Ext", "Count", "Bytes", "Description"
@@ -580,7 +617,7 @@ pub(crate) fn render_disk_stats(
 
     if !s.largest_files.is_empty() {
         ui.add_space(8.0);
-        ui.label("Largest files");
+        ui.label(t!("stats.largest_files"));
         for f in &s.largest_files {
             let label = largest_file_label(f.size, &f.path, charset);
             let resp = ui.add(

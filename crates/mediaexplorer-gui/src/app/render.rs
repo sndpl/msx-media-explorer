@@ -149,10 +149,8 @@ pub(crate) fn file_row_columns(entry: &DirEntry) -> String {
 /// Message shown in the Files panel when a disk mounts but its FAT directory
 /// holds no entries (a blank disk, or a sector-based / non-DOS disk that stores
 /// no files in a FAT). Points the user at the raw views.
-pub(crate) fn empty_fat_message() -> &'static str {
-    "This disk's FAT directory is empty — no files to list.\n\n\
-     It may be a blank disk or a sector-based (non-DOS) disk. \
-     Use the Sectors or Map view to inspect its raw contents."
+pub(crate) fn empty_fat_message() -> String {
+    t!("render.empty_fat").into_owned()
 }
 
 /// Read-only context threaded through [`render_entries`]: what is selected /
@@ -270,11 +268,11 @@ pub(crate) fn tree_row_cols(
 /// The shared "Add files here… / Add directory…" entries, targeting `dir`
 /// ("" = disk root). Used by file, directory, and root-row context menus.
 pub(crate) fn add_menu_items(ui: &mut egui::Ui, events: &mut RowEvents, dir: &str) {
-    if ui.button("Add files here…").clicked() {
+    if ui.button(t!("button.add_files_here")).clicked() {
         events.action = Some(RowAction::AddFiles(dir.to_string()));
         ui.close();
     }
-    if ui.button("Add directory…").clicked() {
+    if ui.button(t!("button.add_directory")).clicked() {
         events.action = Some(RowAction::AddDir(dir.to_string()));
         ui.close();
     }
@@ -393,11 +391,11 @@ pub(crate) fn render_entries(
                 resp.context_menu(|ui| {
                     add_menu_items(ui, events, &target);
                     ui.separator();
-                    if ui.button("Rename…").clicked() {
+                    if ui.button(t!("button.rename_menu")).clicked() {
                         events.action = Some(RowAction::Rename(entry.path.clone()));
                         ui.close();
                     }
-                    if ui.button("Remove directory").clicked() {
+                    if ui.button(t!("button.remove_directory")).clicked() {
                         events.action = Some(RowAction::RemoveDir(entry.path.clone()));
                         ui.close();
                     }
@@ -443,17 +441,17 @@ pub(crate) fn render_entries(
                 if ctx.writable {
                     add_menu_items(ui, events, &target);
                     ui.separator();
-                    if ui.button("Rename…").clicked() {
+                    if ui.button(t!("button.rename_menu")).clicked() {
                         events.action = Some(RowAction::Rename(entry.path.clone()));
                         ui.close();
                     }
-                    if ui.button("Delete").clicked() {
+                    if ui.button(t!("button.delete")).clicked() {
                         events.action = Some(RowAction::Delete(entry.path.clone()));
                         ui.close();
                     }
                     ui.separator();
                 }
-                if ui.button("Extract…").clicked() {
+                if ui.button(t!("button.extract")).clicked() {
                     events.action = Some(RowAction::Extract(entry.path.clone()));
                     ui.close();
                 }
@@ -471,7 +469,7 @@ pub(crate) fn render_tape_files(
     events: &mut RowEvents,
 ) {
     if tape.file_count() == 0 {
-        ui.weak("Tape has no recognizable files.");
+        ui.weak(t!("render.no_tape_files"));
         return;
     }
     for (i, (key, file)) in tape.entries().enumerate() {
@@ -511,7 +509,7 @@ pub(crate) fn render_tape_files(
             events.drag_started = Some(key.to_string());
         }
         resp.context_menu(|ui| {
-            if ui.button("Extract…").clicked() {
+            if ui.button(t!("button.extract")).clicked() {
                 events.action = Some(RowAction::Extract(key.to_string()));
                 ui.close();
             }

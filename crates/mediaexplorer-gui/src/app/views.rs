@@ -107,17 +107,15 @@ pub(crate) fn describe_geometry(geo: Geometry) -> String {
 /// Used instead of [`describe_geometry`], whose sides/tracks are a meaningless
 /// fabrication for a hard disk. `sizes` is each partition's byte size.
 pub(crate) fn describe_hard_disk(sizes: &[u64]) -> String {
-    let n = sizes.len();
-    let unit = if n == 1 { "partition" } else { "partitions" };
     if sizes.is_empty() {
-        return "Hard disk image".to_string();
+        return t!("disk.hard_disk").into_owned();
     }
     let list = sizes
         .iter()
         .map(|&b| humanize_bytes(b))
         .collect::<Vec<_>>()
         .join(", ");
-    format!("Hard disk image: {n} {unit} ({list})")
+    tn!("disk.hard_disk_desc", sizes.len(), list => list).into_owned()
 }
 
 /// Whether `path`'s lowercased extension is in `exts`.
@@ -275,14 +273,8 @@ pub(crate) fn decode_screen(
 /// that an attempt was made.
 pub(crate) fn screen_decode_failed_message(forced: Option<recoil::ImageFormat>) -> String {
     match forced {
-        Some(fmt) => format!(
-            "Could not decode as {}. Try another format below.",
-            fmt.label()
-        ),
-        None => {
-            "Not a recognized MSX graphics file. Pick a format below to try decoding it anyway."
-                .to_string()
-        }
+        Some(fmt) => t!("screen.decode_failed", format => fmt.label()).into_owned(),
+        None => t!("screen.not_recognized").into_owned(),
     }
 }
 
@@ -441,11 +433,11 @@ pub(crate) fn render_screen(
             let image = egui::Image::new(egui::load::SizedTexture::new(texture.id(), size))
                 .sense(egui::Sense::click());
             ui.add(image).context_menu(|ui| {
-                if ui.button("Copy image").clicked() {
+                if ui.button(t!("button.copy_image")).clicked() {
                     action = Some(ScreenAction::CopyImage);
                     ui.close();
                 }
-                if ui.button("Save PNG…").clicked() {
+                if ui.button(t!("button.save_png")).clicked() {
                     action = Some(ScreenAction::SavePng);
                     ui.close();
                 }
