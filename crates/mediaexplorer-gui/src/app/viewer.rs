@@ -363,18 +363,19 @@ impl MediaExplorerApp {
     /// Jump the file hex view to the offset typed in the go-to box.
     pub(crate) fn goto_hex_offset(&mut self) {
         let Some(off) = parse_offset(&self.hex.goto_input) else {
-            self.status = "Enter a hex offset, e.g. 1A0".to_string();
+            self.status = t!("status.enter_hex_offset").to_string();
             return;
         };
         let len = self.content.as_ref().map(|c| c.bytes.len()).unwrap_or(0);
         if off >= len {
-            self.status = format!("Offset 0x{off:X} is past the end ({len} bytes)");
+            self.status =
+                t!("status.offset_past_end", offset => format!("{off:X}"), len => len).to_string();
             return;
         }
         self.hex.cursor = Some(off);
         self.hex.selection = None;
         self.pending_scroll_row = Some(off / self.settings.hex.bytes_per_row.max(1));
-        self.status = format!("Jumped to 0x{off:06X}");
+        self.status = t!("status.jumped_to", offset => format!("{off:06X}")).to_string();
     }
 
     /// The selected bytes of the file hex view, as a hex or ASCII string.

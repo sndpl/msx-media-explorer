@@ -127,6 +127,16 @@ status:
   save_png_failed: "PNG opslaan mislukt: %{error}"
   drag_failed: "Slepen mislukt: %{error}"
   nothing_to_copy: Niets om te kopiëren
+  enter_hex_offset: "Voer een hex-offset in, bijv. 1A0"
+  offset_past_end: "Offset 0x%{offset} ligt voorbij het einde (%{len} bytes)"
+  jumped_to: "Gesprongen naar 0x%{offset}"
+  cannot_decompress: "Kan %{name} niet uitpakken: %{error}"
+  extracted_members:
+    one: "%{count} item uitgepakt naar %{dir} (%{skipped} overgeslagen, %{failed} mislukt)"
+    other: "%{count} items uitgepakt naar %{dir} (%{skipped} overgeslagen, %{failed} mislukt)"
+  create_disk_failed: "Kon schijf niet aanmaken: %{error}"
+  write_file_failed: "Schrijven van %{path} mislukt: %{error}"
+  new_window_failed: "Kon geen nieuw venster openen: %{error}"
   copied_image: Afbeelding naar klembord gekopieerd
   not_decodable: Geen decodeerbare MSX-afbeelding
   image_buffer_error: Fout in afbeeldingsbuffer

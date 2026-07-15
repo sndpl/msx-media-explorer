@@ -160,7 +160,7 @@ impl MediaExplorerApp {
         }) {
             Ok(b) => b,
             Err(e) => {
-                self.status = format!("Could not create disk: {e}");
+                self.status = t!("status.create_disk_failed", error => e).to_string();
                 return;
             }
         };
@@ -168,7 +168,10 @@ impl MediaExplorerApp {
         if let Some(path) = rfd::FileDialog::new().set_file_name(default).save_file() {
             match std::fs::write(&path, &bytes) {
                 Ok(()) => self.open_path(&path),
-                Err(e) => self.status = format!("Failed to write {}: {e}", path.display()),
+                Err(e) => {
+                    self.status = t!("status.write_file_failed", path => path.display(), error => e)
+                        .to_string()
+                }
             }
         }
     }
@@ -181,7 +184,7 @@ impl MediaExplorerApp {
         let spawned = std::env::current_exe()
             .and_then(|exe| std::process::Command::new(exe).spawn().map(|_| ()));
         if let Err(e) = spawned {
-            self.status = format!("Could not open a new window: {e}");
+            self.status = t!("status.new_window_failed", error => e).to_string();
         }
     }
 

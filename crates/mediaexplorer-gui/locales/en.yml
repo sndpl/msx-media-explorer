@@ -132,6 +132,16 @@ status:
   save_png_failed: "Failed to save PNG: %{error}"
   drag_failed: "Drag failed: %{error}"
   nothing_to_copy: Nothing to copy
+  enter_hex_offset: "Enter a hex offset, e.g. 1A0"
+  offset_past_end: "Offset 0x%{offset} is past the end (%{len} bytes)"
+  jumped_to: "Jumped to 0x%{offset}"
+  cannot_decompress: "Cannot decompress %{name}: %{error}"
+  extracted_members:
+    one: "Extracted %{count} member to %{dir} (%{skipped} skipped, %{failed} failed)"
+    other: "Extracted %{count} members to %{dir} (%{skipped} skipped, %{failed} failed)"
+  create_disk_failed: "Could not create disk: %{error}"
+  write_file_failed: "Failed to write %{path}: %{error}"
+  new_window_failed: "Could not open a new window: %{error}"
   copied_image: Copied image to clipboard
   not_decodable: Not a decodable MSX image
   image_buffer_error: Image buffer error

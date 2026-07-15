@@ -203,7 +203,10 @@ impl MediaExplorerApp {
                     };
                 }
             }
-            Err(e) => self.status = format!("Cannot decompress {default_name}: {e}"),
+            Err(e) => {
+                self.status =
+                    t!("status.cannot_decompress", name => default_name, error => e).to_string()
+            }
         }
     }
 
@@ -245,10 +248,14 @@ impl MediaExplorerApp {
                 }
             }
         }
-        self.status = format!(
-            "Extracted {ok} member(s) to {} ({skipped} skipped, {failed} failed)",
-            dir.display()
-        );
+        self.status = tn!(
+            "status.extracted_members",
+            ok,
+            dir => dir.display(),
+            skipped => skipped,
+            failed => failed,
+        )
+        .to_string();
     }
 
     /// If a row was dragged this frame, write the file(s) to a temp directory
