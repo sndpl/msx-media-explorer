@@ -150,6 +150,7 @@ fn check_state(id: &str, s: &Settings) -> bool {
         "view.hex" => s.hex.show_hex,
         "view.ascii" => s.hex.show_ascii,
         "view.status_bar" => s.show_status_bar,
+        "app.auto_updates" => s.check_for_updates,
         "view.columns" => s.hex.show_columns,
         "view.hide_nulls" => s.hex.hide_null_bytes,
         "view.lnf.hex" => s.hex.line_number_hex,
@@ -197,10 +198,27 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
     // the executable name ("mediaexplorer") for an unbundled dev binary.
     let app_menu = Submenu::new(crate::APP_NAME, true);
     let about = MenuItem::with_id("app.about", t!("menu.about"), true, None);
+    // Update items live here (not in Help) so the language-change rebuild keeps
+    // them; the auto-updates check syncs through the shared `checks` mechanism.
+    let check_updates = MenuItem::with_id(
+        "app.check_updates",
+        t!("menu.check_for_updates"),
+        true,
+        None,
+    );
+    let auto_updates = check(
+        "app.auto_updates",
+        t!("menu.auto_check_updates"),
+        settings,
+        &mut checks,
+    );
     let hide_label = format!("Hide {}", crate::APP_NAME);
     let quit_label = format!("Quit {}", crate::APP_NAME);
     let _ = app_menu.append_items(&[
         &about,
+        &PredefinedMenuItem::separator(),
+        &check_updates,
+        &auto_updates,
         &PredefinedMenuItem::separator(),
         &PredefinedMenuItem::services(None),
         &PredefinedMenuItem::separator(),

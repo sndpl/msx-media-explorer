@@ -25,6 +25,17 @@ impl MediaExplorerApp {
         // second live instance is never touched).
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         super::transfer::clean_stale_drag_staging();
+        // Throttled automatic update check (opt-out). Silent unless a newer
+        // release exists; a failed attempt never nags and never stamps the
+        // throttle, so it retries on the next launch.
+        if app.settings.check_for_updates
+            && crate::update::should_check(
+                crate::update::now_unix_secs(),
+                app.settings.last_update_check,
+            )
+        {
+            crate::update::spawn_check(cc.egui_ctx.clone(), false);
+        }
         app
     }
 

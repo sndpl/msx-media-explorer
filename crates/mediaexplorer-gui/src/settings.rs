@@ -31,6 +31,11 @@ pub struct Settings {
     /// Chosen UI language. `None` means "follow the OS locale", resolved once at
     /// startup; a `Some` value is the user's explicit, persisted choice.
     pub language: Option<Lang>,
+    /// Whether to check GitHub for a newer release on startup (opt-out).
+    pub check_for_updates: bool,
+    /// Unix time (seconds) of the last successful update check, for throttling.
+    /// `None` means "never checked".
+    pub last_update_check: Option<u64>,
 }
 
 impl Default for Settings {
@@ -40,6 +45,8 @@ impl Default for Settings {
             show_status_bar: true,
             hex: HexViewOptions::default(),
             language: None,
+            check_for_updates: true,
+            last_update_check: None,
         }
     }
 }
@@ -253,6 +260,26 @@ mod tests {
         let old = r#"{"recent":[],"show_status_bar":true,"hex":{}}"#;
         let s: Settings = serde_json::from_str(old).unwrap();
         assert_eq!(s.language, None);
+    }
+
+    #[test]
+    fn update_settings_round_trip_and_default_for_old_configs() {
+        // Defaults: the update check is on, and nothing has been checked yet.
+        let mut s = Settings::default();
+        assert!(s.check_for_updates);
+        assert_eq!(s.last_update_check, None);
+        // Both fields survive a serialization round-trip.
+        s.check_for_updates = false;
+        s.last_update_check = Some(1_700_000_000);
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+        // A config written before these fields existed still parses; the update
+        // check defaults to on (serde-default fills the missing fields in).
+        let old = r#"{"recent":[],"show_status_bar":true,"hex":{}}"#;
+        let parsed: Settings = serde_json::from_str(old).unwrap();
+        assert!(parsed.check_for_updates);
+        assert_eq!(parsed.last_update_check, None);
     }
 
     #[test]

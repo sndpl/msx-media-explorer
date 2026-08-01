@@ -295,6 +295,8 @@ impl MediaExplorerApp {
     pub(crate) fn handle_menu_event(&mut self, id: &str, ctx: &egui::Context) {
         match id {
             "app.about" => self.show_about = true,
+            "app.check_updates" => self.check_for_updates_now(ctx),
+            "app.auto_updates" => self.settings.check_for_updates ^= true,
             "help.shortcuts" => self.show_shortcuts = true,
             "file.new" => self.show_new_disk = true,
             "file.new_window" => self.open_new_window(),
@@ -534,6 +536,16 @@ impl MediaExplorerApp {
                     self.show_shortcuts = true;
                     ui.close();
                 }
+                ui.separator();
+                if ui.button(t!("menu.check_for_updates")).clicked() {
+                    self.check_for_updates_now(ui.ctx());
+                    ui.close();
+                }
+                ui.checkbox(
+                    &mut self.settings.check_for_updates,
+                    t!("menu.auto_check_updates"),
+                );
+                ui.separator();
                 if ui.button(t!("menu.about")).clicked() {
                     self.show_about = true;
                     ui.close();

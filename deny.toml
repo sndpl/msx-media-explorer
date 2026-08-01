@@ -16,6 +16,9 @@ allow = [
     "Unicode-3.0",
     "MPL-2.0",
     "CC0-1.0",
+    # webpki-roots (the Mozilla CA set bundled with rustls, pulled in by ureq for
+    # the update check). Permissive, no copyleft terms, GPL-compatible.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.9
 

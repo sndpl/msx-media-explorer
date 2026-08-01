@@ -23,6 +23,8 @@ menu:
   close: Close
   about: About MSX Media Explorer
   keyboard_shortcuts: Keyboard Shortcuts
+  check_for_updates: Check for Updates…
+  auto_check_updates: Automatically Check for Updates
   # View submenu
   line_numbers: Line Numbers
   hexadecimal: Hexadecimal
@@ -90,6 +92,14 @@ dialog:
   about_built: Built
   about_commit: Commit
   shortcuts_title: Keyboard Shortcuts
+  update_title: Software Update
+
+# The update-check banner and manual-check result dialog.
+update:
+  banner: "Version %{version} is available."
+  view_release: View release
+  up_to_date: "You are running the latest version (%{version})."
+  failed: Could not check for updates.
 
 status:
   extracted_to:

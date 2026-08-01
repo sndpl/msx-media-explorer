@@ -32,9 +32,16 @@ serde = { version = "1", features = ["derive"] }
 rust-i18n = "3"
 # Default the UI language to the OS locale on first run (MIT/Apache, pure Rust).
 sys-locale = "0.3"
+# Update check: one blocking HTTPS GET to the GitHub releases API on a spawned
+# thread (the app is otherwise async-free). Default features bundle rustls +
+# webpki roots, so there is one TLS story on all three OSes with no system
+# OpenSSL/schannel dependency. MIT/Apache-2.0, GPL-compatible.
+ureq = "3"
+# JSON: deserialize the GitHub release payload for the update check. Also used by
+# the settings round-trip tests.
+serde_json = "1"
 
 [dev-dependencies]
-serde_json = "1"
 # Test-only: parse the locale catalogs to assert their key sets match.
 serde_yaml = "0.9"
 

@@ -11,6 +11,7 @@ mod settings;
 mod state;
 mod tree_filter;
 mod tree_nav;
+mod update;
 
 use app::MediaExplorerApp;
 

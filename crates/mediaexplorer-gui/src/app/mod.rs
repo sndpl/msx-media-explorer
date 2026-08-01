@@ -39,6 +39,7 @@ mod info;
 mod render;
 mod shoot;
 mod transfer;
+mod updates;
 mod viewer;
 mod views;
 
@@ -281,6 +282,14 @@ struct Bookmark {
     name: String,
 }
 
+/// A newer release the update check found, shown as a dismissible top banner.
+/// The raw version/url are stored so the banner text re-localizes on a language
+/// change (it is formatted with `t!` every frame).
+struct UpdateBanner {
+    version: String,
+    url: String,
+}
+
 /// Per-hex-view interaction state: the byte cursor, an inclusive selection
 /// range, the go-to-offset input, and bookmarks. Kept separately for the file
 /// hex view and the sector hex view so they don't clobber each other.
@@ -457,6 +466,12 @@ pub struct MediaExplorerApp {
     /// Last frame's tree-row rects with their add-target directories, used to
     /// resolve which folder a drag-and-drop landed on.
     drop_targets: Vec<(egui::Rect, String)>,
+    /// A newer release surfaced by the update check, shown as a top banner until
+    /// dismissed. `None` when up to date or not yet checked.
+    update_available: Option<UpdateBanner>,
+    /// Result of a *manual* "Check for Updates…", shown in a modal until closed.
+    /// Automatic checks never set this (they only raise the banner).
+    update_result: Option<crate::update::OutcomeKind>,
 }
 
 /// Application version (from Cargo.toml), shown in the toolbar and About window.
@@ -550,6 +565,8 @@ impl Default for MediaExplorerApp {
             new_dir: None,
             size_fix: None,
             drop_targets: Vec::new(),
+            update_available: None,
+            update_result: None,
         }
     }
 }
@@ -570,6 +587,28 @@ impl eframe::App for MediaExplorerApp {
         #[cfg(target_os = "macos")]
         for id in crate::macos::take_menu_events() {
             self.handle_menu_event(&id, ui.ctx());
+        }
+
+        // Fold in a completed update check (automatic or manual), if one landed
+        // since the last frame. Runs on every OS.
+        if let Some(outcome) = crate::update::take_result() {
+            // Stamp the throttle only when the check actually reached GitHub, so
+            // a failed (e.g. offline) attempt retries next launch, not in 24h.
+            let reached_github = !matches!(outcome.kind, crate::update::OutcomeKind::Failed(_));
+            if let crate::update::OutcomeKind::Available { version, url } = &outcome.kind {
+                self.update_available = Some(UpdateBanner {
+                    version: version.clone(),
+                    url: url.clone(),
+                });
+            }
+            // A manual check opens the result dialog for every outcome; an
+            // automatic one stays silent (banner only).
+            if outcome.manual {
+                self.update_result = Some(outcome.kind);
+            }
+            if reached_github {
+                self.settings.last_update_check = Some(crate::update::now_unix_secs());
+            }
         }
         // Keep the native Text Encoding menu's checks/enabled state in sync; the
         // charset can change outside a menu event (auto-detect on disk load).
@@ -605,6 +644,7 @@ impl eframe::App for MediaExplorerApp {
             self.toolbar(ui);
             ui.add_space(4.0);
         });
+        self.update_banner(ui);
         if self.settings.show_status_bar {
             egui::Panel::bottom("status").show_inside(ui, |ui| {
                 ui.add_space(2.0);
@@ -638,6 +678,7 @@ impl eframe::App for MediaExplorerApp {
         self.new_disk_dialog(ui.ctx());
         self.size_fix_dialog(ui.ctx());
         self.about_dialog(ui.ctx());
+        self.update_dialog(ui.ctx());
         self.shortcuts_dialog(ui.ctx());
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]

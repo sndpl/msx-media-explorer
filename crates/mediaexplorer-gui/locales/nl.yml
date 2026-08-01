@@ -20,6 +20,8 @@ menu:
   close: Sluiten
   about: Over MSX Media Explorer
   keyboard_shortcuts: Sneltoetsen
+  check_for_updates: Controleren op updates…
+  auto_check_updates: Automatisch op updates controleren
   line_numbers: Regelnummers
   hexadecimal: Hexadecimaal
   plain_text: Platte tekst
@@ -85,6 +87,14 @@ dialog:
   about_built: Gebouwd
   about_commit: Commit
   shortcuts_title: Sneltoetsen
+  update_title: Software-update
+
+# De updatebanner en het resultaatvenster van een handmatige controle.
+update:
+  banner: "Versie %{version} is beschikbaar."
+  view_release: Release bekijken
+  up_to_date: "Je gebruikt de nieuwste versie (%{version})."
+  failed: Kon niet op updates controleren.
 
 status:
   extracted_to:
