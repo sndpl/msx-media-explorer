@@ -71,6 +71,10 @@ impl MediaExplorerApp {
         self.app_view = AppView::Files;
         self.hex = HexUiState::default();
         self.sector_hex = HexUiState::default();
+        self.sector_followed = None;
+        // A different document reuses the "disk" preview source key, so bump
+        // the revision to invalidate the cached preview texture.
+        self.doc_revision += 1;
     }
 
     pub(crate) fn open_disk(&mut self, path: &Path) {
@@ -81,7 +85,7 @@ impl MediaExplorerApp {
                     "status.opened_disk",
                     title => disk.title(),
                     format => format!("{:?}", disk.format),
-                    count => disk.geometry.total_sectors(),
+                    count => disk.sector_count(),
                 )
                 .to_string();
                 // A .dmk gets a per-track analysis from the raw container bytes.

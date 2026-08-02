@@ -371,23 +371,10 @@ impl MediaExplorerApp {
     /// otherwise the rendered text (hex dump / text / BASIC listing).
     pub(crate) fn copy_current_view(&mut self) {
         if self.view_mode == ViewMode::Screen {
-            let Some(img) = self.decode_current_screen() else {
-                self.status = t!("status.nothing_to_copy").to_string();
-                return;
-            };
-            let image = arboard::ImageData {
-                width: img.width,
-                height: img.height,
-                bytes: img.to_rgba().into(),
-            };
-            let result = match self.ensure_clipboard() {
-                Some(cb) => cb.set_image(image).map_err(|e| e.to_string()),
-                None => Err("clipboard unavailable".to_string()),
-            };
-            self.status = match result {
-                Ok(()) => t!("status.copied_image").to_string(),
-                Err(e) => t!("status.clipboard_error", error => e).to_string(),
-            };
+            match self.decode_current_screen() {
+                Some(img) => self.copy_image_to_clipboard(&img),
+                None => self.status = t!("status.nothing_to_copy").to_string(),
+            }
             return;
         }
 
@@ -430,14 +417,33 @@ impl MediaExplorerApp {
             self.status = t!("status.not_decodable").to_string();
             return;
         };
-        let default = self
-            .selected
-            .as_deref()
-            .and_then(|p| p.rsplit('/').next())
-            .and_then(|n| n.rsplit_once('.').map(|(s, _)| s).or(Some(n)))
-            .map(|stem| format!("{stem}.png"))
-            .unwrap_or_else(|| "image.png".to_string());
-        let Some(target) = rfd::FileDialog::new().set_file_name(&default).save_file() else {
+        let name = format!("{}.png", self.selected_file_stem());
+        self.save_image_png(&img, &name);
+    }
+
+    /// Put a decoded image on the clipboard.
+    pub(crate) fn copy_image_to_clipboard(&mut self, img: &recoil::Image) {
+        let image = arboard::ImageData {
+            width: img.width,
+            height: img.height,
+            bytes: img.to_rgba().into(),
+        };
+        let result = match self.ensure_clipboard() {
+            Some(cb) => cb.set_image(image).map_err(|e| e.to_string()),
+            None => Err("clipboard unavailable".to_string()),
+        };
+        self.status = match result {
+            Ok(()) => t!("status.copied_image").to_string(),
+            Err(e) => t!("status.clipboard_error", error => e).to_string(),
+        };
+    }
+
+    /// Ask for a location and write a decoded image there as a PNG.
+    pub(crate) fn save_image_png(&mut self, img: &recoil::Image, default_name: &str) {
+        let Some(target) = rfd::FileDialog::new()
+            .set_file_name(default_name)
+            .save_file()
+        else {
             return;
         };
         let Some(buffer) =
@@ -450,6 +456,35 @@ impl MediaExplorerApp {
             Ok(()) => t!("status.saved", path => target.display()).to_string(),
             Err(e) => t!("status.save_png_failed", error => e).to_string(),
         };
+    }
+
+    /// The selected file's name without its extension, for default save names.
+    pub(crate) fn selected_file_stem(&self) -> String {
+        self.selected
+            .as_deref()
+            .and_then(|p| p.rsplit('/').next())
+            .and_then(|n| n.rsplit_once('.').map(|(s, _)| s).or(Some(n)))
+            .unwrap_or("image")
+            .to_string()
+    }
+
+    /// Apply a Copy/Save action chosen from the graphics preview's right-click
+    /// menu to the image the preview is currently showing.
+    pub(crate) fn preview_action(&mut self, action: ScreenAction) {
+        // Copied out of the cache so the borrow ends before the clipboard and
+        // file-dialog calls, which need `&mut self`. One copy on an explicit
+        // user action is cheaper than decoding the window a second time.
+        let Some((img, anchor)) = self.preview.snapshot() else {
+            self.status = t!("status.nothing_to_copy").to_string();
+            return;
+        };
+        match action {
+            ScreenAction::CopyImage => self.copy_image_to_clipboard(&img),
+            ScreenAction::SavePng => {
+                let name = format!("{}-{anchor:06X}.png", self.selected_file_stem());
+                self.save_image_png(&img, &name);
+            }
+        }
     }
 }
 

@@ -76,6 +76,18 @@ impl MediaExplorerApp {
             });
             ui.separator();
         }
+        // A disk whose directory entries are unusable: say so, rather than
+        // leaving an empty tree that looks like a successfully-read empty disk.
+        if let Some(disk) = &self.disk {
+            if disk.has_no_filesystem() {
+                ui.colored_label(ui.visuals().warn_fg_color, t!("disk.no_filesystem"));
+                ui.weak(t!("disk.no_filesystem_hint"));
+                ui.separator();
+            } else if disk.invalid_entries() > 0 {
+                ui.weak(tn!("disk.invalid_entries", disk.invalid_entries()));
+                ui.separator();
+            }
+        }
         let charset = self.charset;
         // The set of paths to show under the active filter: matching files plus
         // their ancestor directories (disk), or matching keys (tape). `None`
@@ -97,6 +109,14 @@ impl MediaExplorerApp {
                 writable: self.disk_writable(),
                 charset,
                 filter: keep.as_ref(),
+                no_filesystem: self
+                    .disk
+                    .as_ref()
+                    .is_some_and(crate::state::LoadedDisk::has_no_filesystem),
+                multi_disk: self
+                    .disk
+                    .as_ref()
+                    .is_some_and(|d| d.is_multi_disk() || d.is_zip()),
             };
             if keep.as_ref().is_some_and(|k| k.is_empty()) {
                 ui.weak(t!("filter.no_matches", pattern => self.filter.clone()));
@@ -175,6 +195,7 @@ impl MediaExplorerApp {
                     });
                 }
                 RowAction::RemoveDir(path) => self.remove_directory(&path),
+                RowAction::ExtractDisk(node) => self.extract_one_disk(&node),
             }
         }
         // On macOS/Windows, a dragged row hands its file(s) to the OS drag.

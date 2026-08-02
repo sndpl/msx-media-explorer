@@ -7,9 +7,11 @@
 
 mod boot;
 mod bootblocks;
+pub mod dirscan;
 pub mod dos;
 pub mod entry;
 pub mod map;
+pub mod multidisk;
 pub mod partition;
 pub mod sizefix;
 pub mod volume;
@@ -31,6 +33,10 @@ type Device = Cursor<Vec<u8>>;
 /// A mounted MSX disk filesystem.
 pub struct DiskFs {
     fs: fatfs::FileSystem<Device>,
+    /// Validation of the root directory, done on the raw bytes before mounting
+    /// (`fatfs` exposes neither the first cluster nor the reserved attribute
+    /// bits, so the checks cannot be made through it).
+    scan: dirscan::RootScan,
 }
 
 impl DiskFs {
@@ -40,13 +46,30 @@ impl DiskFs {
     /// the caller's original bytes are never modified.
     pub fn mount(mut data: Vec<u8>) -> Result<DiskFs> {
         boot::repair_boot_sector(&mut data)?;
+        // Validate against the repaired BPB, which is the geometry `fatfs` will
+        // read the directory under.
+        let scan = dirscan::scan_root(&data).unwrap_or_default();
         // Use the lossless PUA converter so filename bytes >= 0x80 are preserved
         // (the default converter would replace them with U+FFFD) and the open
         // key still round-trips. See [`crate::charset::PuaOemCpConverter`].
         let opts = fatfs::FsOptions::new().oem_cp_converter(&crate::charset::PUA_OEM_CP_CONVERTER);
         let fs = fatfs::FileSystem::new(Cursor::new(data), opts)
             .map_err(|e| Error::Malformed(format!("not a FAT filesystem: {e}")))?;
-        Ok(DiskFs { fs })
+        Ok(DiskFs { fs, scan })
+    }
+
+    /// Root-directory entries that cannot describe real files and are therefore
+    /// left out of [`tree`](Self::tree).
+    pub fn invalid_entries(&self) -> &[dirscan::InvalidEntry] {
+        &self.scan.invalid
+    }
+
+    /// Whether this disk has no usable FAT filesystem: it has directory entries
+    /// and every one of them is structurally impossible. Typical of a
+    /// custom-format game disk, whose loader reads raw sectors and whose
+    /// "directory" area holds code.
+    pub fn has_no_filesystem(&self) -> bool {
+        self.scan.has_no_filesystem()
     }
 
     /// Mount the filesystem contained in a disk image.
@@ -59,6 +82,10 @@ impl DiskFs {
     /// Read from the root-directory VOLUME_ID entry (where MSX-DOS stores it),
     /// not the BPB label field which holds boot-code garbage on MSX disks.
     pub fn volume_label(&self) -> Option<String> {
+        if self.has_no_filesystem() {
+            // The "label" would be whatever the disk's loader code decodes to.
+            return None;
+        }
         let label = self.fs.read_volume_label_from_root_dir().ok().flatten()?;
         let cleaned: String = label
             .chars()
@@ -70,8 +97,12 @@ impl DiskFs {
     }
 
     /// Build the full recursive directory tree from the root.
+    ///
+    /// Root entries rejected by [`dirscan`] are left out: they are provably not
+    /// files, and listing them presents disk-loader code as content. See
+    /// [`invalid_entries`](Self::invalid_entries) to report how many there were.
     pub fn tree(&self) -> Result<Vec<DirEntry>> {
-        read_dir_recursive(&self.fs.root_dir(), "")
+        read_dir_recursive(&self.fs.root_dir(), "", &self.scan)
     }
 
     /// Read the entire contents of a file by its slash-separated path.
@@ -88,7 +119,15 @@ impl DiskFs {
 }
 
 /// Recursively collect entries under `dir`, prefixing paths with `prefix`.
-fn read_dir_recursive(dir: &fatfs::Dir<'_, Device>, prefix: &str) -> Result<Vec<DirEntry>> {
+///
+/// `scan` validates the *root* directory only; subdirectories are reached
+/// through a root entry that has already been vetted, and a disk whose root is
+/// not a directory has no reachable subdirectories to begin with.
+fn read_dir_recursive(
+    dir: &fatfs::Dir<'_, Device>,
+    prefix: &str,
+    scan: &dirscan::RootScan,
+) -> Result<Vec<DirEntry>> {
     let mut entries = Vec::new();
     for result in dir.iter() {
         let raw = result.map_err(|e| Error::Malformed(format!("directory read failed: {e}")))?;
@@ -100,6 +139,9 @@ fn read_dir_recursive(dir: &fatfs::Dir<'_, Device>, prefix: &str) -> Result<Vec<
         if attrs.contains(fatfs::FileAttributes::VOLUME_ID) {
             continue; // the volume label is exposed separately
         }
+        if prefix.is_empty() && scan.rejects(raw.short_file_name_as_bytes()) {
+            continue; // not a file: an impossible size, cluster or attribute
+        }
 
         let path = if prefix.is_empty() {
             name.clone()
@@ -108,7 +150,7 @@ fn read_dir_recursive(dir: &fatfs::Dir<'_, Device>, prefix: &str) -> Result<Vec<
         };
         let is_dir = raw.is_dir();
         let children = if is_dir {
-            read_dir_recursive(&raw.to_dir(), &path)?
+            read_dir_recursive(&raw.to_dir(), &path, scan)?
         } else {
             Vec::new()
         };

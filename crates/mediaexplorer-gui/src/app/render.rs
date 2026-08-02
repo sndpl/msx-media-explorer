@@ -170,6 +170,13 @@ pub(crate) struct TreeRender<'a> {
     /// directories are drawn expanded regardless of `collapsed` so matches are
     /// revealed. `None` means no filter (draw the whole tree).
     pub(crate) filter: Option<&'a BTreeSet<String>>,
+    /// The disk has no usable FAT filesystem, and the Files panel already says
+    /// so above the tree. Suppresses the generic empty-directory notice, which
+    /// would otherwise explain the same thing a second time.
+    pub(crate) no_filesystem: bool,
+    /// The image holds several whole disks; its top-level nodes are disks that
+    /// can each be written out as a file of their own.
+    pub(crate) multi_disk: bool,
 }
 
 /// A selectable tree row drawn with an explicit, stable `id` rather than egui's
@@ -304,7 +311,9 @@ pub(crate) fn render_tree_with_root(
     }
     ui.indent(ROOT_PATH, |ui| {
         if entries.is_empty() {
-            ui.weak(empty_fat_message());
+            if !ctx.no_filesystem {
+                ui.weak(empty_fat_message());
+            }
         } else {
             render_entries(ui, entries, ctx, events);
         }
@@ -387,7 +396,19 @@ pub(crate) fn render_entries(
                 events.toggle_dir = Some(entry.path.clone());
                 events.cursor_to = Some(entry.path.clone());
             }
-            if ctx.writable {
+            // A top-level node of a concatenated image is a whole disk (every
+            // other row's path carries a `D{n}/` prefix), so it can be saved on
+            // its own. Offered even though such images are read-only, which is
+            // why this is not inside the `writable` menu below.
+            let is_disk_node = ctx.multi_disk && !entry.path.contains('/');
+            if is_disk_node {
+                resp.context_menu(|ui| {
+                    if ui.button(t!("button.extract_disk")).clicked() {
+                        events.action = Some(RowAction::ExtractDisk(entry.path.clone()));
+                        ui.close();
+                    }
+                });
+            } else if ctx.writable {
                 resp.context_menu(|ui| {
                     add_menu_items(ui, events, &target);
                     ui.separator();

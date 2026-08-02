@@ -87,6 +87,7 @@ pub struct MacMenu {
     save_dsk: MenuItem,
     save_xsa: MenuItem,
     save_sav: MenuItem,
+    extract_disks: MenuItem,
 }
 
 impl MacMenu {
@@ -99,10 +100,11 @@ impl MacMenu {
 
     /// Enable/disable the "Save as …" items for the current document (save-as is
     /// a format conversion, so each is offered only when it would change format).
-    pub fn sync_save_items(&self, can_dsk: bool, can_xsa: bool, can_sav: bool) {
+    pub fn sync_save_items(&self, can_dsk: bool, can_xsa: bool, can_sav: bool, multi: bool) {
         self.save_dsk.set_enabled(can_dsk);
         self.save_xsa.set_enabled(can_xsa);
         self.save_sav.set_enabled(can_sav);
+        self.extract_disks.set_enabled(multi);
     }
 
     /// Reflect the active charset into the Text Encoding menu. The charset only
@@ -236,6 +238,8 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
     let save_dsk = MenuItem::with_id("file.save_dsk", t!("menu.save_as_dsk"), false, None);
     let save_xsa = MenuItem::with_id("file.save_xsa", t!("menu.save_as_xsa"), false, None);
     let save_sav = MenuItem::with_id("file.save_sav", t!("menu.save_as_sav"), false, None);
+    let extract_disks =
+        MenuItem::with_id("file.extract_disks", t!("menu.extract_disks"), false, None);
     let _ = file.append_items(&[
         &MenuItem::with_id("file.new", t!("menu.new_disk"), true, Some(cmd(Code::KeyN))),
         &MenuItem::with_id(
@@ -250,6 +254,8 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
         &save_dsk,
         &save_xsa,
         &save_sav,
+        &PredefinedMenuItem::separator(),
+        &extract_disks,
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("file.close", t!("menu.close"), true, Some(cmd(Code::KeyW))),
     ]);
@@ -390,6 +396,7 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
         save_dsk,
         save_xsa,
         save_sav,
+        extract_disks,
     };
     mac.rebuild_recent(&settings.recent);
     mac

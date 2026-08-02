@@ -498,6 +498,221 @@ fn gl5_pic_is_auto_detected_by_content() {
     assert_eq!((img.width, img.height), (256, 212));
 }
 
+/// The raw graphics preview and the RECOIL file decoders must agree: reading a
+/// real SCREEN 7 dump as "4bpp, 512 wide, from byte 7, palette from the file"
+/// has to reproduce RECOIL's decode of the same file pixel for pixel. RECOIL
+/// line-doubles SCREEN 7 (212 source lines -> 424), so its row `2y` is the
+/// preview's row `y`.
+#[test]
+fn raw_preview_reproduces_the_recoil_screen7_decode() {
+    use msx_disk::recoil::{self, NoCompanions};
+    use msx_disk::view::bitmap::{self, PaletteId, RawFormat, RawView};
+
+    let path = skip_if_absent!("GRP1.SC7");
+    let bytes = std::fs::read(&path).expect("read SC7");
+    let decoded = recoil::decode("GRP1.SC7", &bytes, &NoCompanions).expect("recoil decodes SC7");
+    assert_eq!((decoded.width, decoded.height), (512, 424));
+
+    let raw = bitmap::render(
+        &bytes,
+        &RawView {
+            format: RawFormat::Bpp4,
+            // The embedded 16-colour palette a SCREEN 7 BSAVE carries.
+            palette: PaletteId::FromFile { offset: 0xfa87 },
+            width: 512,
+            offset: 7, // past the BSAVE header
+            max_rows: 212,
+        },
+    );
+    assert_eq!((raw.width, raw.height), (512, 212));
+    for y in 0..raw.height {
+        for x in 0..raw.width {
+            assert_eq!(
+                raw.pixels[y * 512 + x],
+                decoded.pixels[(y * 2) * 512 + x],
+                "pixel ({x}, {y}) differs from the RECOIL decode"
+            );
+        }
+    }
+}
+
+/// The same cross-check for the YJK path: a real SCREEN 12 dump read as "8bpp
+/// YJK, 256 wide, from byte 7" must match RECOIL's decode exactly.
+#[test]
+fn raw_preview_reproduces_the_recoil_screen12_decode() {
+    use msx_disk::recoil::{self, NoCompanions};
+    use msx_disk::view::bitmap::{self, PaletteId, RawFormat, RawView};
+
+    let path = skip_if_absent!("IMG_003.S12");
+    let bytes = std::fs::read(&path).expect("read S12");
+    let decoded = recoil::decode("IMG_003.S12", &bytes, &NoCompanions).expect("recoil decodes S12");
+    assert_eq!(decoded.width, 256);
+
+    let raw = bitmap::render(
+        &bytes,
+        &RawView {
+            format: RawFormat::Yjk,
+            palette: PaletteId::Mono, // unused: YJK computes its own colours
+            width: 256,
+            offset: 7,
+            max_rows: decoded.height,
+        },
+    );
+    assert_eq!((raw.width, raw.height), (256, decoded.height));
+    assert_eq!(raw.pixels, decoded.pixels);
+}
+
+/// Golvellius II is a Compile custom-loader disk: it carries a plausible BPB
+/// but no filesystem at all. Its "root directory" holds Z80 code, one slot of
+/// which decodes to a 3.24 GB hidden/system file on a 720 kB disk. `fatfs`
+/// mounts the disk and reports that phantom; a real MSX answers `FILES` with
+/// nothing, and so must we.
+#[test]
+fn custom_format_disk_lists_no_files_and_reports_no_filesystem() {
+    let path = skip_if_absent!(
+        "Golvellius II (1988)(Compile)(ja)(Disk 1 of 3)(Opening Disk)(Patched MSX GFX).dsk"
+    );
+    let fs = DiskFs::from_image(&DiskImage::open(&path).expect("open")).expect("mount");
+
+    assert!(
+        fs.has_no_filesystem(),
+        "every directory entry is impossible, so this is not a filesystem"
+    );
+    assert_eq!(fs.tree().expect("tree"), Vec::new(), "must list no files");
+    assert_eq!(fs.invalid_entries().len(), 1);
+    // The label would otherwise decode from loader code.
+    assert_eq!(fs.volume_label(), None);
+}
+
+/// The counterweight: a real disk that trips every *weak* signal considered for
+/// this check and must survive untouched. `jaarg-hw.di1` holds ten working
+/// Dynamic Publisher pictures, yet its two FAT copies differ by 70% and four of
+/// its entries carry control bytes in the name — including the author's
+/// `P.Vaesen` / `sept1990` signature slots. Nothing here may be dropped.
+#[test]
+fn a_real_disk_with_odd_entries_keeps_all_of_them() {
+    let path = skip_if_absent!("jaarg-hw.di1");
+    let fs = DiskFs::from_image(&DiskImage::open(&path).expect("open")).expect("mount");
+
+    assert!(!fs.has_no_filesystem());
+    assert!(
+        fs.invalid_entries().is_empty(),
+        "no entry may be rejected: {:?}",
+        fs.invalid_entries()
+    );
+    let tree = fs.tree().expect("tree");
+    assert_eq!(tree.len(), 14, "all 14 root entries must survive");
+    let names: Vec<&str> = tree.iter().map(|e| e.name.as_str()).collect();
+    assert!(names.iter().any(|n| n.starts_with("HERFST1")));
+    assert!(names.iter().any(|n| n.starts_with("P.Vaesen")));
+    assert!(names.iter().any(|n| n.starts_with("sept1990")));
+}
+
+/// Sector-loaded games often *do* carry a real FAT alongside their raw-sector
+/// data. Disc Station must keep listing every file.
+#[test]
+fn sector_loaded_game_with_a_real_fat_is_untouched() {
+    for name in ["Disc Station Disk_07b.dsk", "Disc Station Disk_08a.dsk"] {
+        let Some(path) = fixture(name) else {
+            eprintln!("skipping: fixture '{name}' not present");
+            continue;
+        };
+        let fs = DiskFs::from_image(&DiskImage::open(&path).expect("open")).expect("mount");
+        assert!(!fs.has_no_filesystem(), "{name} has a real filesystem");
+        assert!(
+            fs.invalid_entries().is_empty(),
+            "{name}: {:?}",
+            fs.invalid_entries()
+        );
+        assert!(!fs.tree().expect("tree").is_empty(), "{name} lists files");
+    }
+}
+
+/// `Aleste2.dsk` is three whole 720 kB disks concatenated into one 2.2 MB file
+/// (their boot sectors read `ALESTE20`, `ALESTE21`, `ALESTE22`). Opened as a
+/// single volume it would mount under the first disk's boot sector, hiding
+/// everything past sector 1440 and reporting a nonsense 240-track geometry.
+#[test]
+fn concatenated_disks_split_into_one_volume_each() {
+    use msx_disk::fs::multidisk;
+    use msx_disk::image::geometry::{Geometry, SIZE_720K};
+
+    let path = skip_if_absent!("Aleste2.dsk");
+    let image = DiskImage::open(&path).expect("open");
+    let slices = multidisk::split(image.data()).expect("three concatenated disks");
+
+    assert_eq!(slices.len(), 3);
+    for (i, slice) in slices.iter().enumerate() {
+        assert_eq!(slice.lba_start, i * 1440);
+        assert_eq!(slice.byte_len(), SIZE_720K);
+        assert_eq!(slice.geometry(), Geometry::DS_720K);
+        // Each slice must mount on its own.
+        let volume = Volume::from_image_slice(image.data(), slice.lba_start, slice.sector_count)
+            .unwrap_or_else(|| panic!("disk {} does not mount", i + 1));
+        assert_eq!(volume.fat_type(), FatType::Fat12);
+    }
+}
+
+/// The corpus guard for the split: no ordinary single-disk image may be torn
+/// apart, whatever its length happens to divide by.
+#[test]
+fn ordinary_disk_images_are_never_split() {
+    use msx_disk::fs::multidisk;
+
+    for name in [
+        "Dark Castle.dsk",
+        "TOOLS.DSK",
+        "MSX-DOS2 TOOLS.dsk",
+        "Disc Station Disk_08a.dsk",
+        "blank-720.dsk",
+        "jaarg-hw.di1",
+        "Golvellius II (1988)(Compile)(ja)(Disk 1 of 3)(Opening Disk)(Patched MSX GFX).dsk",
+    ] {
+        let Some(path) = fixture(name) else {
+            eprintln!("skipping: fixture '{name}' not present");
+            continue;
+        };
+        let image = DiskImage::open(&path).expect("open");
+        assert_eq!(
+            multidisk::split(image.data()),
+            None,
+            "{name} must not be split"
+        );
+    }
+}
+
+/// A zipped disk image, the usual way MSX images are distributed. The inflated
+/// bytes are checked against the CRC32 the archive itself records (`5aa4c31d`),
+/// so this covers the deflate path end to end, and the result must mount and
+/// list files like the unzipped disk it is.
+#[test]
+fn zipped_disk_image_inflates_and_mounts() {
+    use msx_disk::image::zip;
+
+    let path = skip_if_absent!("Disc Station Disk_08b.zip");
+    let bytes = std::fs::read(&path).expect("read zip");
+    let archive = zip::open(&bytes).expect("open archive");
+
+    assert_eq!(archive.members.len(), 1);
+    let member = &archive.members[0];
+    assert_eq!(member.name, "Disc Station Disk_08b.dsk");
+    assert_eq!(member.lba_start, 0);
+    assert_eq!(member.byte_len(), 737_280);
+    assert_eq!(archive.data.len(), 737_280);
+    // The archive's own recorded CRC32 for that member.
+    assert_eq!(
+        msx_disk::Checksums::of(&archive.data).crc32_hex(),
+        "5AA4C31D"
+    );
+
+    // And it is a real disk: it mounts and lists files.
+    let image = DiskImage::open(&path).expect("open as image");
+    assert_eq!(image.format(), ImageFormat::Zip);
+    assert!(!image.is_writable(), "zipped images are read-only");
+    let fs = DiskFs::from_image(&image).expect("mount");
+    assert!(!fs.tree().expect("tree").is_empty(), "should list files");
+}
+
 #[test]
 fn plain_dsk_fixtures_mount_and_read_first_file() {
     for name in ["TOOLS.DSK", "MSX-DOS Hulp (1989)(Philips)(nl).dsk"] {

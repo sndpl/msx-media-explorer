@@ -10,6 +10,7 @@ pub mod mkdir;
 pub mod mv;
 pub mod new;
 pub mod rm;
+pub mod split;
 
 #[cfg(test)]
 pub(crate) mod testdisk {

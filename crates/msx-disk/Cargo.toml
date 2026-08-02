@@ -21,6 +21,11 @@ delharc = "0.6"
 # Already in the tree via delharc; the `clock` feature adds OS timezone access
 # (thread-safe, unlike the `time` crate — this runs in the multithreaded GUI).
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# DEFLATE decompression for zipped disk images. Pure Rust (no C toolchain),
+# MIT/Zlib/Apache-2.0, and already compiled in this workspace — `flate2` pulls
+# it in via `ureq`, `image` and `muda` — so this adds a dependency edge, not new
+# third-party code. Only `inflate::decompress_to_vec_with_limit` is used.
+miniz_oxide = "0.8"
 
 [dev-dependencies]
 image.workspace = true

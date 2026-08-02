@@ -118,6 +118,29 @@ pub(crate) fn describe_hard_disk(sizes: &[u64]) -> String {
     tn!("disk.hard_disk_desc", sizes.len(), list => list).into_owned()
 }
 
+/// A human-readable description of a file holding several whole disks back to
+/// back, e.g. `Multi-disk image: 3 disks (737.28 kB, 737.28 kB, 737.28 kB)`.
+/// `sizes` is each disk's byte size.
+pub(crate) fn describe_multi_disk(sizes: &[u64]) -> String {
+    let list = sizes
+        .iter()
+        .map(|&b| humanize_bytes(b))
+        .collect::<Vec<_>>()
+        .join(", ");
+    tn!("disk.multi_disk_desc", sizes.len(), list => list).into_owned()
+}
+
+/// A human-readable description of a zip archive of disk images, e.g.
+/// `Zip archive: 1 disk image (737.28 kB)`. `sizes` is each member's byte size.
+pub(crate) fn describe_archive(sizes: &[u64]) -> String {
+    let list = sizes
+        .iter()
+        .map(|&b| humanize_bytes(b))
+        .collect::<Vec<_>>()
+        .join(", ");
+    tn!("disk.archive_desc", sizes.len(), list => list).into_owned()
+}
+
 /// Whether `path`'s lowercased extension is in `exts`.
 pub(crate) fn ext_in(path: &Path, exts: &[&str]) -> bool {
     path.extension()

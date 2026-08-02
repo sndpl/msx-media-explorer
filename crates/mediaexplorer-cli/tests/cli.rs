@@ -237,3 +237,64 @@ fn guards_report_clean_errors() {
     let out = run(dir, &["frobnicate"]);
     assert_eq!(out.status.code(), Some(2));
 }
+
+/// A concatenated multi-disk image: `ls` must show every disk, `D{n}` paths
+/// must address one, `split` must produce standalone images, and editing the
+/// concatenation must be refused rather than silently hitting disk 1.
+#[test]
+fn multi_disk_images_list_split_and_refuse_edits() {
+    let tmp = TempDir::new("multidisk");
+    let dir = &tmp.0;
+    std::fs::write(dir.join("a.txt"), b"first").unwrap();
+    std::fs::write(dir.join("b.txt"), b"second").unwrap();
+
+    // Two real disks, each with its own file, joined into one image.
+    ok(dir, &["new", "one.dsk", "--format", "720"]);
+    ok(dir, &["add", "one.dsk", "a.txt"]);
+    ok(dir, &["new", "two.dsk", "--format", "720"]);
+    ok(dir, &["add", "two.dsk", "b.txt"]);
+    let mut joined = std::fs::read(dir.join("one.dsk")).unwrap();
+    joined.extend_from_slice(&std::fs::read(dir.join("two.dsk")).unwrap());
+    std::fs::write(dir.join("both.dsk"), &joined).unwrap();
+
+    // Both disks are listed, under their own headings.
+    let listing = ok(dir, &["ls", "both.dsk"]);
+    assert!(listing.contains("Disk 1:"), "{listing}");
+    assert!(listing.contains("Disk 2:"), "{listing}");
+    assert!(listing.contains("A.TXT"), "{listing}");
+    assert!(listing.contains("B.TXT"), "{listing}");
+
+    // A `D{n}` path addresses one disk; a bare path is ambiguous and rejected.
+    assert_eq!(ok(dir, &["ls", "both.dsk", "D2"]), "B.TXT\n");
+    let err = fails(dir, &["ls", "both.dsk", "A.TXT"]);
+    assert!(err.contains("D1..D2"), "{err}");
+    let err = fails(dir, &["ls", "both.dsk", "D5"]);
+    assert!(err.contains("no such disk"), "{err}");
+
+    // Editing the concatenation is refused, pointing at `split`.
+    let err = fails(dir, &["add", "both.dsk", "a.txt"]);
+    assert!(err.contains("multi-disk image"), "{err}");
+    assert!(err.contains("split"), "{err}");
+
+    // Splitting reproduces the two source disks byte for byte.
+    ok(dir, &["split", "both.dsk"]);
+    assert_eq!(
+        std::fs::read(dir.join("both (Disk 1).dsk")).unwrap(),
+        std::fs::read(dir.join("one.dsk")).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(dir.join("both (Disk 2).dsk")).unwrap(),
+        std::fs::read(dir.join("two.dsk")).unwrap()
+    );
+    // And the pieces are ordinary editable disks again.
+    ok(dir, &["add", "both (Disk 1).dsk", "b.txt"]);
+
+    // Existing outputs are protected unless --force is given.
+    let err = fails(dir, &["split", "both.dsk"]);
+    assert!(err.contains("already exists"), "{err}");
+    ok(dir, &["split", "both.dsk", "--force"]);
+
+    // A single-disk image is not splittable.
+    let err = fails(dir, &["split", "one.dsk"]);
+    assert!(err.contains("single disk"), "{err}");
+}

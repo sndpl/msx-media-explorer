@@ -1,6 +1,36 @@
 use super::*;
 
 impl MediaExplorerApp {
+    /// Show sector `idx`, abandoning any in-progress sector edit and the byte
+    /// selection (both belong to the sector being left).
+    pub(crate) fn go_to_sector(&mut self, idx: usize) {
+        self.current_sector = idx;
+        self.sector_edit = None;
+        self.sector_hex.clear_selection();
+    }
+
+    /// Move to where the selected file begins, when the selection has changed
+    /// since this view last followed one.
+    ///
+    /// Driven from the Sectors view rather than from `select_file` so it fires
+    /// both ways round: picking a file while the view is open, and opening the
+    /// view after picking one elsewhere. A position the user then sets by hand
+    /// survives until the selection actually changes again.
+    pub(crate) fn follow_selection_in_sectors(&mut self) {
+        if self.sector_followed == self.selected {
+            return;
+        }
+        self.sector_followed = self.selected.clone();
+        let first = self
+            .selected
+            .as_ref()
+            .zip(self.disk.as_ref())
+            .and_then(|(path, disk)| disk.file_sectors(path).first().copied());
+        if let Some(sector) = first {
+            self.go_to_sector(sector);
+        }
+    }
+
     /// "View disk by sector" — a hex view of one sector, optionally editable.
     pub(crate) fn sector_panel(&mut self, ui: &mut egui::Ui) {
         let Some(sector_count) = self.disk.as_ref().map(LoadedDisk::sector_count) else {
@@ -11,6 +41,7 @@ impl MediaExplorerApp {
             ui.weak(t!("disk.empty"));
             return;
         }
+        self.follow_selection_in_sectors();
         if self.current_sector >= sector_count {
             self.current_sector = sector_count - 1;
         }
@@ -22,24 +53,45 @@ impl MediaExplorerApp {
                 .add(egui::DragValue::new(&mut s).range(0..=sector_count - 1))
                 .changed()
             {
-                self.current_sector = s;
-                self.sector_edit = None;
-                self.sector_hex.clear_selection();
+                self.go_to_sector(s);
             }
-            if ui.button("\u{25C0}").clicked() && self.current_sector > 0 {
-                self.current_sector -= 1;
-                self.sector_edit = None;
-                self.sector_hex.clear_selection();
+            // Held down, the arrows keep stepping (see `holdrepeat`), so a long
+            // run of sectors can be browsed without clicking once per sector.
+            let back = repeat_button(
+                ui,
+                "\u{25C0}",
+                self.current_sector > 0,
+                &mut self.sector_step,
+                "prev",
+            );
+            if back > 0 {
+                self.go_to_sector(self.current_sector.saturating_sub(back));
             }
-            if ui.button("\u{25B6}").clicked() && self.current_sector + 1 < sector_count {
-                self.current_sector += 1;
-                self.sector_edit = None;
-                self.sector_hex.clear_selection();
+            let forward = repeat_button(
+                ui,
+                "\u{25B6}",
+                self.current_sector + 1 < sector_count,
+                &mut self.sector_step,
+                "next",
+            );
+            if forward > 0 {
+                let last = sector_count - 1;
+                self.go_to_sector((self.current_sector + forward).min(last));
             }
-            ui.label(format!(
+            let mut position = format!(
                 "/ {sector_count}    offset {:#08X}",
                 self.current_sector * 512
-            ));
+            );
+            // On a multi-volume image an absolute sector number says little, so
+            // name the volume it falls in and its offset within that volume.
+            if let Some(disk) = self.disk.as_ref() {
+                if let Some((i, within)) = disk.locate_sector(self.current_sector) {
+                    if let Some((label, _)) = disk.volume_jumps().get(i) {
+                        position.push_str(&format!("    \u{2014} {label}, sector {within}"));
+                    }
+                }
+            }
+            ui.label(position);
             if self.sector_edit.is_some() {
                 ui.separator();
                 if ui.button(t!("disk.save_sector")).clicked() {
@@ -60,8 +112,36 @@ impl MediaExplorerApp {
             if self.sector_edit.is_none() {
                 ui.separator();
                 ui.checkbox(&mut self.show_inspector, t!("disk.inspector"));
+                ui.checkbox(&mut self.show_preview, t!("disk.preview"));
             }
         });
+        // Jump straight to a volume's first sector. Without this the boundaries
+        // are invisible: disk 2 of a three-disk image starts at sector 1440 and
+        // nothing on screen says so.
+        let jumps = self
+            .disk
+            .as_ref()
+            .map(LoadedDisk::volume_jumps)
+            .unwrap_or_default();
+        if !jumps.is_empty() {
+            let here = self
+                .disk
+                .as_ref()
+                .and_then(|d| d.locate_sector(self.current_sector))
+                .map(|(i, _)| i);
+            let mut jump_to = None;
+            ui.horizontal(|ui| {
+                ui.label(t!("disk.jump_to_volume"));
+                for (i, (label, start)) in jumps.iter().enumerate() {
+                    if ui.selectable_label(here == Some(i), label).clicked() {
+                        jump_to = Some(*start);
+                    }
+                }
+            });
+            if let Some(start) = jump_to {
+                self.go_to_sector(start);
+            }
+        }
         ui.horizontal(|ui| {
             ui.label(t!("disk.find_on_disk"));
             let resp = ui
@@ -111,17 +191,35 @@ impl MediaExplorerApp {
                 .sector_highlight
                 .filter(|(s, _)| *s == self.current_sector)
                 .map(|(_, r)| r);
+            let origin = self
+                .sector_hex
+                .cursor
+                .or(self.sector_hex.selection.map(|(s, _)| s))
+                .unwrap_or(0);
             if self.show_inspector {
-                let origin = self
-                    .sector_hex
-                    .cursor
-                    .or(self.sector_hex.selection.map(|(s, _)| s))
-                    .unwrap_or(0);
                 let charset = self.charset;
                 egui::Panel::bottom("sector_inspector")
                     .resizable(true)
                     .default_size(170.0)
                     .show_inside(ui, |ui| render_inspector(ui, bytes, origin, charset));
+            }
+            // The preview reads the whole normalized image rather than just this
+            // sector, so graphics that span sector boundaries stay continuous as
+            // the sector number changes.
+            let mut pending_preview = None;
+            if self.show_preview {
+                let disk = self.disk.as_ref().unwrap();
+                let anchor = self.current_sector * SECTOR_SIZE + origin;
+                let opts = &mut self.settings.preview;
+                let state = &mut self.preview;
+                let revision = self.doc_revision;
+                pending_preview = egui::Panel::right("sector_preview")
+                    .resizable(true)
+                    .default_size(PREVIEW_PANEL_WIDTH)
+                    .show_inside(ui, |ui| {
+                        render_preview(ui, opts, state, disk.data(), anchor, "disk", revision)
+                    })
+                    .inner;
             }
             let sel = HexSelection {
                 cursor: self.sector_hex.cursor,
@@ -140,6 +238,10 @@ impl MediaExplorerApp {
                 if let Some(text) = self.sector_selection_text(ascii) {
                     self.copy_text_to_clipboard(text);
                 }
+            }
+            // Applied here, once the sector borrow above has been released.
+            if let Some(action) = pending_preview {
+                self.preview_action(action);
             }
         }
     }
@@ -192,9 +294,7 @@ impl MediaExplorerApp {
         if let Some(&off) = self.disk_search_matches.get(self.disk_search_pos) {
             let sector = off / 512;
             let row = (off % 512) / 16;
-            self.current_sector = sector;
-            self.sector_edit = None;
-            self.sector_hex.clear_selection();
+            self.go_to_sector(sector);
             self.sector_scroll_row = Some(row);
             self.sector_highlight = Some((sector, row));
         }
@@ -221,6 +321,7 @@ impl MediaExplorerApp {
                 self.content = None;
                 self.selected = None;
                 self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
+                self.doc_revision += 1;
             }
             Err(e) => self.status = t!("status.write_failed", error => e).to_string(),
         }
@@ -461,17 +562,29 @@ impl MediaExplorerApp {
             let geo = disk.geometry;
             // A hard disk's sides/tracks are a fabrication (they only carry the
             // byte total); describe it by its partitions instead.
-            let description = if disk.is_partitioned() {
+            let description = if disk.is_zip() {
+                describe_archive(disk.partition_sizes())
+            } else if disk.is_multi_disk() {
+                describe_multi_disk(disk.partition_sizes())
+            } else if disk.is_partitioned() {
                 describe_hard_disk(disk.partition_sizes())
             } else {
                 describe_geometry(geo)
             };
             ui.label(egui::RichText::new(description).weak());
             ui.horizontal(|ui| {
-                ui.label(t!("disk.size", value => humanize_bytes(geo.total_bytes() as u64)));
+                // Neither multi-volume shape has a real geometry: a hard disk's
+                // sides/tracks are a fabrication, and for concatenated disks
+                // `geo` describes one slice. Report the file's own totals.
+                let (total_bytes, total_sectors) = if disk.is_partitioned() {
+                    (disk.image_bytes(), disk.sector_count())
+                } else {
+                    (geo.total_bytes() as u64, geo.total_sectors())
+                };
+                ui.label(t!("disk.size", value => humanize_bytes(total_bytes)));
                 if disk.is_partitioned() {
                     ui.separator();
-                    ui.label(t!("disk.sectors", count => geo.total_sectors()));
+                    ui.label(t!("disk.sectors", count => total_sectors));
                 } else if let Some(fs) = self.disk_fs_geometry {
                     ui.separator();
                     ui.label(t!("disk.free", value => humanize_bytes(fs.free_bytes())));

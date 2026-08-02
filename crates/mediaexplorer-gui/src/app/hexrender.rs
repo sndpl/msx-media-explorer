@@ -24,6 +24,14 @@ pub(crate) fn render_hex(
     sel: HexSelection,
     opts: &HexViewOptions,
 ) -> Option<HexGesture> {
+    // A dump is drawn at its natural width, which is usually wider than the
+    // space available. Clip to the space this view was actually given: with a
+    // side panel (the graphics preview) beside it, the overflow would otherwise
+    // paint straight over the panel. Safe to set on the caller's `ui` because a
+    // hex dump is always the last thing drawn in its panel.
+    let clip = ui.clip_rect().intersect(ui.available_rect_before_wrap());
+    ui.set_clip_rect(clip);
+
     let bpr = bytes_per_row.max(1);
     let total_rows = bytes.len().div_ceil(bpr);
     let font_id = egui::TextStyle::Monospace.resolve(ui.style());

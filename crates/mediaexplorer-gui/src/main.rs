@@ -4,6 +4,7 @@
 mod app;
 mod dnd;
 mod hexlayout;
+mod holdrepeat;
 mod i18n;
 #[cfg(target_os = "macos")]
 mod macos;

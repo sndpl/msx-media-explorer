@@ -6,7 +6,7 @@ mod cli;
 mod commands;
 mod disk;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 use msx_disk::charset::MsxCharset;
@@ -174,6 +174,33 @@ fn run(cli: Cli) -> Result<(), String> {
             );
             Ok(())
         }
+        Command::Split(args) => {
+            let image = open_readable(&args.image)?;
+            let stem = args
+                .image
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "disk".into());
+            let disks = commands::split::plan(image.data(), &stem)?;
+            let dir = args
+                .out_dir
+                .clone()
+                .or_else(|| args.image.parent().map(Path::to_path_buf))
+                .unwrap_or_else(|| PathBuf::from("."));
+            // Check every target before writing any, so a clash cannot leave a
+            // half-split set of files behind.
+            for disk in &disks {
+                refuse_existing(&dir.join(&disk.name), args.force)?;
+            }
+            for disk in &disks {
+                let target = dir.join(&disk.name);
+                disk::write_atomic(&target, &disk.bytes)
+                    .map_err(|e| format!("{}: {e}", target.display()))?;
+                println!("wrote {}", target.display());
+            }
+            println!("split {} into {} disks", args.image.display(), disks.len());
+            Ok(())
+        }
     }
 }
 
@@ -187,12 +214,30 @@ fn open_readable(path: &Path) -> Result<DiskImage, String> {
             path.display()
         ));
     }
+    // A zip normalizes to its members concatenated, so mounting it here would
+    // read the first image only. Browse it in the GUI, or unzip it.
+    if image.format() == ImageFormat::Zip {
+        return Err(format!(
+            "{}: zip archive; unzip it, or browse it with the MSX Media Explorer GUI",
+            path.display()
+        ));
+    }
     Ok(image)
 }
 
 /// Open an image that is about to be modified.
+///
+/// A multi-disk image is refused: its boot sector describes only the first
+/// disk, so writing through it would edit disk 1 while silently ignoring the
+/// rest. `split` turns it into editable single-disk files first.
 fn open_editable(path: &Path) -> Result<DiskImage, String> {
     let image = open_readable(path)?;
+    if msx_disk::fs::multidisk::split(image.data()).is_some() {
+        return Err(format!(
+            "{}: multi-disk image; run `split` first and edit the individual disks",
+            path.display()
+        ));
+    }
     ensure_editable(&image, path)?;
     Ok(image)
 }

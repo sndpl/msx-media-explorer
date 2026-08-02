@@ -4,6 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
+use msx_disk::view::bitmap::{PaletteId, RawFormat, RawView};
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::Lang;
@@ -28,6 +29,8 @@ pub struct Settings {
     pub show_status_bar: bool,
     /// Hex-view display options.
     pub hex: HexViewOptions,
+    /// Graphics-preview options for the hex views.
+    pub preview: PreviewOptions,
     /// Chosen UI language. `None` means "follow the OS locale", resolved once at
     /// startup; a `Some` value is the user's explicit, persisted choice.
     pub language: Option<Lang>,
@@ -44,6 +47,7 @@ impl Default for Settings {
             recent: Vec::new(),
             show_status_bar: true,
             hex: HexViewOptions::default(),
+            preview: PreviewOptions::default(),
             language: None,
             check_for_updates: true,
             last_update_check: None,
@@ -155,6 +159,94 @@ impl ByteGrouping {
         match self {
             ByteGrouping::None => None,
             ByteGrouping::Of(n) => Some(n.max(1)),
+        }
+    }
+}
+
+/// Selectable magnifications for the graphics preview.
+pub const PREVIEW_ZOOMS: [u32; 4] = [1, 2, 4, 8];
+
+/// Bounds on the preview's row width, in pixels. 512 is the widest MSX screen.
+pub const PREVIEW_WIDTH_RANGE: std::ops::RangeInclusive<usize> = 8..=512;
+
+/// Graphics-preview options for the hex views.
+///
+/// The layout and palette persist as their stable string ids rather than as
+/// serde-derived enums: `msx-disk` carries no serde dependency today, and this
+/// preference is not worth adding one to the headless core for. An id that no
+/// longer exists falls back to the default rather than failing the load.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PreviewOptions {
+    /// [`RawFormat::id`] of the byte layout being previewed.
+    pub format: String,
+    /// [`PaletteId::id`] of the colour source.
+    pub palette: String,
+    /// Byte offset the "From file" palette reads its 16 colours from.
+    pub palette_offset: usize,
+    /// Pixels across, before the format rounds it to a step it tiles evenly at.
+    pub width: usize,
+    /// Magnification the image is drawn at, one of [`PREVIEW_ZOOMS`].
+    pub zoom: u32,
+}
+
+impl Default for PreviewOptions {
+    fn default() -> Self {
+        // SCREEN 5 at its native width: the most common MSX graphics layout.
+        PreviewOptions {
+            format: RawFormat::Bpp4.id().to_string(),
+            palette: PaletteId::Msx2Default.id().to_string(),
+            palette_offset: 0,
+            width: 256,
+            // 1:1 so a 256-pixel MSX screen fits the panel without scrolling.
+            zoom: 1,
+        }
+    }
+}
+
+impl PreviewOptions {
+    /// The persisted byte layout, or SCREEN 5 if the stored id is unknown.
+    pub fn format(&self) -> RawFormat {
+        RawFormat::from_id(&self.format).unwrap_or(RawFormat::Bpp4)
+    }
+
+    /// The persisted colour source, or the layout's natural palette if the
+    /// stored id is unknown.
+    pub fn palette(&self) -> PaletteId {
+        match PaletteId::from_id(&self.palette) {
+            // The offset is stored separately, so re-attach it here.
+            Some(PaletteId::FromFile { .. }) => PaletteId::FromFile {
+                offset: self.palette_offset,
+            },
+            Some(p) => p,
+            None => self.format().default_palette(),
+        }
+    }
+
+    /// Switch layout, moving to that layout's natural palette and width so the
+    /// picker stays on something that renders sensibly.
+    pub fn set_format(&mut self, format: RawFormat) {
+        self.format = format.id().to_string();
+        self.width = format.default_width();
+        self.set_palette(format.default_palette());
+    }
+
+    pub fn set_palette(&mut self, palette: PaletteId) {
+        self.palette = palette.id().to_string();
+        if let PaletteId::FromFile { offset } = palette {
+            self.palette_offset = offset;
+        }
+    }
+
+    /// The view to render, for a byte window anchored at `offset` with room for
+    /// `max_rows` pixel rows.
+    pub fn view(&self, offset: usize, max_rows: usize) -> RawView {
+        RawView {
+            format: self.format(),
+            palette: self.palette(),
+            width: self.width,
+            offset,
+            max_rows,
         }
     }
 }
@@ -280,6 +372,69 @@ mod tests {
         let parsed: Settings = serde_json::from_str(old).unwrap();
         assert!(parsed.check_for_updates);
         assert_eq!(parsed.last_update_check, None);
+    }
+
+    #[test]
+    fn preview_settings_round_trip_and_default_for_old_configs() {
+        let mut s = Settings::default();
+        // The default is SCREEN 5 at its native width.
+        assert_eq!(s.preview.format(), RawFormat::Bpp4);
+        assert_eq!(s.preview.palette(), PaletteId::Msx2Default);
+        assert_eq!(s.preview.width, 256);
+
+        s.preview.set_format(RawFormat::MonoTile8x8);
+        s.preview
+            .set_palette(PaletteId::FromFile { offset: 0x7687 });
+        s.preview.zoom = 4;
+        let json = serde_json::to_string(&s).unwrap();
+        let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+        // The `FromFile` offset is stored separately and must come back with it.
+        assert_eq!(
+            back.preview.palette(),
+            PaletteId::FromFile { offset: 0x7687 }
+        );
+
+        // A config written before the preview existed still parses.
+        let old = r#"{"recent":[],"show_status_bar":true,"hex":{}}"#;
+        let parsed: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(parsed.preview, PreviewOptions::default());
+    }
+
+    /// An id that no longer exists (a renamed or removed layout) must fall back
+    /// to something renderable rather than failing the whole settings load.
+    #[test]
+    fn unknown_preview_ids_fall_back_to_defaults() {
+        let opts = PreviewOptions {
+            format: "no-such-layout".to_string(),
+            palette: "no-such-palette".to_string(),
+            ..PreviewOptions::default()
+        };
+        assert_eq!(opts.format(), RawFormat::Bpp4);
+        assert_eq!(opts.palette(), RawFormat::Bpp4.default_palette());
+    }
+
+    /// Switching layout must carry the palette and width with it, so the picker
+    /// never lands on a combination that renders as noise.
+    #[test]
+    fn setting_a_format_adopts_its_natural_palette_and_width() {
+        let mut opts = PreviewOptions::default();
+        opts.set_format(RawFormat::Bpp2);
+        assert_eq!(opts.palette(), PaletteId::Screen6);
+        assert_eq!(opts.width, 512);
+        opts.set_format(RawFormat::MonoTile16x16);
+        assert_eq!(opts.palette(), PaletteId::Mono);
+        assert_eq!(opts.width, 256);
+    }
+
+    #[test]
+    fn preview_view_carries_the_anchor_and_row_budget() {
+        let opts = PreviewOptions::default();
+        let view = opts.view(0x1234, 200);
+        assert_eq!(view.offset, 0x1234);
+        assert_eq!(view.max_rows, 200);
+        assert_eq!(view.format, RawFormat::Bpp4);
+        assert_eq!(view.width, 256);
     }
 
     #[test]

@@ -17,6 +17,7 @@ menu:
   save_as_dsk: Opslaan als .dsk…
   save_as_xsa: Opslaan als .xsa…
   save_as_sav: Opslaan als .sav…
+  extract_disks: Schijven uitpakken…
   close: Sluiten
   about: Over MSX Media Explorer
   keyboard_shortcuts: Sneltoetsen
@@ -56,6 +57,7 @@ button:
   copy_image: Afbeelding kopiëren
   save_png: PNG opslaan…
   extract: Uitpakken…
+  extract_disk: Deze schijf uitpakken…
   rename_menu: Hernoemen…
   remove_directory: Map verwijderen
   add_files_here: Bestanden hier toevoegen…
@@ -103,6 +105,12 @@ status:
   extracted_to_failed:
     one: "%{count} bestand uitgepakt naar %{dir}, %{failed} mislukt"
     other: "%{count} bestanden uitgepakt naar %{dir}, %{failed} mislukt"
+  extracted_disks:
+    one: "%{count} schijf weggeschreven naar %{dir}"
+    other: "%{count} schijven weggeschreven naar %{dir}"
+  extracted_disks_failed:
+    one: "%{count} schijf weggeschreven naar %{dir}, %{failed} mislukt"
+    other: "%{count} schijven weggeschreven naar %{dir}, %{failed} mislukt"
   extracted_one_to: "%{name} uitgepakt naar %{dir}"
   extract_failed: "Uitpakken mislukt: %{error}"
   nothing_to_extract: Niets om uit te pakken
@@ -240,6 +248,17 @@ disk:
   save_sector: Sector opslaan
   edit_sector: Sector bewerken
   inspector: Inspecteur
+  preview: Voorbeeld
+  no_filesystem: Geen bruikbaar FAT-bestandssysteem.
+  no_filesystem_hint: >-
+    Elke mapvermelding op deze schijf is structureel onmogelijk; dit is vrijwel
+    zeker een schijf met een eigen indeling waarvan de lader ruwe sectoren
+    leest. Bekijk hem in de Sectoren-weergave.
+  invalid_entries:
+    one: "%{count} mapvermelding is geen geldig bestand en is overgeslagen."
+    other: "%{count} mapvermeldingen zijn geen geldige bestanden en zijn overgeslagen."
+
+  jump_to_volume: "Ga naar:"
   find_on_disk: "Op schijf zoeken:"
   hex: Hex
   find: Zoeken
@@ -269,6 +288,12 @@ disk:
   hard_disk_desc:
     one: "Harde-schijf-image: %{count} partitie (%{list})"
     other: "Harde-schijf-image: %{count} partities (%{list})"
+  archive_desc:
+    one: "Zip-archief: %{count} schijf-image (%{list})"
+    other: "Zip-archief: %{count} schijf-images (%{list})"
+  multi_disk_desc:
+    one: "Multi-schijf-image: %{count} schijf (%{list})"
+    other: "Multi-schijf-image: %{count} schijven (%{list})"
   tape: "Tape (%{format})"
   tape_files: "Bestanden: %{count}"
   tape_data: "Data: %{count} bytes"
@@ -303,6 +328,16 @@ viewer:
   click_byte_first: Klik eerst op een byte om de cursor te plaatsen.
   select_file: Selecteer een bestand om de inhoud te bekijken.
 
+# Het grafische voorbeeld naast de hex-weergaven: ruwe bytes als pixels.
+preview:
+  title: Grafisch voorbeeld
+  layout: Indeling
+  palette: Palet
+  palette_offset: Palet op
+  width: Breedte
+  zoom: Zoom
+  nothing_here: Geen bytes om op deze positie te tonen.
+
 screen:
   try_decoding_as: "Decoderen als:"
   auto_from_ext: Automatisch (uit extensie)
@@ -311,6 +346,7 @@ screen:
 
 stats:
   image_checksums: Image-controlegetallen
+  per_member_checksums: Eén paar per image in het archief; het archief zelf heeft er geen.
   partition: "Partitie %{n}"
   no_partition_stats: Geen statistiek voor deze partitie.
   no_fs_stats: Geen bestandssysteemstatistiek (geen FAT-BPB).

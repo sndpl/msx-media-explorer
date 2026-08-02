@@ -4,7 +4,7 @@
 //! `.SR*`/`.SCx`, via [`SrStream`]) and packed `.G9B` (via [`G9bStream`]).
 
 use super::bitstream::{G9bStream, SrStream};
-use super::palette::{get_msx_header, MSX2_DEFAULT_PALETTE};
+use super::palette::{expand_rgb555, get_msx_header, yjk_signed, yjk_to_rgb, MSX2_DEFAULT_PALETTE};
 use super::{clamp_u5, get_nibble, Recoil, Resolution};
 
 const G9B_YJK: i32 = 0;
@@ -70,10 +70,13 @@ impl Recoil<'_> {
     }
 
     fn set_msx6_default_palette(&mut self) {
-        self.content_palette[0] = 0x000000;
-        self.content_palette[1] = 0x249224;
-        self.content_palette[2] = 0x24db24;
-        self.content_palette[3] = 0x6dff6d;
+        for (slot, &rgb) in self
+            .content_palette
+            .iter_mut()
+            .zip(super::palette::MSX6_DEFAULT_RGB.iter())
+        {
+            *slot = rgb as i32;
+        }
     }
 
     fn set_msx6_palette(&mut self) {
@@ -84,11 +87,12 @@ impl Recoil<'_> {
     }
 
     pub(super) fn set_sc8_palette(&mut self) {
-        const BLUES: [i32; 4] = [0, 2, 4, 7];
-        for c in 0..256 {
-            let ci = c as i32;
-            let rgb = (ci & 0x1c) << 14 | (ci & 0xe0) << 3 | BLUES[c & 3];
-            self.content_palette[c] = rgb << 5 | rgb << 2 | (rgb >> 1 & 0x030303);
+        for (slot, &rgb) in self
+            .content_palette
+            .iter_mut()
+            .zip(super::palette::sc8_rgb().iter())
+        {
+            *slot = rgb as i32;
         }
     }
 
@@ -129,20 +133,14 @@ impl Recoil<'_> {
         if use_palette && (y & 1) != 0 {
             return self.content_palette[(y >> 1) as usize];
         }
-        let rgb = if (x | 3) >= width {
-            y * 0x010101
-        } else {
-            let base = offset + (x & !3);
-            let mut k = (content[base] & 7) as i32 | ((content[base + 1] & 7) as i32) << 3;
-            let mut j = (content[base + 2] & 7) as i32 | ((content[base + 3] & 7) as i32) << 3;
-            k -= (k & 0x20) << 1;
-            j -= (j & 0x20) << 1;
-            let r = clamp_u5(y + j);
-            let g = clamp_u5(y + k);
-            let b = clamp_u5((5 * y - 2 * j - k + 2) >> 2);
-            r << 16 | g << 8 | b
-        };
-        rgb << 3 | (rgb >> 2 & 0x070707)
+        if (x | 3) >= width {
+            // No complete YJK quadruple here: fall back to grey.
+            return expand_rgb555(y * 0x010101) as i32;
+        }
+        let base = offset + (x & !3);
+        let k = (content[base] & 7) as i32 | ((content[base + 1] & 7) as i32) << 3;
+        let j = (content[base + 2] & 7) as i32 | ((content[base + 3] & 7) as i32) << 3;
+        yjk_to_rgb(y, yjk_signed(j), yjk_signed(k)) as i32
     }
 
     #[allow(clippy::too_many_arguments)] // faithful port of RECOIL's DecodeMsxScreen

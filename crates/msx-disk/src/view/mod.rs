@@ -5,6 +5,7 @@
 //! and decoded MSX screen bitmaps.
 
 pub mod basic;
+pub mod bitmap;
 pub mod disasm;
 pub mod hex;
 pub mod text;

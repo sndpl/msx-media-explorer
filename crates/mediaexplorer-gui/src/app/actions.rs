@@ -143,6 +143,7 @@ impl MediaExplorerApp {
                 self.hex_edit = None;
                 self.disk_map = self.disk.as_ref().and_then(LoadedDisk::disk_map);
                 self.disk_fs_geometry = self.disk.as_ref().and_then(LoadedDisk::fs_geometry);
+                self.doc_revision += 1;
             }
             Err(e) => self.status = t!("status.write_failed", error => e).to_string(),
         }
@@ -304,6 +305,7 @@ impl MediaExplorerApp {
             "file.save_dsk" => self.save_as_dsk(),
             "file.save_xsa" => self.save_as_xsa(),
             "file.save_sav" => self.save_as_sav(),
+            "file.extract_disks" => self.extract_disks(),
             "file.close" => self.close_document(),
             "recent.clear" => self.clear_recent(),
             "view.line_numbers" => self.settings.hex.show_line_numbers ^= true,
@@ -444,6 +446,19 @@ impl MediaExplorerApp {
                     self.save_as_sav();
                     ui.close();
                 }
+                // A concatenated image or a zip archive has separate disks to
+                // pull apart.
+                let multi = self
+                    .disk
+                    .as_ref()
+                    .is_some_and(|d| d.is_multi_disk() || d.is_zip());
+                if ui
+                    .add_enabled(multi, egui::Button::new(t!("menu.extract_disks")))
+                    .clicked()
+                {
+                    self.extract_disks();
+                    ui.close();
+                }
                 ui.separator();
                 if ui.button(t!("menu.close")).clicked() {
                     self.close_document();
@@ -564,6 +579,83 @@ impl MediaExplorerApp {
 
     pub(crate) fn save_as_sav(&mut self) {
         self.save_converted("sav", LoadedDisk::to_sav_bytes);
+    }
+
+    /// Write each disk of a concatenated image out as its own `.dsk` file, into
+    /// a chosen folder. Only meaningful for a multi-disk image; the menu item is
+    /// disabled otherwise.
+    pub(crate) fn extract_disks(&mut self) {
+        let Some(disk) = self.disk.as_ref() else {
+            return;
+        };
+        if !disk.is_multi_disk() && !disk.is_zip() {
+            return;
+        }
+        // Collect names and bytes while `disk` is borrowed, so the folder dialog
+        // and the status update below can take `&mut self`.
+        let count = disk.volume_jumps().len();
+        let files: Vec<(String, Vec<u8>)> = (0..count)
+            .filter_map(|i| Some((self.disk_file_name(i), disk.volume_data(i)?.to_vec())))
+            .collect();
+        if files.is_empty() {
+            self.status = t!("status.nothing_to_extract").to_string();
+            return;
+        }
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        let (mut ok, mut failed) = (0usize, 0usize);
+        for (name, bytes) in &files {
+            // Suffix a duplicate rather than overwriting, as file extraction does.
+            let target = msx_disk::hostname::free_target(&dir.join(name));
+            match std::fs::write(&target, bytes) {
+                Ok(()) => ok += 1,
+                Err(_) => failed += 1,
+            }
+        }
+        self.status = if failed == 0 {
+            tn!("status.extracted_disks", ok, dir => dir.display()).to_string()
+        } else {
+            tn!("status.extracted_disks_failed", ok, dir => dir.display(), failed => failed)
+                .to_string()
+        };
+    }
+
+    /// Default host file name for disk `index` (zero-based) of a concatenated
+    /// image, e.g. `Aleste2 (Disk 2).dsk`.
+    pub(crate) fn disk_file_name(&self, index: usize) -> String {
+        let disk = self.disk.as_ref();
+        // A zip member already carries a real file name; use it verbatim.
+        if let Some(name) = disk
+            .filter(|d| d.is_zip())
+            .and_then(|d| d.volume_jumps().get(index).map(|(label, _)| label.clone()))
+        {
+            return name;
+        }
+        let title = disk.map(LoadedDisk::title).unwrap_or_default();
+        let stem = title.rsplit_once('.').map(|(s, _)| s).unwrap_or(&title);
+        format!("{stem} (Disk {}).dsk", index + 1)
+    }
+
+    /// Write one disk of a concatenated image out as its own `.dsk`, chosen
+    /// from the right-click menu on that disk's row in the tree.
+    pub(crate) fn extract_one_disk(&mut self, node: &str) {
+        // Located by matching the node's path rather than parsing its `D{n}`
+        // prefix, so the key format stays an internal detail of `state`.
+        let Some((index, bytes)) = self.disk.as_ref().and_then(|disk| {
+            let index = disk.tree.iter().position(|e| e.path == node)?;
+            Some((index, disk.volume_data(index)?.to_vec()))
+        }) else {
+            return;
+        };
+        let default = self.disk_file_name(index);
+        let Some(target) = rfd::FileDialog::new().set_file_name(&default).save_file() else {
+            return;
+        };
+        self.status = match std::fs::write(&target, &bytes) {
+            Ok(()) => t!("status.saved", path => target.display()).to_string(),
+            Err(e) => t!("status.save_failed", error => e).to_string(),
+        };
     }
 
     /// Shared helper for "Save as <ext>": derive a default name, run `encode`,

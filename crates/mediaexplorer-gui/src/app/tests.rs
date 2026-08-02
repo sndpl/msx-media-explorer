@@ -995,6 +995,109 @@ fn disk_search_step_is_noop_without_matches() {
     assert_eq!(app.disk_search_pos, 0);
 }
 
+/// A disk with one file, plus the sector that file starts at.
+fn disk_with_a_file() -> (LoadedDisk, usize) {
+    use msx_disk::fs::write;
+    use msx_disk::image::geometry::DiskFormat;
+    let blank = write::create_blank(DiskFormat::Ds720).expect("blank");
+    let bytes = write::add_files(&blank, &[("HELLO.TXT", b"hi there".as_ref())]).expect("add");
+    let image = msx_disk::DiskImage::open_bytes(msx_disk::ImageFormat::Dsk, bytes).expect("open");
+    let disk = LoadedDisk::from_image(image, None).expect("mount");
+    let first = *disk
+        .file_sectors("HELLO.TXT")
+        .first()
+        .expect("file occupies at least one sector");
+    (disk, first)
+}
+
+/// Opening the Sectors view, or picking another file while it is open, moves
+/// to where that file begins — the counterpart of the Map view pointing at the
+/// selection.
+#[test]
+fn the_sectors_view_follows_the_selected_file() {
+    let (disk, first) = disk_with_a_file();
+    let mut app = MediaExplorerApp {
+        disk: Some(disk),
+        current_sector: 0,
+        ..Default::default()
+    };
+    app.select_file("HELLO.TXT".to_string(), false);
+    app.follow_selection_in_sectors();
+    assert_eq!(app.current_sector, first);
+    assert!(first > 0, "a real file starts past the boot sector");
+}
+
+/// Once it has followed a selection, a position the user sets by hand must
+/// survive: the view only moves again when the selection itself changes.
+#[test]
+fn browsing_by_hand_is_not_undone_while_the_selection_stands() {
+    let (disk, first) = disk_with_a_file();
+    let mut app = MediaExplorerApp {
+        disk: Some(disk),
+        ..Default::default()
+    };
+    app.select_file("HELLO.TXT".to_string(), false);
+    app.follow_selection_in_sectors();
+    assert_eq!(app.current_sector, first);
+
+    // The user scrolls elsewhere; redraws must leave that alone.
+    app.go_to_sector(900);
+    app.follow_selection_in_sectors();
+    app.follow_selection_in_sectors();
+    assert_eq!(app.current_sector, 900);
+}
+
+/// With nothing selected there is nowhere to follow to.
+#[test]
+fn no_selection_leaves_the_sector_position_alone() {
+    let (disk, _) = disk_with_a_file();
+    let mut app = MediaExplorerApp {
+        disk: Some(disk),
+        current_sector: 42,
+        ..Default::default()
+    };
+    app.follow_selection_in_sectors();
+    assert_eq!(app.current_sector, 42);
+}
+
+/// A file with no data owns no sectors, so there is nowhere to jump to; the
+/// position must stay where it was rather than snapping to sector 0.
+#[test]
+fn selecting_an_empty_file_does_not_move_the_sector_position() {
+    use msx_disk::fs::write;
+    use msx_disk::image::geometry::DiskFormat;
+    let blank = write::create_blank(DiskFormat::Ds720).expect("blank");
+    let bytes = write::add_files(&blank, &[("EMPTY.TXT", b"".as_ref())]).expect("add");
+    let image = msx_disk::DiskImage::open_bytes(msx_disk::ImageFormat::Dsk, bytes).expect("open");
+    let disk = LoadedDisk::from_image(image, None).expect("mount");
+    assert!(disk.file_sectors("EMPTY.TXT").is_empty());
+    let mut app = MediaExplorerApp {
+        disk: Some(disk),
+        current_sector: 7,
+        ..Default::default()
+    };
+    app.select_file("EMPTY.TXT".to_string(), false);
+    app.follow_selection_in_sectors();
+    assert_eq!(app.current_sector, 7);
+}
+
+/// The right-click "Extract this disk" default name is derived from the
+/// image's own name, numbered from 1, and matches what "Extract Disks…" writes.
+#[test]
+fn extracted_disk_names_are_numbered_from_the_image_name() {
+    use msx_disk::image::geometry::DiskFormat;
+    let blank = msx_disk::fs::write::create_blank(DiskFormat::Ds720).expect("blank");
+    let image =
+        msx_disk::DiskImage::open_bytes(msx_disk::ImageFormat::Dsk, blank.repeat(3)).expect("open");
+    let app = MediaExplorerApp {
+        disk: Some(LoadedDisk::from_image(image, Some("/tmp/Aleste2.dsk".into())).expect("mount")),
+        ..Default::default()
+    };
+
+    assert_eq!(app.disk_file_name(0), "Aleste2 (Disk 1).dsk");
+    assert_eq!(app.disk_file_name(2), "Aleste2 (Disk 3).dsk");
+}
+
 #[test]
 fn base_name_takes_last_path_component() {
     assert_eq!(base_name("A/B/C.BIN"), "C.BIN");

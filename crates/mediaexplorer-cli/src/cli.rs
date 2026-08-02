@@ -50,6 +50,22 @@ pub enum Command {
     /// Convert between disk-image containers (.dsk, .img, .msx, .ddi, .xsa, .dmk, .sav)
     #[command(visible_alias = "c")]
     Convert(ConvertArgs),
+    /// Split a multi-disk image (several whole disks in one file) into one .dsk per disk
+    #[command(visible_alias = "s")]
+    Split(SplitArgs),
+}
+
+#[derive(Args)]
+pub struct SplitArgs {
+    /// Multi-disk image to split
+    pub image: PathBuf,
+    /// Directory to write the per-disk images into (default: the image's own
+    /// directory)
+    #[arg(long, value_name = "DIR")]
+    pub out_dir: Option<PathBuf>,
+    /// Overwrite existing output files
+    #[arg(short, long)]
+    pub force: bool,
 }
 
 #[derive(Args)]

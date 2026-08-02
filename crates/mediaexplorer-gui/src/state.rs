@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 
 use msx_disk::cas::CasFile;
+use msx_disk::fs::multidisk::{self, DiskSlice};
 use msx_disk::fs::partition::{self, PartitionEntry};
 use msx_disk::fs::write;
 use msx_disk::fs::{FatType, Volume};
 use msx_disk::image::geometry::Geometry;
+use msx_disk::image::zip;
 use msx_disk::tape::{self, Tape, TapeFormat};
 use msx_disk::{DirEntry, DiskFs, DiskImage, Error, ImageFormat};
 
@@ -17,11 +19,35 @@ use msx_disk::{DirEntry, DiskFs, DiskImage, Error, ImageFormat};
 /// `fatfs`) or a hard-disk image holding several MSX FAT partitions.
 enum Backing {
     /// A single FAT volume starting at sector 0 — the floppy/`.dsk` path. Fully
-    /// editable; behavior is unchanged from the single-volume design.
-    Floppy { fs: DiskFs },
+    /// editable; behavior is unchanged from the single-volume design. Boxed
+    /// because a mounted `fatfs` volume dwarfs the partitioned variant.
+    Floppy { fs: Box<DiskFs> },
     /// A partitioned hard-disk image: one read-only [`Volume`] per partition,
     /// surfaced as synthetic `P{n}` top-level directory nodes.
     Partitioned { volumes: Vec<Volume> },
+}
+
+/// What the synthetic top-level volume nodes of a multi-volume image stand for.
+/// Both are mounted and browsed identically; they differ only in how the nodes
+/// are named and keyed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VolumeKind {
+    /// A partition of an openMSX `MSX_IDE` hard-disk image.
+    Partition,
+    /// A whole floppy inside a file holding several of them back to back.
+    Disk,
+    /// A disk image stored inside a `.zip` archive.
+    Zip,
+}
+
+impl VolumeKind {
+    /// The letter that starts a volume's path prefix (`P1/…` or `D1/…`).
+    fn prefix(self) -> char {
+        match self {
+            VolumeKind::Partition => 'P',
+            VolumeKind::Disk | VolumeKind::Zip => 'D',
+        }
+    }
 }
 
 /// How many largest files the Stats view lists.
@@ -46,23 +72,120 @@ pub struct LoadedDisk {
     stats: OnceCell<Option<msx_disk::DiskStats>>,
     /// Lazily-computed per-partition statistics, one cell per volume.
     volume_stats: Vec<OnceCell<msx_disk::DiskStats>>,
+    /// What the synthetic top-level nodes stand for. Only meaningful for a
+    /// multi-volume image; a plain floppy leaves it at `Partition`.
+    volume_kind: VolumeKind,
+    /// First sector (LBA) of each volume, parallel to `partition_sizes` and to
+    /// the top-level tree nodes. Empty for a single-volume floppy.
+    volume_starts: Vec<usize>,
+    /// Short label for each volume: `Partition 1`, `Disk 1`, or — for a zip —
+    /// the member's own file name, which is worth showing verbatim.
+    volume_labels: Vec<String>,
+    /// Lazily-computed per-volume checksums. Only meaningful for a zip, whose
+    /// whole-"image" is a synthetic concatenation; each member's own CRC32 and
+    /// SHA-1 are what match a software database.
+    volume_checksums: Vec<OnceCell<msx_disk::Checksums>>,
 }
 
 impl LoadedDisk {
     /// Open and mount a disk image from a filesystem path.
+    ///
+    /// A `.zip` takes its own route so the archive is inflated once and its
+    /// member table reused, rather than decompressed again to find out what is
+    /// inside it.
     pub fn open(path: &Path) -> msx_disk::Result<LoadedDisk> {
+        let bytes = std::fs::read(path)?;
+        if zip::is_zip(&bytes) {
+            let archive = zip::open(&bytes)?;
+            return LoadedDisk::from_archive(archive, Some(path.to_path_buf()));
+        }
         let image = DiskImage::open(path)?;
         LoadedDisk::from_image(image, Some(path.to_path_buf()))
     }
 
+    /// Mount the disk images unpacked from a `.zip`: one read-only volume per
+    /// member, named after the member itself, exposed as synthetic `D{n}`
+    /// top-level nodes exactly as a concatenated multi-disk file is.
+    ///
+    /// Read-only: writing back would mean recompressing and rewriting an
+    /// archive that may hold files we do not own.
+    pub fn from_archive(
+        archive: zip::Archive,
+        path: Option<PathBuf>,
+    ) -> msx_disk::Result<LoadedDisk> {
+        let mut volumes = Vec::new();
+        let mut partition_sizes = Vec::new();
+        let mut volume_starts = Vec::new();
+        let mut volume_labels = Vec::new();
+        let mut tree = Vec::new();
+        for member in &archive.members {
+            let Some(volume) =
+                Volume::from_image_slice(&archive.data, member.lba_start, member.sector_count)
+            else {
+                continue;
+            };
+            let n = volumes.len() + 1;
+            let prefix = format!("{}{n}", VolumeKind::Zip.prefix());
+            let children = reprefix_tree(volume.tree(), &prefix);
+            tree.push(DirEntry {
+                name: archive_node_name(member, &volume),
+                path: prefix,
+                is_dir: true,
+                size: 0,
+                attributes: Default::default(),
+                modified: None,
+                children,
+            });
+            partition_sizes.push(member.byte_len() as u64);
+            volume_starts.push(member.lba_start);
+            volume_labels.push(member.name.clone());
+            volumes.push(volume);
+        }
+        if volumes.is_empty() {
+            return Err(Error::Unsupported(
+                "no readable disk image in the archive".into(),
+            ));
+        }
+        let geometry =
+            Geometry::for_raw_len(archive.members[0].byte_len()).unwrap_or(Geometry::DS_720K);
+        let volume_stats = volumes.iter().map(|_| OnceCell::new()).collect();
+        let volume_checksums = volumes.iter().map(|_| OnceCell::new()).collect();
+        let image = DiskImage::from_normalized(ImageFormat::Zip, archive.data)?;
+        Ok(LoadedDisk {
+            path,
+            format: image.format(),
+            // One member's shape, not the concatenation's: the file itself is
+            // not a disk any drive could hold.
+            geometry,
+            // Labels live on the per-member nodes.
+            label: None,
+            tree,
+            image,
+            backing: Backing::Partitioned { volumes },
+            partition_sizes,
+            image_checksums: OnceCell::new(),
+            stats: OnceCell::new(),
+            volume_stats,
+            volume_kind: VolumeKind::Zip,
+            volume_starts,
+            volume_labels,
+            volume_checksums,
+        })
+    }
+
     /// Mount an already-decoded image, remembering its source path.
     ///
-    /// Branches on whether the image is a partitioned hard disk: a single FAT
-    /// volume takes the floppy path (editable, via `fatfs`); a partitioned image
-    /// mounts each partition as a read-only [`Volume`] shown under a `P{n}` node.
+    /// Branches on the image's shape: a partitioned hard disk mounts one
+    /// read-only [`Volume`] per partition under a `P{n}` node, a file holding
+    /// several whole floppies back to back does the same per disk under `D{n}`,
+    /// and anything else takes the single-volume floppy path (editable, via
+    /// `fatfs`).
     pub fn from_image(image: DiskImage, path: Option<PathBuf>) -> msx_disk::Result<LoadedDisk> {
         if partition::is_partitioned(image.data()) {
             return LoadedDisk::from_partitioned_image(image, path);
+        }
+        if let Some(slices) = multidisk::split(image.data()) {
+            return LoadedDisk::from_concatenated_image(image, path, &slices);
         }
         let fs = DiskFs::from_image(&image)?;
         let label = fs.volume_label();
@@ -74,11 +197,15 @@ impl LoadedDisk {
             label,
             tree,
             image,
-            backing: Backing::Floppy { fs },
+            backing: Backing::Floppy { fs: Box::new(fs) },
             partition_sizes: Vec::new(),
             image_checksums: OnceCell::new(),
             stats: OnceCell::new(),
             volume_stats: Vec::new(),
+            volume_kind: VolumeKind::Partition,
+            volume_starts: Vec::new(),
+            volume_labels: Vec::new(),
+            volume_checksums: Vec::new(),
         })
     }
 
@@ -92,6 +219,8 @@ impl LoadedDisk {
         let entries = partition::parse_partition_table(image.data()).unwrap_or_default();
         let mut volumes = Vec::new();
         let mut partition_sizes = Vec::new();
+        let mut volume_starts = Vec::new();
+        let mut volume_labels = Vec::new();
         let mut tree = Vec::new();
         for entry in &entries {
             let Some(volume) = Volume::from_partition(&image, entry) else {
@@ -110,6 +239,8 @@ impl LoadedDisk {
                 children,
             });
             partition_sizes.push(entry.sector_count as u64 * 512);
+            volume_starts.push(entry.lba_start as usize);
+            volume_labels.push(format!("Partition {n}"));
             volumes.push(volume);
         }
         if volumes.is_empty() {
@@ -118,6 +249,7 @@ impl LoadedDisk {
             ));
         }
         let volume_stats = volumes.iter().map(|_| OnceCell::new()).collect();
+        let volume_checksums = volumes.iter().map(|_| OnceCell::new()).collect();
         Ok(LoadedDisk {
             path,
             format: image.format(),
@@ -131,17 +263,167 @@ impl LoadedDisk {
             image_checksums: OnceCell::new(),
             stats: OnceCell::new(),
             volume_stats,
+            volume_kind: VolumeKind::Partition,
+            volume_starts,
+            volume_labels,
+            volume_checksums,
         })
     }
 
-    /// Whether this is a partitioned hard-disk image (vs. a single floppy
-    /// volume). Partitioned images are read-only and hide the Map view.
+    /// Mount a file holding several whole floppies back to back: one read-only
+    /// volume per disk, exposed as synthetic `D{n}` top-level nodes, exactly as
+    /// a hard disk's partitions are. Writing back into one slice would need a
+    /// slice-aware re-encode, so these are read-only for now.
+    fn from_concatenated_image(
+        image: DiskImage,
+        path: Option<PathBuf>,
+        slices: &[DiskSlice],
+    ) -> msx_disk::Result<LoadedDisk> {
+        let mut volumes = Vec::new();
+        let mut partition_sizes = Vec::new();
+        let mut volume_starts = Vec::new();
+        let mut volume_labels = Vec::new();
+        let mut tree = Vec::new();
+        for slice in slices {
+            let Some(volume) =
+                Volume::from_image_slice(image.data(), slice.lba_start, slice.sector_count)
+            else {
+                continue;
+            };
+            let n = volumes.len() + 1;
+            let prefix = format!("{}{n}", VolumeKind::Disk.prefix());
+            let children = reprefix_tree(volume.tree(), &prefix);
+            tree.push(DirEntry {
+                name: disk_node_name(n, &volume),
+                path: prefix,
+                is_dir: true,
+                size: 0,
+                attributes: Default::default(),
+                modified: None,
+                children,
+            });
+            partition_sizes.push(slice.byte_len() as u64);
+            volume_starts.push(slice.lba_start);
+            volume_labels.push(format!("Disk {n}"));
+            volumes.push(volume);
+        }
+        if volumes.is_empty() {
+            return Err(Error::Unsupported(
+                "concatenated image has no readable disks".into(),
+            ));
+        }
+        let volume_stats = volumes.iter().map(|_| OnceCell::new()).collect();
+        let volume_checksums = volumes.iter().map(|_| OnceCell::new()).collect();
+        Ok(LoadedDisk {
+            path,
+            format: image.format(),
+            // The physical shape of one disk, not of the whole file: the file
+            // itself is not a disk any drive could hold.
+            geometry: slices[0].geometry(),
+            // Labels live on the per-disk nodes.
+            label: None,
+            tree,
+            image,
+            backing: Backing::Partitioned { volumes },
+            partition_sizes,
+            image_checksums: OnceCell::new(),
+            stats: OnceCell::new(),
+            volume_stats,
+            volume_kind: VolumeKind::Disk,
+            volume_starts,
+            volume_labels,
+            volume_checksums,
+        })
+    }
+
+    /// How many root-directory entries could not describe real files and were
+    /// therefore left out of the tree. Always 0 for a partitioned hard disk,
+    /// whose volumes take a different mount path.
+    pub fn invalid_entries(&self) -> usize {
+        match &self.backing {
+            Backing::Floppy { fs } => fs.invalid_entries().len(),
+            Backing::Partitioned { .. } => 0,
+        }
+    }
+
+    /// Whether the disk has no usable FAT filesystem: it has directory entries
+    /// and every one of them is structurally impossible. Typical of a
+    /// custom-format game disk whose loader reads raw sectors.
+    pub fn has_no_filesystem(&self) -> bool {
+        match &self.backing {
+            Backing::Floppy { fs } => fs.has_no_filesystem(),
+            Backing::Partitioned { .. } => false,
+        }
+    }
+
+    /// Whether this image holds several volumes rather than one floppy: a
+    /// partitioned hard disk, or several whole disks concatenated. Both are
+    /// read-only and hide the whole-disk Map view.
     pub fn is_partitioned(&self) -> bool {
         matches!(self.backing, Backing::Partitioned { .. })
     }
 
-    /// Resolve a `P{n}/rel/path` into its volume and the volume-relative path.
-    /// Returns `None` for the floppy backing or an out-of-range partition.
+    /// Whether the volumes are whole disks concatenated into one file, rather
+    /// than partitions of a hard disk.
+    pub fn is_multi_disk(&self) -> bool {
+        self.is_partitioned() && self.volume_kind == VolumeKind::Disk
+    }
+
+    /// Byte length of the whole image file.
+    pub fn image_bytes(&self) -> u64 {
+        self.image.data().len() as u64
+    }
+
+    /// Short navigation labels for the volumes of a multi-volume image, paired
+    /// with each one's first sector. Empty for a single-volume floppy.
+    pub fn volume_jumps(&self) -> Vec<(String, usize)> {
+        self.volume_labels
+            .iter()
+            .cloned()
+            .zip(self.volume_starts.iter().copied())
+            .collect()
+    }
+
+    /// Whether the volumes are disk images unpacked from a `.zip`.
+    pub fn is_zip(&self) -> bool {
+        self.volume_kind == VolumeKind::Zip
+    }
+
+    /// CRC32/SHA-1 of volume `n`'s own bytes, computed once.
+    ///
+    /// For a zip these are what a software database can be searched by; the
+    /// whole-"image" checksum would be of a concatenation that exists in no
+    /// file.
+    pub fn volume_checksums(&self, n: usize) -> Option<&msx_disk::Checksums> {
+        let cell = self.volume_checksums.get(n)?;
+        let data = self.volume_data(n)?;
+        Some(cell.get_or_init(|| msx_disk::Checksums::of(data)))
+    }
+
+    /// Which volume an absolute sector falls in, as its zero-based index and
+    /// the sector's offset within that volume. `None` for a single-volume
+    /// floppy or a sector before the first volume.
+    pub fn locate_sector(&self, sector: usize) -> Option<(usize, usize)> {
+        let (i, &start) = self
+            .volume_starts
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, &start)| start <= sector)?;
+        Some((i, sector - start))
+    }
+
+    /// The raw bytes of volume `n` (zero-based), for exporting one disk of a
+    /// concatenated image as a file of its own.
+    pub fn volume_data(&self, n: usize) -> Option<&[u8]> {
+        let start = *self.volume_starts.get(n)? * 512;
+        let len = *self.partition_sizes.get(n)? as usize;
+        self.image.data().get(start..start + len)
+    }
+
+    /// Resolve a `P{n}/rel/path` (or `D{n}/…` for concatenated disks) into its
+    /// volume and the volume-relative path. Returns `None` for the floppy
+    /// backing or an out-of-range volume.
     fn resolve<'a>(&self, path: &'a str) -> Option<(&Volume, &'a str)> {
         let Backing::Partitioned { volumes } = &self.backing else {
             return None;
@@ -150,7 +432,7 @@ impl LoadedDisk {
             Some((h, r)) => (h, r),
             None => (path, ""),
         };
-        let n: usize = head.strip_prefix('P')?.parse().ok()?;
+        let n: usize = head.strip_prefix(self.volume_kind.prefix())?.parse().ok()?;
         let volume = volumes.get(n.checked_sub(1)?)?;
         Some((volume, rest))
     }
@@ -472,6 +754,29 @@ fn partition_node_name(n: usize, volume: &Volume, entry: &PartitionEntry) -> Str
     }
 }
 
+/// Label for one disk's synthetic top-level node inside a concatenated image,
+/// e.g. `Disk 1` or `Disk 1 — GAMEDISK`.
+///
+/// Deliberately shorter than a partition's node name: every disk in a
+/// concatenated file is the same size, the status bar lists those sizes, and
+/// the tree truncates a long name at the size/date columns.
+fn disk_node_name(n: usize, volume: &Volume) -> String {
+    match volume.volume_label() {
+        Some(label) => format!("Disk {n} \u{2014} {label}"),
+        None => format!("Disk {n}"),
+    }
+}
+
+/// Label for one archive member's synthetic top-level node, e.g.
+/// `Disc Station Disk_08b.dsk — 737.28 kB, GAMEDISK`.
+fn archive_node_name(member: &zip::Member, volume: &Volume) -> String {
+    let size = humanize_bytes(member.byte_len() as u64);
+    match volume.volume_label() {
+        Some(label) => format!("{} \u{2014} {size}, {label}", member.name),
+        None => format!("{} \u{2014} {size}", member.name),
+    }
+}
+
 /// Format a byte count as a human-readable size using SI (decimal, 1000-based)
 /// prefixes with two decimals, e.g. `134.22 MB`. Ported from Kohana's
 /// `Num::bytes()`, picking the largest unit that keeps the value at least 1.
@@ -572,6 +877,198 @@ mod tests {
     fn fixture() -> Option<PathBuf> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/MSX-DOS2 TOOLS.dsk");
         path.exists().then_some(path)
+    }
+
+    /// Three formatted 720 kB FAT12 disks concatenated into one image, the
+    /// shape a multi-disk release ships in.
+    fn three_disk_image() -> LoadedDisk {
+        use msx_disk::image::geometry::DiskFormat;
+        let blank = write::create_blank(DiskFormat::Ds720).expect("blank disk");
+        let bytes = blank.repeat(3);
+        let image = DiskImage::open_bytes(ImageFormat::Dsk, bytes).expect("open");
+        LoadedDisk::from_image(image, None).expect("mount")
+    }
+
+    /// Two blank disks packed into a stored-method zip, with a readme that must
+    /// be ignored.
+    fn two_disk_archive() -> zip::Archive {
+        use msx_disk::fs::write;
+        use msx_disk::image::geometry::DiskFormat;
+        let disk = write::create_blank(DiskFormat::Ds720).expect("blank");
+        let mut out = Vec::new();
+        let mut central = Vec::new();
+        for (name, body) in [
+            ("A.dsk", disk.as_slice()),
+            ("readme.txt", b"hi".as_slice()),
+            ("B.dsk", disk.as_slice()),
+        ] {
+            let local_at = out.len() as u32;
+            let len = body.len() as u32;
+            out.extend_from_slice(b"PK\x03\x04");
+            out.extend_from_slice(&[0x0A, 0x00, 0x00, 0x00, 0x00, 0x00]);
+            out.extend_from_slice(&[0u8; 8]); // time, date, crc
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(&len.to_le_bytes());
+            out.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            out.extend_from_slice(&[0u8; 2]);
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(body);
+
+            central.extend_from_slice(b"PK\x01\x02");
+            central.extend_from_slice(&[0x14, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00]);
+            central.extend_from_slice(&[0u8; 8]); // time, date, crc
+            central.extend_from_slice(&len.to_le_bytes());
+            central.extend_from_slice(&len.to_le_bytes());
+            central.extend_from_slice(&(name.len() as u16).to_le_bytes());
+            central.extend_from_slice(&[0u8; 12]);
+            central.extend_from_slice(&local_at.to_le_bytes());
+            central.extend_from_slice(name.as_bytes());
+        }
+        let central_at = out.len() as u32;
+        let central_len = central.len() as u32;
+        out.extend_from_slice(&central);
+        out.extend_from_slice(b"PK\x05\x06");
+        out.extend_from_slice(&[0u8; 4]);
+        out.extend_from_slice(&3u16.to_le_bytes());
+        out.extend_from_slice(&3u16.to_le_bytes());
+        out.extend_from_slice(&central_len.to_le_bytes());
+        out.extend_from_slice(&central_at.to_le_bytes());
+        out.extend_from_slice(&[0u8; 2]);
+        zip::open(&out).expect("archive")
+    }
+
+    /// A zip's disk images become one read-only volume each, named after the
+    /// member so the tree shows the file the user actually has.
+    #[test]
+    fn zip_members_become_one_volume_each_named_after_the_member() {
+        let disk = LoadedDisk::from_archive(two_disk_archive(), None).expect("mount");
+        assert!(disk.is_zip());
+        assert!(disk.is_partitioned(), "a zip is a multi-volume document");
+        assert!(!disk.writable(), "zipped images are read-only");
+        assert!(!disk.is_multi_disk(), "not a concatenated file");
+
+        assert_eq!(disk.tree.len(), 2, "the readme must be skipped");
+        assert!(disk.tree[0].name.starts_with("A.dsk"));
+        assert!(disk.tree[1].name.starts_with("B.dsk"));
+        assert_eq!(
+            disk.volume_jumps(),
+            vec![("A.dsk".to_string(), 0), ("B.dsk".to_string(), 1440)]
+        );
+        // One member's shape, not the concatenation's.
+        assert_eq!(disk.geometry, Geometry::DS_720K);
+        assert_eq!(disk.sector_count(), 2880);
+    }
+
+    /// Each member's own checksum is what matches a software database; the
+    /// concatenated buffer's would match nothing.
+    #[test]
+    fn zip_members_carry_their_own_checksums() {
+        let archive = two_disk_archive();
+        let member = archive.data[..737_280].to_vec();
+        let disk = LoadedDisk::from_archive(archive, None).expect("mount");
+
+        let expected = msx_disk::Checksums::of(&member);
+        let got = disk.volume_checksums(0).expect("member checksums");
+        assert_eq!(got.crc32_hex(), expected.crc32_hex());
+        assert_eq!(got.sha1_hex(), expected.sha1_hex());
+        // And it is not the whole-document checksum.
+        assert_ne!(got.sha1_hex(), disk.checksums().sha1_hex());
+        assert!(disk.volume_checksums(2).is_none());
+    }
+
+    #[test]
+    fn zip_members_can_each_be_pulled_out_whole() {
+        use msx_disk::image::geometry::SIZE_720K;
+        let disk = LoadedDisk::from_archive(two_disk_archive(), None).expect("mount");
+        for n in 0..2 {
+            let data = disk.volume_data(n).expect("member bytes");
+            assert_eq!(data.len(), SIZE_720K);
+            assert_eq!(u16::from_le_bytes([data[11], data[12]]), 512);
+        }
+        assert_eq!(disk.volume_data(2), None);
+    }
+
+    #[test]
+    fn concatenated_disks_become_one_volume_each() {
+        let disk = three_disk_image();
+        assert!(disk.is_multi_disk());
+        assert!(disk.is_partitioned(), "multi-disk images are read-only too");
+        assert!(!disk.writable());
+        assert_eq!(disk.tree.len(), 3);
+        assert_eq!(disk.tree[0].name, "Disk 1");
+        assert_eq!(disk.tree[2].name, "Disk 3");
+        // The reported geometry is one disk's, not the whole file's.
+        assert_eq!(disk.geometry, Geometry::DS_720K);
+        assert_eq!(disk.sector_count(), 4320);
+    }
+
+    /// The tree's disk rows are keyed `D1`..`Dn` with no slash, which is what
+    /// the right-click "Extract this disk" menu matches on to find the disk.
+    #[test]
+    fn disk_nodes_are_keyed_by_position_in_the_file() {
+        let disk = three_disk_image();
+        let paths: Vec<&str> = disk.tree.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, vec!["D1", "D2", "D3"]);
+        assert!(paths.iter().all(|p| !p.contains('/')));
+        // Matching a node's path gives the index its bytes live at.
+        let index = disk.tree.iter().position(|e| e.path == "D3").expect("D3");
+        assert_eq!(index, 2);
+        assert_eq!(disk.volume_data(index), disk.volume_data(2));
+    }
+
+    #[test]
+    fn volume_jumps_point_at_each_disk_start() {
+        let disk = three_disk_image();
+        let jumps = disk.volume_jumps();
+        assert_eq!(
+            jumps,
+            vec![
+                ("Disk 1".to_string(), 0),
+                ("Disk 2".to_string(), 1440),
+                ("Disk 3".to_string(), 2880),
+            ]
+        );
+    }
+
+    /// The Sectors view addresses the whole file, so a sector number has to be
+    /// resolvable back to the disk it belongs to.
+    #[test]
+    fn locate_sector_names_the_disk_and_its_own_offset() {
+        let disk = three_disk_image();
+        assert_eq!(disk.locate_sector(0), Some((0, 0)));
+        assert_eq!(disk.locate_sector(1439), Some((0, 1439)));
+        assert_eq!(disk.locate_sector(1440), Some((1, 0)));
+        assert_eq!(disk.locate_sector(2881), Some((2, 1)));
+        assert_eq!(disk.locate_sector(4319), Some((2, 1439)));
+    }
+
+    #[test]
+    fn a_single_floppy_has_no_volumes_to_jump_between() {
+        let Some(path) = fixture() else {
+            eprintln!("skipping: fixture not present");
+            return;
+        };
+        let disk = LoadedDisk::open(&path).expect("open");
+        assert!(!disk.is_multi_disk());
+        assert!(disk.volume_jumps().is_empty());
+        assert_eq!(disk.locate_sector(0), None);
+        assert_eq!(disk.volume_data(0), None);
+    }
+
+    /// Each exported disk must be a standalone 720 kB image starting at its own
+    /// boot sector, not a slice offset into the concatenated file.
+    #[test]
+    fn volume_data_yields_one_whole_disk_each() {
+        use msx_disk::image::geometry::SIZE_720K;
+        let disk = three_disk_image();
+        for n in 0..3 {
+            let data = disk.volume_data(n).expect("disk bytes");
+            assert_eq!(data.len(), SIZE_720K);
+            // A formatted FAT12 volume starts with a boot sector carrying the
+            // 512-byte sector size in its BPB.
+            assert_eq!(u16::from_le_bytes([data[11], data[12]]), 512);
+        }
+        assert_eq!(disk.volume_data(3), None);
     }
 
     fn hd_fixture() -> Option<PathBuf> {

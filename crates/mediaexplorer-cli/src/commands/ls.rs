@@ -1,7 +1,7 @@
 //! `ls` — render a directory listing of a disk image.
 
 use msx_disk::charset::MsxCharset;
-use msx_disk::fs::{detect_dos_version, DirEntry, DiskFs, DosVersion};
+use msx_disk::fs::{detect_dos_version, multidisk, DirEntry, DiskFs, DosVersion};
 use msx_disk::image::geometry::SECTOR_SIZE;
 
 use crate::disk::{charset_or_detect, find_entry, to_fs_key, CmdResult};
@@ -13,7 +13,82 @@ pub struct Opts {
 }
 
 /// Render the listing for `path` (or the root) as a ready-to-print string.
+///
+/// An image holding several whole disks back to back is listed disk by disk;
+/// a `D{n}` path prefix addresses one of them (`D2`, `D2/UTILS`).
 pub fn render(data: &[u8], path: Option<&str>, opts: &Opts) -> CmdResult<String> {
+    match multidisk::split(data) {
+        Some(slices) => render_disks(data, &slices, path, opts),
+        None => render_volume(data, path, opts),
+    }
+}
+
+/// Split a `D{n}` / `D{n}/rest` path into the 1-based disk number and whatever
+/// follows it. `None` when the path does not name a disk.
+fn parse_disk_path(path: &str) -> Option<(usize, Option<&str>)> {
+    let (head, rest) = match path.split_once('/') {
+        Some((h, r)) => (h, Some(r).filter(|r| !r.is_empty())),
+        None => (path, None),
+    };
+    let digits = head.strip_prefix('D').or_else(|| head.strip_prefix('d'))?;
+    let n: usize = digits.parse().ok()?;
+    (n >= 1).then_some((n, rest))
+}
+
+/// List a concatenated image: one section per disk, or just the disk a `D{n}`
+/// path names.
+fn render_disks(
+    data: &[u8],
+    slices: &[multidisk::DiskSlice],
+    path: Option<&str>,
+    opts: &Opts,
+) -> CmdResult<String> {
+    let disk_bytes = |slice: &multidisk::DiskSlice| {
+        let start = slice.lba_start * 512;
+        data.get(start..start + slice.byte_len())
+            .ok_or_else(|| format!("disk {} runs past the end of the image", slice.index + 1))
+    };
+
+    // `D2` / `D2/UTILS` addresses one disk; anything else is a plain path and
+    // would be ambiguous across disks.
+    if let Some(p) = path {
+        let Some((n, rest)) = parse_disk_path(p) else {
+            return Err(format!(
+                "'{p}': this image holds {} disks; address one as D1..D{}",
+                slices.len(),
+                slices.len()
+            ));
+        };
+        let slice = slices
+            .get(n - 1)
+            .ok_or_else(|| format!("D{n}: no such disk (the image holds {})", slices.len()))?;
+        return render_volume(disk_bytes(slice)?, rest, opts);
+    }
+
+    let mut out = String::new();
+    for slice in slices {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&format!("Disk {}:\n", slice.index + 1));
+        // Nested one level so it is obvious which disk a name belongs to.
+        out.push_str(&render_volume_at(disk_bytes(slice)?, None, opts, 1)?);
+    }
+    Ok(out)
+}
+
+/// Render one volume's listing at the top level.
+fn render_volume(data: &[u8], path: Option<&str>, opts: &Opts) -> CmdResult<String> {
+    render_volume_at(data, path, opts, 0)
+}
+
+/// Render one volume's listing, indenting every row by `depth` levels.
+fn render_volume_at(
+    data: &[u8],
+    path: Option<&str>,
+    opts: &Opts,
+    depth: usize,
+) -> CmdResult<String> {
     let fs = DiskFs::mount(data.to_vec()).map_err(|e| e.to_string())?;
     let tree = fs.tree().map_err(|e| e.to_string())?;
     let charset = charset_or_detect(opts.charset, &tree);
@@ -33,10 +108,11 @@ pub fn render(data: &[u8], path: Option<&str>, opts: &Opts) -> CmdResult<String>
 
     let mut out = String::new();
     if opts.long {
+        out.push_str(&"  ".repeat(depth));
         out.push_str(&header(data, &tree, fs.volume_label()));
     }
     for entry in entries {
-        render_entry(&mut out, entry, 0, charset, opts);
+        render_entry(&mut out, entry, depth, charset, opts);
     }
     Ok(out)
 }

@@ -20,6 +20,7 @@ menu:
   save_as_dsk: Save as .dsk…
   save_as_xsa: Save as .xsa…
   save_as_sav: Save as .sav…
+  extract_disks: Extract Disks…
   close: Close
   about: About MSX Media Explorer
   keyboard_shortcuts: Keyboard Shortcuts
@@ -61,6 +62,7 @@ button:
   copy_image: Copy image
   save_png: Save PNG…
   extract: Extract…
+  extract_disk: Extract this disk…
   rename_menu: Rename…
   remove_directory: Remove directory
   add_files_here: Add files here…
@@ -108,6 +110,12 @@ status:
   extracted_to_failed:
     one: "Extracted %{count} file to %{dir}, %{failed} failed"
     other: "Extracted %{count} files to %{dir}, %{failed} failed"
+  extracted_disks:
+    one: "Wrote %{count} disk to %{dir}"
+    other: "Wrote %{count} disks to %{dir}"
+  extracted_disks_failed:
+    one: "Wrote %{count} disk to %{dir}, %{failed} failed"
+    other: "Wrote %{count} disks to %{dir}, %{failed} failed"
   extracted_one_to: "Extracted %{name} to %{dir}"
   extract_failed: "Failed to extract: %{error}"
   nothing_to_extract: Nothing to extract
@@ -246,6 +254,17 @@ disk:
   save_sector: Save sector
   edit_sector: Edit sector
   inspector: Inspector
+  preview: Preview
+  no_filesystem: No usable FAT filesystem.
+  no_filesystem_hint: >-
+    Every directory entry on this disk is structurally impossible, so it is
+    almost certainly a custom-format disk whose loader reads raw sectors.
+    Browse it in the Sectors view.
+  invalid_entries:
+    one: "%{count} directory entry is not a valid file and was skipped."
+    other: "%{count} directory entries are not valid files and were skipped."
+
+  jump_to_volume: "Jump to:"
   find_on_disk: "Find on disk:"
   hex: Hex
   find: Find
@@ -275,6 +294,12 @@ disk:
   hard_disk_desc:
     one: "Hard disk image: %{count} partition (%{list})"
     other: "Hard disk image: %{count} partitions (%{list})"
+  archive_desc:
+    one: "Zip archive: %{count} disk image (%{list})"
+    other: "Zip archive: %{count} disk images (%{list})"
+  multi_disk_desc:
+    one: "Multi-disk image: %{count} disk (%{list})"
+    other: "Multi-disk image: %{count} disks (%{list})"
   tape: "Tape (%{format})"
   tape_files: "Files: %{count}"
   tape_data: "Data: %{count} bytes"
@@ -309,6 +334,16 @@ viewer:
   click_byte_first: Click a byte to set the cursor first.
   select_file: Select a file to view its contents.
 
+# The graphics preview beside the hex views: raw bytes read as pixels.
+preview:
+  title: Graphics preview
+  layout: Layout
+  palette: Palette
+  palette_offset: Palette at
+  width: Width
+  zoom: Zoom
+  nothing_here: No bytes to preview at this offset.
+
 screen:
   try_decoding_as: "Try decoding as:"
   auto_from_ext: Auto (from extension)
@@ -317,6 +352,7 @@ screen:
 
 stats:
   image_checksums: Image checksums
+  per_member_checksums: One pair per image in the archive; the archive itself has none.
   partition: "Partition %{n}"
   no_partition_stats: No statistics for this partition.
   no_fs_stats: No filesystem statistics (no FAT BPB).

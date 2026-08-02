@@ -15,7 +15,7 @@ this do" questions.
 ```sh
 cargo build --workspace
 cargo run -p mediaexplorer-gui          # launch the GUI (binary is named `mediaexplorer`)
-cargo run -p mediaexplorer-cli -- ls <image>   # the CLI companion (ls/add/extract/rm/mv/mkdir/new/bootsector/convert)
+cargo run -p mediaexplorer-cli -- ls <image>   # the CLI companion (ls/add/extract/rm/mv/mkdir/new/bootsector/convert/split)
 cargo test --workspace                  # all unit + integration tests
 cargo test -p msx-disk <name>           # run a single test by substring
 cargo fmt --all --check                 # CI runs this; must pass
@@ -38,6 +38,7 @@ cargo run -p msx-disk --example lscas -- <file.cas>           # list tape conten
 cargo run -p msx-disk --example basview -- <image> <path>     # detokenize a .BAS
 cargo run -p msx-disk --example fileinfo -- <file> ...        # Info-pane logic
 cargo run -p msx-disk --example recoilpng -- <image> <file> <out.png>  # graphics decode
+cargo run -p msx-disk --example rawpng -- <file> <fmt> <width> <off> <out.png>  # raw byte window as a bitmap
 ```
 
 ### Packaging a macOS `.app`/`.dmg`
@@ -65,7 +66,7 @@ disks), with all host I/O — open, guards, `reencode` + atomic write — in
 The data flows through three layers, each unaware of the one below its concern:
 
 1. **`image/`** — container layer. Every supported container (`.dsk`, `.img`,
-   `.msx`, `.ddi`, `.xsa`, `.dmk`, `.sav`) is read into a **normalized** flat
+   `.msx`, `.ddi`, `.xsa`, `.dmk`, `.sav`, `.zip`) is read into a **normalized** flat
    buffer of 512-byte sectors in logical (LBA) order, exactly like a raw
    `.dsk`. Anything that precedes the sector data (the `.img` side byte, the
    `.ddi` header) is stashed in `DiskImage.prefix` so `reencode()` can write

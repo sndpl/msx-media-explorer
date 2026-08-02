@@ -13,6 +13,7 @@ mod img;
 mod msx;
 pub mod sav;
 pub mod xsa;
+pub mod zip;
 
 use std::path::Path;
 
@@ -36,6 +37,9 @@ pub enum ImageFormat {
     Dmk,
     /// MSXPLAYer virtual floppy, a sector diff journal: `.sav`.
     Sav,
+    /// A `.zip` archive holding one or more disk images, laid end to end when
+    /// normalized. Read-only: see [`DiskImage::is_writable`].
+    Zip,
 }
 
 impl ImageFormat {
@@ -49,6 +53,7 @@ impl ImageFormat {
             "xsa" => Some(ImageFormat::Xsa),
             "dmk" => Some(ImageFormat::Dmk),
             "sav" => Some(ImageFormat::Sav),
+            "zip" => Some(ImageFormat::Zip),
             _ => None,
         }
     }
@@ -61,6 +66,8 @@ fn detect_by_magic(bytes: &[u8]) -> Option<ImageFormat> {
         Some(ImageFormat::Xsa)
     } else if bytes.starts_with(b"IM") {
         Some(ImageFormat::Ddi)
+    } else if zip::is_zip(bytes) {
+        Some(ImageFormat::Zip)
     } else {
         None
     }
@@ -138,6 +145,7 @@ impl DiskImage {
             ImageFormat::Xsa => (Vec::new(), xsa::decompress(&bytes)?),
             ImageFormat::Dmk => (Vec::new(), dmk::normalize(&bytes)?),
             ImageFormat::Sav => (Vec::new(), sav::normalize(&bytes)?),
+            ImageFormat::Zip => (Vec::new(), zip::open(&bytes)?.data),
         };
         let geometry = Geometry::for_raw_len(data.len())
             .ok_or_else(|| Error::Malformed("normalized image is not sector-aligned".into()))?;
@@ -176,10 +184,27 @@ impl DiskImage {
         }
     }
 
+    /// Build an image from bytes that are already in normalized sector order,
+    /// for a container the caller has decoded itself. Lets a zip archive be
+    /// inflated once and reused, rather than decompressed a second time here.
+    pub fn from_normalized(format: ImageFormat, data: Vec<u8>) -> Result<DiskImage> {
+        let geometry = Geometry::for_raw_len(data.len())
+            .ok_or_else(|| Error::Malformed("normalized image is not sector-aligned".into()))?;
+        Ok(DiskImage {
+            format,
+            geometry,
+            prefix: Vec::new(),
+            data,
+        })
+    }
+
     /// Whether modified data can be written back to this image's container.
-    /// Only raw-track `.dmk` is read-only; save it as `.dsk` to edit.
+    ///
+    /// Raw-track `.dmk` cannot be synthesized from sector data, and a `.zip`
+    /// would have to be recompressed and rewritten around members we do not
+    /// own. Save either as `.dsk` to edit.
     pub fn is_writable(&self) -> bool {
-        self.format != ImageFormat::Dmk
+        !matches!(self.format, ImageFormat::Dmk | ImageFormat::Zip)
     }
 }
 
@@ -202,7 +227,8 @@ mod tests {
             assert_eq!(ImageFormat::from_extension(ext), Some(ImageFormat::Dsk));
         }
         assert_eq!(ImageFormat::from_extension("xsa"), Some(ImageFormat::Xsa));
-        assert_eq!(ImageFormat::from_extension("zip"), None);
+        assert_eq!(ImageFormat::from_extension("zip"), Some(ImageFormat::Zip));
+        assert_eq!(ImageFormat::from_extension("rar"), None);
     }
 
     #[test]

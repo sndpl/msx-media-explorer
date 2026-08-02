@@ -17,6 +17,7 @@ use msx_disk::view::text::{self, ControlMode};
 use msx_disk::{charset, DirEntry, ImageFormat, MsxCharset};
 
 use crate::hexlayout::{HexLayout, HexRegion};
+use crate::holdrepeat::{repeat_button, HoldRepeat};
 use crate::i18n::Lang;
 use crate::settings::{ByteGrouping, HexViewOptions, Settings, SETTINGS_KEY};
 use crate::state::{humanize_bytes, LoadedDisk, LoadedTape};
@@ -36,6 +37,7 @@ mod disk_views;
 mod document;
 mod hexrender;
 mod info;
+mod preview;
 mod render;
 mod shoot;
 mod transfer;
@@ -48,6 +50,7 @@ mod tests;
 
 pub(crate) use hexrender::*;
 pub(crate) use info::*;
+pub(crate) use preview::*;
 pub(crate) use render::*;
 pub(crate) use views::*;
 
@@ -132,7 +135,7 @@ const MAX_TEXT_BYTES: usize = 128 * 1024;
 /// Extensions recognized as openable disk images (for the Open dialog filter
 /// and to decide whether a dropped file should open vs. be added to the disk).
 const DISK_IMAGE_EXTS: &[&str] = &[
-    "dsk", "di1", "ds1", "di2", "ds2", "img", "msx", "ddi", "xsa", "dmk", "sav",
+    "dsk", "di1", "ds1", "di2", "ds2", "img", "msx", "ddi", "xsa", "dmk", "sav", "zip",
 ];
 
 /// Extensions recognized as openable tape images.
@@ -239,6 +242,9 @@ enum RowAction {
     AddDir(String),
     /// Remove this directory (carries the directory path).
     RemoveDir(String),
+    /// Write one disk of a concatenated image out as its own `.dsk` (carries
+    /// the disk's synthetic top-level node path, e.g. `D2`).
+    ExtractDisk(String),
 }
 
 /// What the user did to a tree row this frame, collected by the row renderers
@@ -392,6 +398,12 @@ pub struct MediaExplorerApp {
     map_style: MapStyle,
     /// Sector shown in the Sectors view.
     current_sector: usize,
+    /// The selected file the Sectors view has already jumped to. Lets it follow
+    /// a *new* selection without fighting a position the user set by hand.
+    sector_followed: Option<String>,
+    /// Auto-repeat state for the Sectors view's previous/next arrows, so
+    /// holding one down keeps stepping.
+    sector_step: HoldRepeat,
     /// Editable hex text when editing the current sector.
     sector_edit: Option<String>,
     /// Cached sector-usage map for the open disk.
@@ -427,6 +439,14 @@ pub struct MediaExplorerApp {
     sector_hex: HexUiState,
     /// Whether the data inspector panel is shown beneath the hex views.
     show_inspector: bool,
+    /// Whether the graphics preview panel is shown beside the hex views.
+    show_preview: bool,
+    /// Render cache for the graphics preview panel.
+    preview: PreviewState,
+    /// Bumped whenever the open document's bytes change (a saved hex or sector
+    /// edit). Part of the preview's cache key, so an edit re-renders it without
+    /// having to re-hash the buffer on every frame.
+    doc_revision: u64,
     /// Whether the About window is open.
     show_about: bool,
     /// Whether the keyboard-shortcuts help window is open.
@@ -530,6 +550,8 @@ impl Default for MediaExplorerApp {
             app_view: AppView::Files,
             map_style: MapStyle::Grid,
             current_sector: 0,
+            sector_followed: None,
+            sector_step: HoldRepeat::default(),
             sector_edit: None,
             disk_map: None,
             disk_fs_geometry: None,
@@ -548,6 +570,9 @@ impl Default for MediaExplorerApp {
             hex: HexUiState::default(),
             sector_hex: HexUiState::default(),
             show_inspector: false,
+            show_preview: false,
+            preview: PreviewState::default(),
+            doc_revision: 0,
             show_about: false,
             show_shortcuts: false,
             show_new_disk: false,
@@ -625,6 +650,7 @@ impl eframe::App for MediaExplorerApp {
                 self.disk
                     .as_ref()
                     .is_some_and(LoadedDisk::can_convert_to_sav),
+                self.disk.as_ref().is_some_and(LoadedDisk::is_multi_disk),
             );
         }
 

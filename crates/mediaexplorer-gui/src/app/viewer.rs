@@ -95,6 +95,7 @@ impl MediaExplorerApp {
                             self.goto_hex_offset();
                         }
                         ui.checkbox(&mut self.show_inspector, t!("disk.inspector"));
+                        ui.checkbox(&mut self.show_preview, t!("disk.preview"));
                         if SHOW_HEX_BOOKMARKS {
                             self.hex_bookmarks_menu(ui);
                         }
@@ -322,17 +323,39 @@ impl MediaExplorerApp {
         }
         let charset = self.charset;
         let bpr = self.settings.hex.bytes_per_row.max(1);
+        let origin = self
+            .hex
+            .cursor
+            .or(self.hex.selection.map(|(s, _)| s))
+            .unwrap_or(0);
         if self.show_inspector {
-            let origin = self
-                .hex
-                .cursor
-                .or(self.hex.selection.map(|(s, _)| s))
-                .unwrap_or(0);
             let bytes = &self.content.as_ref().unwrap().bytes;
             egui::Panel::bottom("hex_inspector")
                 .resizable(true)
                 .default_size(170.0)
                 .show_inside(ui, |ui| render_inspector(ui, bytes, origin, charset));
+        }
+        // Added after the inspector so the inspector keeps the panel's full
+        // width and the preview sits above it, beside the dump.
+        if self.show_preview {
+            let action = {
+                let content = self.content.as_ref().unwrap();
+                let source = format!("file:{}", content.path);
+                let opts = &mut self.settings.preview;
+                let state = &mut self.preview;
+                let bytes = &content.bytes;
+                let revision = self.doc_revision;
+                egui::Panel::right("hex_preview")
+                    .resizable(true)
+                    .default_size(PREVIEW_PANEL_WIDTH)
+                    .show_inside(ui, |ui| {
+                        render_preview(ui, opts, state, bytes, origin, &source, revision)
+                    })
+                    .inner
+            };
+            if let Some(action) = action {
+                self.preview_action(action);
+            }
         }
         let sel = HexSelection {
             cursor: self.hex.cursor,
@@ -456,7 +479,21 @@ impl MediaExplorerApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.heading(t!("stats.image_checksums"));
-                checksum_grid(ui, "stats_image_cks", disk.checksums(), &mut copy);
+                if disk.is_zip() {
+                    // The document's buffer is the members concatenated, so its
+                    // checksum would match no file anywhere. Each member's own
+                    // pair is what a software database can be searched by.
+                    ui.weak(t!("stats.per_member_checksums"));
+                    for (i, (label, _)) in disk.volume_jumps().iter().enumerate() {
+                        if let Some(cks) = disk.volume_checksums(i) {
+                            ui.add_space(6.0);
+                            ui.strong(label);
+                            checksum_grid(ui, &format!("stats_member_cks{i}"), cks, &mut copy);
+                        }
+                    }
+                } else {
+                    checksum_grid(ui, "stats_image_cks", disk.checksums(), &mut copy);
+                }
 
                 if disk.is_partitioned() {
                     for i in 0..disk.partition_count() {
@@ -483,8 +520,19 @@ impl MediaExplorerApp {
                                 }
                             });
                     }
+                } else if disk.has_no_filesystem() {
+                    // Used/free, file counts and FAT integrity would all be
+                    // measuring loader code that happens to sit in the FAT and
+                    // directory areas, so none of it is reported.
+                    ui.add_space(10.0);
+                    ui.colored_label(ui.visuals().warn_fg_color, t!("disk.no_filesystem"));
+                    ui.weak(t!("disk.no_filesystem_hint"));
                 } else {
                     ui.add_space(10.0);
+                    if disk.invalid_entries() > 0 {
+                        ui.weak(tn!("disk.invalid_entries", disk.invalid_entries()));
+                        ui.add_space(4.0);
+                    }
                     match disk.stats() {
                         Some(s) => render_disk_stats(ui, s, 0, "", charset, &mut jump),
                         None => {

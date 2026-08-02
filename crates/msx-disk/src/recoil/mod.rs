@@ -11,15 +11,16 @@
 
 mod bitstream;
 mod packed;
-mod palette;
+pub mod palette;
 mod screen;
 mod screen2;
 
 /// Maximum number of pixels we will allocate for a decoded image (guards against
 /// hostile headers). 512x424 with 2 frames is the largest real MSX image.
-const MAX_PIXELS: usize = 2_000_000;
+pub const MAX_PIXELS: usize = 2_000_000;
 
 /// A decoded image: row-major `0x00RRGGBB` pixels.
+#[derive(Clone)]
 pub struct Image {
     pub width: usize,
     pub height: usize,

@@ -11,6 +11,12 @@ successor to the classic Windows-only DskExplorer.
 - Reads every common MSX floppy image format (see the table below), plus
   raw-track `.dmk` disks, openMSX multi-partition hard-disk images, and `.cas` /
   `.tsx` cassette tapes.
+- Opens a `.zip` directly, the way disk images are usually distributed: every
+  disk image inside becomes a top-level node named after the archive member,
+  and readmes or scans alongside them are ignored. Zipped images are read-only
+  (extract one, or Save as `.dsk`, to edit). Stats lists a CRC32/SHA-1 per
+  member rather than one for the archive, so the checksums still match a
+  software database.
 - Drop a disk or tape image on the window to open it.
 - Cross-platform: Linux, Windows 10/11 (64-bit), and macOS.
 
@@ -24,6 +30,27 @@ successor to the classic Windows-only DskExplorer.
   partition's own boot sector with an MSX-correct rule (not the
   cluster-count-only heuristic), so FAT12 partitions just above the FAT16
   cluster threshold are read without corruption.
+- Directory entries are checked against the volume before being listed: an
+  entry whose size exceeds the disk, whose first cluster falls outside it, or
+  whose attribute byte sets reserved bits cannot describe a file and is left
+  out, with a count reported. Custom-format game disks — which carry a
+  plausible boot sector but keep loader code where the FAT and root directory
+  should be — otherwise surface that code as multi-gigabyte phantom files. When
+  *every* entry fails, the disk is reported as having no usable filesystem and
+  you are pointed at the Sectors view. Names are never judged: MSX filenames
+  legitimately hold kana and control bytes.
+- Files holding several whole disks back to back (a common way to ship a
+  multi-disk release: `Aleste2.dsk` is three 720 kB disks in one 2.2 MB file)
+  are split automatically, each disk becoming a top-level "Disk n" node you
+  expand and browse like a partition. Detection is conservative — every slice
+  must carry a boot sector whose BPB declares exactly that slice's own sector
+  count — so an ordinary 720 kB disk is never mistaken for two 360 kB ones.
+  These disks are read-only for now; **File → Extract Disks…** writes all of
+  them out as their own `.dsk` files, and right-clicking a single disk row
+  offers **Extract this disk…** (`mediaexplorer-cli split` does the same). The CLI
+  lists them disk by disk and addresses one with a `D{n}` path
+  (`ls image.dsk D2`, `ls image.dsk D2/UTILS`); editing a concatenation is
+  refused, since its boot sector describes only the first disk.
 - Tapes open as a list of files, each viewable and extractable.
 - Cmd/Ctrl-click to mark multiple files for batch extract or delete.
 - Status bar shows the physical disk type (e.g. 3.5" Double Sided, Double
@@ -40,7 +67,11 @@ The viewer offers tabs that adapt to the selected file:
   byte selection (click / shift-click / drag), copy of the selected bytes as hex
   or ASCII, go-to-offset, named bookmarks, and a data inspector that reads the
   bytes at the cursor as u8/i8/u16/i16/u24/u32/hex/binary and decodes MSX
-  structures (BSAVE header, boot-sector BPB, FCB).
+  structures (BSAVE header, boot-sector BPB, FCB). A **graphics preview** panel
+  reads the bytes from the cursor as pixels in a chosen MSX layout — 1bpp
+  8x8/8x16/16x16 tiles, 16x16 sprites, SCREEN 2/4 pattern+colour, 2/4/8bpp, and
+  YJK — so uncompressed graphics can be found inside files that carry no header
+  and no recognizable extension.
 - **Text** — decoded text, with an option to show control characters.
 - **BASIC** — detokenizes a tokenized MSX-BASIC program into a listing.
 - **Screen** — renders MSX graphics (see below).
@@ -92,7 +123,15 @@ The viewer offers tabs that adapt to the selected file:
 ### Disk-level tools
 
 - **Sectors** — a "view disk by sector" hex view with in-place sector editing
-  and disk-wide search (text or hex, jump between matches).
+  and disk-wide search (text or hex, jump between matches). The same graphics
+  preview is available here, reading straight through the whole image rather
+  than one sector, so artwork that spans sectors stays continuous. Multi-volume
+  images (hard-disk partitions, concatenated disks) address the whole file but
+  add a "Jump to" row to land on any volume's first sector, and label the
+  current position with the volume it falls in (e.g. `— Disk 2, sector 0`).
+  Picking a file in the tree moves the view to where that file starts, so the
+  Sectors tab follows the selection the way the Map tab points at it; scrolling
+  by hand afterwards is left alone until you pick another file.
 - **Map** — a graphical disk-usage map (reserved / FAT / root / used / free)
   that outlines the selected file's sectors; click a cell to open that sector.
 - **Stats** — whole-disk insight: used/free split, file and directory counts, a
@@ -153,6 +192,7 @@ listed, extracted, and converted, but not modified in place.
 | `new` | Create a blank formatted disk (`--format 720\|360ss\|360ds\|180`, `--dos 1\|2`) |
 | `bootsector` | Show the MSX-DOS generation, or install a DOS 1/2 boot sector (`--dos`) |
 | `convert` | Re-container an image: anything readable → `.dsk`, `.xsa`, or MSXPLAYer `.sav` |
+| `split` | Break a multi-disk image (several whole disks in one file) into one `.dsk` per disk |
 
 ```sh
 mediaexplorer-cli new game.dsk --format 720     # blank disk, MSX-DOS 2 boot sector
@@ -217,6 +257,7 @@ Every subcommand documents itself: `mediaexplorer-cli <command> --help`.
 | `.ddi` | DiskDupe image (header + raw) |
 | `.xsa` | Compressed disk image (decompressed on open, recompressed on save) |
 | `.dmk` | David Keil raw-track image (read-only; normalized + analyzed) |
+| `.zip` | Archive holding one or more disk images; each member is read and shown as its own volume (stored and deflated entries; no encryption or zip64) |
 | `.sav` | MSXPLAYer virtual floppy: a sector diff journal replayed onto an empty 720KB disk (boot sector synthesized when absent; re-journaled on save) |
 | `.dsk` (hard disk) | openMSX `MSX_IDE` multi-partition image (read-only; FAT12/FAT16) |
 | `.cas` | MSX cassette tape image (files + block overview) |
