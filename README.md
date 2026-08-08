@@ -4,6 +4,8 @@ A cross-platform (Linux, Windows, macOS) desktop tool for browsing, inspecting,
 and converting vintage **MSX floppy disk images**. A modern, open-source
 successor to the classic Windows-only DskExplorer.
 
+Website and downloads: <https://media-explorer.generation-msx.nl/>
+
 ## Features
 
 ### Opening media
@@ -316,7 +318,14 @@ bare executables, so `cargo run` shows the generic exec icon in the Dock. Run
 `scripts/macos-dev-app.sh` instead — it wraps the release binary in a minimal
 `.app` so the Dock shows the real icon (optionally pass an image path to open).
 
+## Acknowledgements
+
+Parts of this project were developed with the assistance of
+[Claude Code](https://claude.com/claude-code), Anthropic's agentic coding tool.
+
 ## License
+
+Copyright (C) 2026 Generation-MSX.
 
 GPL-2.0-or-later. See [COPYING](COPYING).
 
