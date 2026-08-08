@@ -3,13 +3,13 @@ resolver = "2"
 members = ["crates/msx-disk", "crates/mediaexplorer-gui", "crates/mediaexplorer-cli"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 # Highest MSRV in the tree is egui/eframe 0.34 (1.92); keep this in sync if they bump.
 rust-version = "1.92"
 license = "GPL-2.0-or-later"
 repository = "https://github.com/sndpl/msx-media-explorer"
-authors = ["Sandy Pleyte"]
+authors = ["Generation-MSX"]
 
 # Dependencies shared by more than one crate are pinned here so the versions
 # cannot drift apart; crates opt in with `image.workspace = true`.
