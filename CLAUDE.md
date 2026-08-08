@@ -96,7 +96,7 @@ The data flows through three layers, each unaware of the one below its concern:
    and MSX graphics. `recoil/` is a **port of RECOIL** (Piotr Fusik, GPLv2+) —
    this is why the whole project is GPL-2.0-or-later.
 
-`tape/`, `cas.rs`, `tsx.rs` handle cassette images on a parallel track to disks.
+`tape.rs`, `cas.rs`, `tsx.rs` handle cassette images on a parallel track to disks.
 
 **Charset handling is subtle**: MSX filenames can contain bytes >= 0x80. The
 filesystem mounts with a custom `PUA_OEM_CP_CONVERTER` (`charset/`) that maps high
@@ -112,10 +112,21 @@ standard converter.
   `DiskFs`) from partitioned (read-only `Vec<Volume>`, surfaced as synthetic
   `P{n}` tree nodes). Expensive things (whole-image SHA-1, stats) are behind
   `OnceCell` and computed lazily.
-- `app.rs` — the `eframe::App` impl and all rendering (large; ~5700 lines). Holds
-  `ViewMode` (Info/Hex/Text/Basic/Disasm/Screen/Archive — which file tabs show
-  depends on the selection) and `AppView` (Files/Sectors/Map/Stats/Analyze/Blocks
-  — which top-level tabs show depends on the document type).
+- `app/` — the `eframe::App` impl and all rendering, split across 15 files.
+  `mod.rs` holds the app struct, the `eframe::App` impl and the shared imports
+  most siblings pull in with `use super::*`. Panels: `browser.rs` (toolbar,
+  file tree, tree keys), `viewer.rs` (the file view tabs, stats and archive
+  panels), `disk_views.rs` (sector/map/analyze/blocks panels and the status
+  bar), `info.rs` (File Info), `hexrender.rs` (virtualized hex rows),
+  `preview.rs` (the hex graphics preview side panel). Behavior:
+  `document.rs` (open/close, selection), `actions.rs` (find, new disk, language,
+  post-mutation status), `transfer.rs` (extract, drag-out, clipboard),
+  `updates.rs` (release check), `shoot.rs` (self-screenshot automation).
+  `render.rs` and `views.rs` are shared formatting helpers, `tests.rs` the
+  module's tests. This is where `ViewMode`
+  (Info/Hex/Text/Basic/Disasm/Screen/Archive — which file tabs show depends on
+  the selection) and `AppView` (Files/Sectors/Map/Stats/Analyze/Blocks — which
+  top-level tabs show depends on the document type) live.
 - `settings.rs` — user prefs persisted via eframe's `persistence` feature.
 - `hexlayout.rs`, `tree_nav.rs` — extracted helpers for hex rendering and keyboard
   tree navigation.
