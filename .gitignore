@@ -13,6 +13,8 @@ Cargo.lock.orig
 /specs/
 # Agent orchestration scratch (ledger, task briefs, review packages).
 /.superpowers/
+# Vendored third-party agent skills — personal tooling, not project config.
+/.agents/
 
 # Release binaries are served from the GitHub release assets, not from the
 # site. Keeping them out of the repository stops it growing ~48 MB per release.
