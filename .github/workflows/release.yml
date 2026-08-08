@@ -121,6 +121,8 @@ jobs:
           STAGE="$(mktemp -d)/dmg"
           mkdir -p "$STAGE"
           cp -R "$APP" "$STAGE/"
+          # GPLv2 section 1 requires the licence to travel with the binary.
+          cp COPYING "$STAGE/"
           ln -s /Applications "$STAGE/Applications"
           hdiutil create -volname "MSX Media Explorer" -srcfolder "$STAGE" \
             -ov -format UDZO "dist/${BIN_NAME}-macos-universal.dmg"
@@ -141,6 +143,8 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
+      # Needed only for COPYING; the binaries come from the build artifacts.
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -148,6 +152,9 @@ jobs:
         run: |
           mkdir -p release
           find artifacts -type f -exec cp {} release/ \;
+          # Ship the licence alongside the Linux and Windows bare executables,
+          # which have no bundle to carry it.
+          cp COPYING release/
           cd release
           sha256sum -- * > SHA256SUMS
       - name: Publish
