@@ -903,9 +903,58 @@
                 <div class="changelog">
                     <div class="release">
                         <div class="ver">
+                            v0.6.0
+                            <span class="date">8 Aug 2026</span>
+                            <span class="latest">LATEST</span>
+                        </div>
+                        <ul>
+                            <li>
+                                <strong>See the bytes as pixels</strong> — a
+                                preview panel beside the hex view reads the
+                                bytes at the cursor as an MSX picture, in any
+                                layout the machine used: 1bpp tiles and
+                                sprites, SCREEN 2 and 4 patterns with their
+                                colour table, 2/4/8bpp and YJK. It scans
+                                straight across sector boundaries and can take
+                                its palette from the file itself, so
+                                unrecognised graphics are still readable.
+                            </li>
+                            <li>
+                                <strong>Multi-disk images</strong> — a file
+                                holding several disks back to back opens as one
+                                volume per disk instead of a single confusing
+                                blob. There is a Jump to row in the Sectors
+                                view, File &gt; Extract Disks pulls them apart,
+                                and the <code>split</code> command does the same
+                                from the terminal.
+                            </li>
+                            <li>
+                                <strong>Zip archives open directly</strong> —
+                                drop in a <code>.zip</code> and every disk image
+                                inside becomes its own volume, readmes and scans
+                                ignored. Read-only, and Stats checksums each
+                                disk separately so the values still match a
+                                software database.
+                            </li>
+                            <li>
+                                <strong>No more phantom files</strong> —
+                                directory entries that cannot describe a real
+                                file are left out of the listing and counted
+                                instead, so custom-format game disks stop
+                                showing multi-gigabyte garbage. Kana and
+                                control characters in names are still accepted.
+                            </li>
+                            <li>
+                                Holding a sector arrow now keeps stepping and
+                                accelerates, and picking a file moves the
+                                Sectors view to where that file starts.
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="release">
+                        <div class="ver">
                             v0.5.0
                             <span class="date">1 Aug 2026</span>
-                            <span class="latest">LATEST</span>
                         </div>
                         <ul>
                             <li>
