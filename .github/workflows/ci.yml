@@ -35,3 +35,15 @@ jobs:
         run: cargo clippy --workspace --all-targets
       - name: Test
         run: cargo test --workspace
+
+  deny:
+    name: Dependency licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Reads Cargo.lock; it does not build, so no GUI system libraries are
+      # needed. Advisories are deliberately excluded: a new RUSTSEC entry would
+      # fail unrelated pull requests. This job guards GPL compatibility only.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses bans sources
