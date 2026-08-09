@@ -313,10 +313,11 @@ account). It runs, but on first launch Gatekeeper flags it as coming from an
 unidentified developer: right-click the app and choose **Open** once, or run
 `xattr -dr com.apple.quarantine "/Applications/MSX Media Explorer.app"`.
 
-Note for dev builds: macOS 26 ("Tahoe") ignores the runtime Dock-icon API for
-bare executables, so `cargo run` shows the generic exec icon in the Dock. Run
-`scripts/macos-dev-app.sh` instead — it wraps the release binary in a minimal
-`.app` so the Dock shows the real icon (optionally pass an image path to open).
+Note for dev builds: `cargo run` is not a bundle, so its Dock icon is set at
+runtime from the embedded PNG and macOS cannot mask or theme it the way it does
+a packaged app's `icon.icns`. Run `scripts/macos-dev-app.sh` to get the packaged
+behavior — it wraps the release binary in a minimal `.app` (optionally pass an
+image path to open).
 
 ## Acknowledgements
 

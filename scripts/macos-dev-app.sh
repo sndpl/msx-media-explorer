@@ -1,11 +1,13 @@
 #!/bin/sh
 # Run the dev build as a minimal macOS .app bundle.
 #
-# macOS 26 ("Tahoe") ignores `NSApplication.setApplicationIconImage` for bare
-# (unbundled) executables, so a plain `cargo run` shows the generic exec icon
-# in the Dock — the Dock only honors a real bundle's icon.icns. This assembles
-# a minimal .app around the release binary, ad-hoc signs it, and opens it.
-# Optionally pass a disk/tape image path to open on launch.
+# A plain `cargo run` is not a bundle, so it gets its Dock icon from
+# `NSApplication.setApplicationIconImage` (a raw bitmap) and none of the
+# bundle-derived behavior: no icon.icns for the system to mask and theme, no
+# Info.plist on disk, no LaunchServices registration. This assembles a minimal
+# .app around the release binary, ad-hoc signs it, and opens it, so a dev build
+# behaves like the packaged one. Optionally pass a disk/tape image path to open
+# on launch.
 #
 # This is a dev convenience only; real releases are packaged by cargo-packager
 # (see README "Packaging a macOS app").

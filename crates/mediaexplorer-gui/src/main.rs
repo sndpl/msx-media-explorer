@@ -62,6 +62,50 @@ static INFO_PLIST: [u8; INFO_PLIST_XML.len()] = {
     bytes
 };
 
+/// The app icon eframe hands to the OS.
+///
+/// Leaving this unset is not an option: eframe substitutes *its own* logo and
+/// pushes it to the window manager on the first frame, which on macOS overwrites
+/// the `.app` bundle icon in the Dock.
+///
+/// macOS gets an empty [`egui::IconData`], eframe's documented "use the OS
+/// default" value, so the bundle's `icon.icns` — which the system masks and
+/// themes — is what the Dock and the About panel show. Windows and Linux have no
+/// bundle icon to fall back on, so they get the embedded PNG.
+fn icon_data() -> egui::IconData {
+    #[cfg(target_os = "macos")]
+    {
+        egui::IconData::default()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        image::load_from_memory(app::ICON_PNG)
+            .map(|img| {
+                let rgba = img.to_rgba8();
+                let (width, height) = rgba.dimensions();
+                egui::IconData {
+                    rgba: rgba.into_raw(),
+                    width,
+                    height,
+                }
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// The window/viewport setup handed to eframe.
+fn native_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1100.0, 720.0])
+            .with_min_inner_size([640.0, 400.0])
+            .with_drag_and_drop(true)
+            .with_title(APP_NAME)
+            .with_icon(icon_data()),
+        ..Default::default()
+    }
+}
+
 fn main() -> eframe::Result<()> {
     // macOS: name the app menu / About panel before the event loop builds the
     // menu, so it reads "About MSX Media Explorer" rather than the executable
@@ -69,22 +113,15 @@ fn main() -> eframe::Result<()> {
     #[cfg(target_os = "macos")]
     macos::set_app_name(APP_NAME);
 
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1100.0, 720.0])
-            .with_min_inner_size([640.0, 400.0])
-            .with_drag_and_drop(true)
-            .with_title(APP_NAME),
-        ..Default::default()
-    };
+    let options = native_options();
 
     eframe::run_native(
         APP_NAME,
         options,
         Box::new(|cc| {
             app::install_fonts(&cc.egui_ctx);
-            // macOS: replace the generic icon shown in the Dock and the standard
-            // About panel (the unbundled dev binary has none).
+            // macOS: give the unbundled dev binary a Dock icon (a packaged
+            // `.app` keeps the system-themed `icon.icns` instead).
             #[cfg(target_os = "macos")]
             macos::set_app_icon(app::ICON_PNG);
             let mut app = MediaExplorerApp::new(cc);
@@ -96,4 +133,37 @@ fn main() -> eframe::Result<()> {
             Ok(Box::new(app))
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// eframe substitutes its own logo (a white hexagon on black, from
+    /// `eframe/data/icon.png`) whenever `viewport.icon` is `None`, and pushes it
+    /// to the OS on the first frame — clobbering the macOS `.app` bundle icon in
+    /// the Dock and the Windows taskbar icon. Always say what we want.
+    #[test]
+    fn viewport_icon_is_never_left_to_eframe() {
+        assert!(native_options().viewport.icon.is_some());
+    }
+
+    /// On macOS the packaged bundle's `icon.icns` is the better source (the
+    /// system masks and themes it), so ask eframe to keep its hands off.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_defers_to_the_bundle_icon() {
+        let icon = native_options().viewport.icon.expect("icon is set");
+        assert_eq!(*icon, egui::IconData::default());
+    }
+
+    /// Everywhere else the embedded PNG is the only icon the OS gets.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn other_platforms_get_the_embedded_icon() {
+        let icon = native_options().viewport.icon.expect("icon is set");
+        assert_ne!(*icon, egui::IconData::default());
+        assert_eq!(icon.width, icon.height);
+        assert_eq!(icon.rgba.len(), (icon.width * icon.height * 4) as usize);
+    }
 }

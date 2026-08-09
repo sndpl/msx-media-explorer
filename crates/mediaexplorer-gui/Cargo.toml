@@ -61,7 +61,12 @@ objc2-app-kit = { version = "0.3", features = [
     "NSResponder",
     "NSImage",
 ] }
-objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSProcessInfo"] }
+objc2-foundation = { version = "0.3", features = [
+    "NSBundle",
+    "NSData",
+    "NSString",
+    "NSProcessInfo",
+] }
 
 # cargo-packager: turns the compiled binary into a real desktop bundle
 # (.app/.dmg on macOS). The binary is built separately (CI lipos the two

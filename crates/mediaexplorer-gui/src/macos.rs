@@ -4,7 +4,8 @@
 //! generic one winit creates). Menu clicks are not egui input events, so a
 //! handler pushes the activated item's id onto a queue and requests a repaint;
 //! the egui loop drains the queue each frame via [`take_menu_events`] and acts
-//! on it. The product name and Dock icon are still set directly through AppKit.
+//! on it. The product name, and for dev builds the Dock icon, are still set
+//! directly through AppKit.
 
 use std::sync::{Mutex, OnceLock};
 
@@ -14,7 +15,7 @@ use muda::accelerator::{Accelerator, Code, Modifiers};
 use muda::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use objc2::{AnyThread, MainThreadMarker};
 use objc2_app_kit::{NSApplication, NSImage};
-use objc2_foundation::{NSData, NSProcessInfo, NSString};
+use objc2_foundation::{NSBundle, NSData, NSProcessInfo, NSString};
 
 use msx_disk::MsxCharset;
 use rust_i18n::t;
@@ -35,17 +36,29 @@ pub fn set_app_name(name: &str) {
     NSProcessInfo::processInfo().setProcessName(&NSString::from_str(name));
 }
 
-/// Set the Dock application icon from PNG bytes. No-op if the bytes fail to
-/// decode or this is somehow called off the main thread.
+/// True when the executable is running from inside a `.app` bundle. For a bare
+/// `cargo run` binary `mainBundle` is the directory holding the executable.
+fn is_bundled() -> bool {
+    NSBundle::mainBundle()
+        .bundlePath()
+        .to_string()
+        .ends_with(".app")
+}
+
+/// Set the Dock application icon from PNG bytes, for dev builds only. No-op if
+/// the bytes fail to decode or this is somehow called off the main thread.
 ///
-/// Note: macOS 26 ("Tahoe") ignores this for bare (unbundled) executables —
-/// the Dock only honors a real `.app` bundle's `icon.icns` there (verified
-/// empirically; re-setting per frame changes nothing). Kept for older macOS.
-/// For a dev build with the proper Dock icon, use `scripts/macos-dev-app.sh`.
+/// A packaged `.app` is left alone: its `icon.icns` is what the Dock, the
+/// About panel and Finder all read, and macOS 26 ("Tahoe") masks and themes it
+/// to match the rest of the Dock — overriding it with a raw bitmap here would
+/// only make the running app's icon differ from the one in Finder.
 pub fn set_app_icon(icon_png: &[u8]) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
+    if is_bundled() {
+        return;
+    }
     let data = NSData::with_bytes(icon_png);
     let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) else {
         return;
@@ -429,6 +442,13 @@ mod tests {
             "MSX Media Explorer"
         );
         NSProcessInfo::processInfo().setProcessName(&original);
+    }
+
+    #[test]
+    fn test_binary_is_not_bundled() {
+        // The test harness runs the bare executable, so the dev-build icon path
+        // is the one taken here.
+        assert!(!is_bundled());
     }
 
     #[test]
