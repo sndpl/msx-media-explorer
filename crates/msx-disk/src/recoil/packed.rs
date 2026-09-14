@@ -125,20 +125,16 @@ impl Recoil<'_> {
             content[header_offset + 4] as usize + ((content[header_offset + 5] as usize) << 8);
         let mut width =
             content[header_offset + 8] as usize + ((content[header_offset + 9] as usize) << 8) + 1;
-        let bytes_per_line;
-        let colors;
-        if content[header_offset + 3] < 0x80 {
+        let (bytes_per_line, colors) = if content[header_offset + 3] < 0x80 {
             width -= left & !7;
-            bytes_per_line = (width + 1) >> 1;
-            colors = 16;
+            ((width + 1) >> 1, 16)
         } else {
             if header_offset + (32 + 256 * 3) >= content.len() {
                 return false;
             }
             width -= left & !3;
-            bytes_per_line = width;
-            colors = 256;
-        }
+            (width, 256)
+        };
 
         if content[header_offset + 1] != 0x03 {
             // Non-MSX platform (PC-88/PC-98/X68000/Mac) — out of scope.

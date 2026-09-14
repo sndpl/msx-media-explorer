@@ -54,7 +54,7 @@ pub fn normalize(bytes: &[u8]) -> Result<Vec<u8>> {
 
     let mut data = vec![0u8; SIZE_720K];
     let mut has_sector0 = false;
-    for record in bytes.chunks_exact(RECORD_SIZE) {
+    for record in bytes.as_chunks::<RECORD_SIZE>().0 {
         let sector_no = u32::from_le_bytes(record[..4].try_into().unwrap()) as usize;
         if sector_no >= NUM_SECTORS {
             return Err(Error::Malformed(format!(
@@ -89,11 +89,11 @@ pub fn encode(data: &[u8]) -> Result<Vec<u8>> {
 
     let synthetic = synthetic_sector0();
     let mut out = Vec::new();
-    for (sector_no, sector) in data.chunks_exact(SECTOR_SIZE).enumerate() {
+    for (sector_no, sector) in data.as_chunks::<SECTOR_SIZE>().0.iter().enumerate() {
         if sector.iter().all(|&b| b == 0) {
             continue;
         }
-        if sector_no == 0 && sector == synthetic {
+        if sector_no == 0 && *sector == synthetic {
             continue;
         }
         out.extend_from_slice(&(sector_no as u32).to_le_bytes());

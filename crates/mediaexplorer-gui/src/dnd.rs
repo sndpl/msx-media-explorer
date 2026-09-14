@@ -35,8 +35,8 @@ fn preview_png() -> Result<Vec<u8>, String> {
 
     const SIZE: u32 = 24;
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
-    for px in rgba.chunks_exact_mut(4) {
-        px.copy_from_slice(&[0x33, 0x66, 0x99, 0xCC]);
+    for px in rgba.as_chunks_mut::<4>().0 {
+        *px = [0x33, 0x66, 0x99, 0xCC];
     }
     let mut out = Vec::new();
     PngEncoder::new(&mut out)
