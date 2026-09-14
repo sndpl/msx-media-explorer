@@ -762,23 +762,41 @@ fn screen_display_size_handles_degenerate_inputs() {
 
 #[test]
 fn default_view_mode_by_extension() {
-    assert_eq!(default_view_mode("PIC.SC8"), ViewMode::Screen);
-    assert_eq!(default_view_mode("PROG.BAS"), ViewMode::Basic);
-    assert_eq!(default_view_mode("DATA.BIN"), ViewMode::Disasm);
-    assert_eq!(default_view_mode("GAME.COM"), ViewMode::Disasm);
-    assert_eq!(default_view_mode("TOOL.cpm"), ViewMode::Disasm);
-    assert_eq!(default_view_mode("README.TXT"), ViewMode::Text);
-    assert_eq!(default_view_mode("AUTOEXEC.BAT"), ViewMode::Text);
-    assert_eq!(default_view_mode("notes.txt"), ViewMode::Text);
+    assert_eq!(default_view_mode("PIC.SC8", b""), ViewMode::Screen);
+    assert_eq!(default_view_mode("PROG.BAS", b""), ViewMode::Basic);
+    assert_eq!(default_view_mode("DATA.BIN", b""), ViewMode::Disasm);
+    assert_eq!(default_view_mode("GAME.COM", b""), ViewMode::Disasm);
+    assert_eq!(default_view_mode("TOOL.cpm", b""), ViewMode::Disasm);
+    assert_eq!(default_view_mode("README.TXT", b""), ViewMode::Text);
+    assert_eq!(default_view_mode("AUTOEXEC.BAT", b""), ViewMode::Text);
+    assert_eq!(default_view_mode("notes.txt", b""), ViewMode::Text);
     // MSX-DOS help files are plain text.
-    assert_eq!(default_view_mode("COMMAND2.HLP"), ViewMode::Text);
-    assert_eq!(default_view_mode("SONG.MBM"), ViewMode::Info);
-    assert_eq!(default_view_mode("TUNE.mod"), ViewMode::Info);
-    assert_eq!(default_view_mode("track.pt3"), ViewMode::Info);
-    assert_eq!(default_view_mode("GAME.LZH"), ViewMode::Archive);
-    assert_eq!(default_view_mode("util.lha"), ViewMode::Archive);
-    assert_eq!(default_view_mode("DEMO.LZS"), ViewMode::Archive);
-    assert_eq!(default_view_mode("SNOOPY.pma"), ViewMode::Archive);
+    assert_eq!(default_view_mode("COMMAND2.HLP", b""), ViewMode::Text);
+    // Assembler / compiler sources and M80 listings are plain text.
+    assert_eq!(default_view_mode("PROG.MAC", b""), ViewMode::Text);
+    assert_eq!(default_view_mode("prog.asm", b""), ViewMode::Text);
+    assert_eq!(default_view_mode("MACROS.INC", b""), ViewMode::Text);
+    assert_eq!(default_view_mode("PROG.PRN", b""), ViewMode::Text);
+    assert_eq!(default_view_mode("MAIN.C", b""), ViewMode::Text);
+    assert_eq!(default_view_mode("SONG.MBM", b""), ViewMode::Info);
+    assert_eq!(default_view_mode("TUNE.mod", b""), ViewMode::Info);
+    assert_eq!(default_view_mode("track.pt3", b""), ViewMode::Info);
+    assert_eq!(default_view_mode("GAME.LZH", b""), ViewMode::Archive);
+    assert_eq!(default_view_mode("util.lha", b""), ViewMode::Archive);
+    assert_eq!(default_view_mode("DEMO.LZS", b""), ViewMode::Archive);
+    assert_eq!(default_view_mode("SNOOPY.pma", b""), ViewMode::Archive);
+    // Unknown extensions are sniffed: text content opens as Text, else Hex.
+    assert_eq!(default_view_mode("NOTES.DAT", b"HELLO\r\n"), ViewMode::Text);
+    assert_eq!(default_view_mode("README", b"HELLO\r\n"), ViewMode::Text);
+    assert_eq!(
+        default_view_mode("DATA.DAT", &[0xFE, 0x00, 0x80]),
+        ViewMode::Hex
+    );
+    // Known binary extensions are never sniffed.
+    assert_eq!(
+        default_view_mode("PROG.BIN", b"HELLO\r\n"),
+        ViewMode::Disasm
+    );
 }
 
 #[test]

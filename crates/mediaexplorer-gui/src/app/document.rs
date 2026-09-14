@@ -166,7 +166,7 @@ impl MediaExplorerApp {
             return;
         };
         self.status = t!("status.selected_file", path => path, count => bytes.len()).to_string();
-        self.view_mode = default_view_mode(&path);
+        self.view_mode = default_view_mode(&path, &bytes);
         self.forced_format = None;
         self.search_matches.clear();
         self.search_pos = 0;

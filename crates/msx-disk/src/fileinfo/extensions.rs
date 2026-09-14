@@ -29,6 +29,10 @@ const TABLE: &[(&str, &str)] = &[
     ("hlp", "MSX-DOS 2 help file (plain text)"),
     ("ldr", "Tokenized BASIC loader program"),
     ("gen", "Z80 assembly source (GEN80)"),
+    ("mac", "Z80 assembly source (Microsoft M80)"),
+    ("asm", "Z80 assembly source"),
+    ("inc", "Assembly include file"),
+    ("prn", "Assembler listing (plain text)"),
     ("meg", "MegaAssembler Z80 source / Mega-ROM image"),
     // Machine code / executables
     (

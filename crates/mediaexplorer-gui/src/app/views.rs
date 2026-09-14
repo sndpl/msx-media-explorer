@@ -250,13 +250,16 @@ pub(crate) fn msx_name_stem(name: &str) -> &str {
     name.split('.').next().unwrap_or("")
 }
 
-/// Extensions that default to the Text view.
+/// Extensions that default to the Text view: plain documents plus assembler,
+/// C and Pascal sources and the M80 listing / symbol outputs.
 pub(crate) const TEXT_EXTENSIONS: &[&str] = &[
-    "txt", "bat", "asc", "doc", "me", "ini", "cfg", "diz", "nfo", "log", "csv", "md", "hlp",
+    "txt", "bat", "asc", "doc", "me", "ini", "cfg", "diz", "nfo", "log", "csv", "md", "hlp", "mac",
+    "asm", "gen", "inc", "z80", "prn", "sym", "pas", "c", "h",
 ];
 
-/// Pick a sensible default view mode for a file based on its extension.
-pub(crate) fn default_view_mode(path: &str) -> ViewMode {
+/// Pick a sensible default view mode for a file based on its extension; a file
+/// with an unknown extension is sniffed so plain text opens as Text, not Hex.
+pub(crate) fn default_view_mode(path: &str, bytes: &[u8]) -> ViewMode {
     let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
     if msx_disk::archive::is_archive(path) {
         ViewMode::Archive
@@ -268,7 +271,9 @@ pub(crate) fn default_view_mode(path: &str) -> ViewMode {
         ViewMode::Info
     } else if matches!(ext.as_str(), "com" | "cpm" | "bin") {
         ViewMode::Disasm
-    } else if TEXT_EXTENSIONS.contains(&ext.as_str()) {
+    } else if TEXT_EXTENSIONS.contains(&ext.as_str())
+        || msx_disk::view::text::looks_like_text(bytes)
+    {
         ViewMode::Text
     } else {
         ViewMode::Hex
