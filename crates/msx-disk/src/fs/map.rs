@@ -494,8 +494,31 @@ pub(crate) fn root_volume_label(buf: &[u8], bpb: &Bpb) -> Option<String> {
     None
 }
 
+/// Characters DOS never allows in a short name. `.` is absent so the `.` / `..`
+/// entries pass; callers skip those by name.
+const FORBIDDEN_NAME_BYTES: &[u8] = b"\"*+,/:;<=>?[\\]|";
+
+/// Whether a 32-byte entry is raw data rather than a directory entry: its name
+/// or attribute is something DOS never writes (a control byte or forbidden
+/// character in the name, a leading `0x05` excepted as the escape for `0xE5`;
+/// a reserved attribute bit) *and* its first cluster lies outside the volume.
+/// Disks whose root directory holds game data (`1789 - La Revolution.dsk`
+/// disks 2 and 3) would otherwise list it as files.
+///
+/// Both conditions are needed: scene disks deliberately put "DIR art" and
+/// credits in such names (`jaarg-hw.di1`), but point them at cluster 0.
+fn is_junk_entry(entry: &[u8], cluster_count: usize) -> bool {
+    let bad_name = entry[..11]
+        .iter()
+        .enumerate()
+        .any(|(i, &b)| (b < 0x20 && !(i == 0 && b == 0x05)) || FORBIDDEN_NAME_BYTES.contains(&b));
+    let first = u16::from_le_bytes([entry[26], entry[27]]) as usize;
+    let bad_cluster = first == 1 || first >= 2 + cluster_count;
+    (bad_name || entry[11] & 0xC0 != 0) && bad_cluster
+}
+
 /// Visit directory entries, stopping when `visit` returns true or the directory
-/// ends. Skips deleted, volume-label, and long-file-name entries.
+/// ends. Skips deleted, volume-label, long-file-name, and junk entries.
 pub(crate) fn for_each_entry(
     buf: &[u8],
     bpb: &Bpb,
@@ -507,6 +530,7 @@ pub(crate) fn for_each_entry(
         DirLocation::Root => (bpb.root_start()..bpb.data_start()).collect(),
         DirLocation::Cluster(first) => cluster_chain_sectors(buf, bpb, fat_type, *first),
     };
+    let cluster_count = bpb.cluster_count(buf.len() / SECTOR_SIZE);
     for sector in sectors {
         let base = sector * SECTOR_SIZE;
         for e in 0..(SECTOR_SIZE / 32) {
@@ -519,6 +543,9 @@ pub(crate) fn for_each_entry(
             }
             if entry[0] == 0xE5 || entry[11] & 0x0F == 0x0F || entry[11] & 0x08 != 0 {
                 continue; // deleted / LFN / volume label
+            }
+            if is_junk_entry(entry, cluster_count) {
+                continue;
             }
             if visit(entry) {
                 return;
@@ -562,6 +589,91 @@ mod tests {
         entry[..3].copy_from_slice(&[0xB1, 0xB2, 0xB3]);
         entry[8..11].copy_from_slice(b"BAS");
         assert_eq!(entry_name(&entry), "\u{F0B1}\u{F0B2}\u{F0B3}.BAS");
+    }
+
+    /// Data cluster count of the volume the entries below are checked against.
+    const CLUSTERS: usize = 713;
+    /// A first cluster past the end of a `CLUSTERS`-cluster volume.
+    const OUT_OF_RANGE: u16 = 15036;
+
+    /// A raw 8.3 entry: `name` padded with spaces, attribute `attr`, starting
+    /// at cluster `first`.
+    fn raw_entry(name: &[u8], attr: u8, first: u16) -> [u8; 32] {
+        let mut entry = [0u8; 32];
+        entry[..11].fill(b' ');
+        entry[..name.len()].copy_from_slice(name);
+        entry[11] = attr;
+        entry[26..28].copy_from_slice(&first.to_le_bytes());
+        entry
+    }
+
+    #[test]
+    fn real_names_are_not_junk() {
+        for entry in [
+            raw_entry(b"AUTOEXECBAS", 0x20, 2),
+            raw_entry(&[0xB1, 0xB2, 0xB3], 0x00, 2), // kana
+            raw_entry(&[0x05, b'A'], 0x00, 2),       // escaped 0xE5
+            raw_entry(b".", 0x10, 2),
+            raw_entry(b"..", 0x10, 0),
+        ] {
+            assert!(!is_junk_entry(&entry, CLUSTERS));
+        }
+    }
+
+    /// A valid name with a corrupt start cluster is a damaged file, not raw
+    /// data: it stays visible so the integrity check can report it.
+    #[test]
+    fn a_real_name_with_a_bad_cluster_is_not_junk() {
+        assert!(!is_junk_entry(
+            &raw_entry(b"GAME    BIN", 0x20, OUT_OF_RANGE),
+            CLUSTERS
+        ));
+    }
+
+    /// Scene disks put "DIR art" and credits in names DOS never writes, but
+    /// point them at cluster 0 (`jaarg-hw.di1`). They must stay listed.
+    #[test]
+    fn dir_art_pointing_at_cluster_0_is_not_junk() {
+        let art = [
+            0x07, 0x0D, 0x0D, 0x0D, 0x0D, 0x0A, 0x0C, 0x0C, 0x1A, 0x0C, 0x0C,
+        ];
+        assert!(!is_junk_entry(&raw_entry(&art, 0x20, 0), CLUSTERS));
+        assert!(!is_junk_entry(
+            &raw_entry(b"P.Vaesen\0\0\0", 0x00, 0),
+            CLUSTERS
+        ));
+    }
+
+    #[test]
+    fn raw_data_in_a_directory_is_junk() {
+        for entry in [
+            raw_entry(&[b'A', 0x0D, b'B'], 0x00, OUT_OF_RANGE), // control byte
+            raw_entry(b"A:B", 0x00, OUT_OF_RANGE),              // forbidden char
+            raw_entry(b"GAMEDATABIN", 0x94, OUT_OF_RANGE),      // reserved attr bit
+            raw_entry(b"A:B", 0x00, 1),                         // cluster 1 is reserved
+        ] {
+            assert!(is_junk_entry(&entry, CLUSTERS));
+        }
+    }
+
+    /// The 1789 disk 2 root directory: one entry of raw data, then the end
+    /// marker. Mounted, it must list nothing.
+    #[test]
+    fn junk_entries_are_skipped_when_walking_a_directory() {
+        let mut disk = make_disk();
+        let bpb = Bpb::parse(&disk).unwrap();
+        let root = bpb.root_start() * SECTOR_SIZE;
+        disk[root..bpb.data_start() * SECTOR_SIZE].fill(0);
+        disk[root..root + 32].copy_from_slice(&[
+            0x17, 0x9c, 0x9b, 0x48, 0x1f, 0x48, 0xb9, 0x3a, 0x36, 0x40, 0x8a, 0xc2, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0xbc, 0x3a, 0, 0, 0, 0,
+        ]);
+        let mut seen = 0;
+        for_each_entry(&disk, &bpb, FatType::Fat12, &DirLocation::Root, |_| {
+            seen += 1;
+            false
+        });
+        assert_eq!(seen, 0);
     }
 
     #[test]

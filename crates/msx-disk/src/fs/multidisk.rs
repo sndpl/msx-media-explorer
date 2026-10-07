@@ -12,6 +12,11 @@
 //! what stops an ordinary 720 kB disk — whose length is also two 360 kB disks —
 //! from being torn in half, and what rejects the halves of a large image that
 //! merely happens to be a multiple of a floppy size.
+//!
+//! One exception: a 720 kB slice may declare a 360 kB disk. Some sets (`1789 -
+//! La Revolution.dsk`) store each single-sided disk in a 720 kB slot whose
+//! second half holds raw data outside the filesystem, so the slice is kept
+//! whole rather than trimmed to what the BPB covers.
 
 use super::map::Bpb;
 use crate::image::geometry::{Geometry, SECTOR_SIZE, SIZE_360K, SIZE_720K};
@@ -72,7 +77,10 @@ pub fn split(data: &[u8]) -> Option<Vec<DiskSlice>> {
             let at = i * size;
             data.get(at..at + SECTOR_SIZE)
                 .and_then(declared_sectors)
-                .is_some_and(|declared| declared == sectors)
+                .is_some_and(|declared| {
+                    declared == sectors
+                        || (size == SIZE_720K && declared == SIZE_360K / SECTOR_SIZE)
+                })
         });
         if all_match {
             return Some(
@@ -149,6 +157,30 @@ mod tests {
         assert_eq!(split(&data), None);
     }
 
+    /// 360 kB filesystems each stored in a 720 kB slot split on the slots, and
+    /// keep the bytes past each filesystem.
+    #[test]
+    fn single_sided_disks_in_720k_slots_are_split_whole() {
+        let mut data = vec![0u8; SIZE_720K * 3];
+        for i in 0..3 {
+            let at = i * SIZE_720K;
+            data[at..at + SECTOR_SIZE].copy_from_slice(&boot_sector(720, 2));
+        }
+        let slices = split(&data).expect("split");
+        assert_eq!(slices.len(), 3);
+        assert_eq!(slices[1].lba_start, 1440);
+        assert!(slices.iter().all(|s| s.byte_len() == SIZE_720K));
+    }
+
+    /// A lone 720 kB disk with a 360 kB BPB is still one disk: its second
+    /// slot has no boot sector.
+    #[test]
+    fn a_single_720k_slot_with_a_360k_bpb_and_data_after_it_is_not_split() {
+        let mut data = vec![0xA5u8; SIZE_720K * 2];
+        data[..SECTOR_SIZE].copy_from_slice(&boot_sector(720, 2));
+        assert_eq!(split(&data), None);
+    }
+
     #[test]
     fn a_single_360k_disk_is_not_split() {
         let mut data = vec![0u8; SIZE_360K];
@@ -180,7 +212,7 @@ mod tests {
     fn a_slice_declaring_the_wrong_sector_count_prevents_the_split() {
         let mut data = concatenated(2, SIZE_720K);
         let at = SIZE_720K;
-        data[at..at + SECTOR_SIZE].copy_from_slice(&boot_sector(720, 3));
+        data[at..at + SECTOR_SIZE].copy_from_slice(&boot_sector(2880, 9));
         assert_eq!(split(&data), None);
     }
 
