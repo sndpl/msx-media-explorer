@@ -47,7 +47,7 @@
                         "url": "https://media-explorer.generation-msx.nl/",
                         "applicationCategory": "UtilitiesApplication",
                         "operatingSystem": "Windows 10, Windows 11, macOS, Linux",
-                        "softwareVersion": "0.6.2",
+                        "softwareVersion": "0.7.0",
                         "license": "https://spdx.org/licenses/GPL-2.0-or-later.html",
                         "isAccessibleForFree": true,
                         "offers": {
@@ -662,7 +662,7 @@
                 </div>
                 <div class="boot" aria-hidden="true">
                     <div>
-                        MSX Media Explorer <span id="ver">version 0.6.2</span>
+                        MSX Media Explorer <span id="ver">version 0.7.0</span>
                     </div>
                     <div class="blank"></div>
                     <div>Disk BASIC version 2.01</div>
@@ -872,7 +872,8 @@
                     <div class="feature">
                         <h3>Hex power tools</h3>
                         <p>
-                            Selectable bytes-per-row, byte selection and copy,
+                            Rows that fit the window (or a fixed
+                            bytes-per-row), byte selection and copy,
                             go-to-offset, named bookmarks, find (text or hex),
                             and a data inspector that decodes BSAVE headers,
                             boot-sector BPBs and FCBs at the cursor.
@@ -1128,9 +1129,45 @@
                 <div class="changelog">
                     <div class="release">
                         <div class="ver">
+                            v0.7.0
+                            <span class="date">7 Oct 2026</span>
+                            <span class="latest">LATEST</span>
+                        </div>
+                        <ul>
+                            <li>
+                                <strong>Hex view fills the window</strong> —
+                                rows now widen with the window instead of
+                                staying at 16 bytes with empty space beside
+                                them. They grow in steps of 8 bytes, or in whole
+                                groups when you've chosen a byte grouping, up to
+                                64 bytes per row. A fixed 8/16/24/32 is still
+                                available under View › Bytes per Row. Go to,
+                                Find, bookmarks and Copy all follow the visible
+                                row width.
+                            </li>
+                            <li>
+                                <strong>More multi-disk sets recognised</strong>
+                                — sets that store each 360 kB single-sided disk
+                                in a 720 kB slot (such as <em>1789 – La
+                                Révolution</em>) now open as one disk per slot
+                                instead of only the first disk. The full slot is
+                                kept, including the data a game reads beyond the
+                                filesystem.
+                            </li>
+                            <li>
+                                <strong>No junk files from raw data</strong> —
+                                when a disk's directory area holds game data
+                                instead of a directory (common on a game's data
+                                disks), it is no longer listed as files with
+                                garbled names. "DIR art" and credit entries that
+                                scene disks put in the directory still show.
+                            </li>
+                        </ul>
+                    </div>
+                    <div class="release">
+                        <div class="ver">
                             v0.6.2
                             <span class="date">15 Sep 2026</span>
-                            <span class="latest">LATEST</span>
                         </div>
                         <ul>
                             <li>

@@ -45,8 +45,10 @@ Website and downloads: <https://media-explorer.generation-msx.nl/>
   multi-disk release: `Aleste2.dsk` is three 720 kB disks in one 2.2 MB file)
   are split automatically, each disk becoming a top-level "Disk n" node you
   expand and browse like a partition. Detection is conservative — every slice
-  must carry a boot sector whose BPB declares exactly that slice's own sector
-  count — so an ordinary 720 kB disk is never mistaken for two 360 kB ones.
+  must carry a boot sector whose BPB declares that slice's own sector count
+  (or, in a 720 kB slot, a 360 kB single-sided disk, as in sets that pad each
+  disk to 720 kB) — so an ordinary 720 kB disk is never mistaken for two
+  360 kB ones.
   These disks are read-only for now; **File → Extract Disks…** writes all of
   them out as their own `.dsk` files, and right-clicking a single disk row
   offers **Extract this disk…** (`mediaexplorer-cli split` does the same). The CLI
@@ -65,7 +67,8 @@ The viewer offers tabs that adapt to the selected file:
 
 - **Info** — content-derived facts: a description of the file type, the
   BSAVE/BLOAD header when present, and graphics- or music-format details.
-- **Hex** — hex dump with an ASCII column and selectable bytes-per-row, plus
+- **Hex** — hex dump with an ASCII column and rows that fit the window (or a
+  fixed bytes-per-row), plus
   byte selection (click / shift-click / drag), copy of the selected bytes as hex
   or ASCII, go-to-offset, named bookmarks, and a data inspector that reads the
   bytes at the cursor as u8/i8/u16/i16/u24/u32/hex/binary and decodes MSX
