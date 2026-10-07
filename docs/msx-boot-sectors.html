@@ -6,7 +6,11 @@
         <title>MSX Boot Sectors: A Reference — MSX Media Explorer</title>
         <meta
             name="description"
-            content="Everything about sector 0 of an MSX floppy disk — layout, MSX-DOS 1 vs MSX-DOS 2 differences, the quirks that break strict PC FAT parsers, and how MSX Media Explorer reads, repairs, detects and installs boot sectors."
+            content="Sector 0 of an MSX floppy disk: its layout, MSX-DOS 1 vs DOS 2 differences, and the quirks that break strict PC FAT parsers."
+        />
+        <link
+            rel="canonical"
+            href="https://media-explorer.generation-msx.nl/msx-boot-sectors.html"
         />
         <meta
             property="og:title"
@@ -16,11 +20,73 @@
             property="og:description"
             content="Sector 0 of an MSX floppy: layout, DOS 1 vs DOS 2, VOL_ID, and why MSX disks break strict PC FAT parsers."
         />
-        <meta property="og:type" content="article" />
-        <link
-            rel="icon"
-            href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%232434dc'/><rect x='3' y='4' width='10' height='8' fill='%23eef0ff'/><rect x='5' y='6' width='6' height='4' fill='%232434dc'/></svg>"
+        <meta
+            property="og:url"
+            content="https://media-explorer.generation-msx.nl/msx-boot-sectors.html"
         />
+        <meta property="og:site_name" content="MSX Media Explorer" />
+        <meta
+            property="og:image"
+            content="https://media-explorer.generation-msx.nl/screenshots/hex-view.png"
+        />
+        <meta property="og:image:width" content="1400" />
+        <meta property="og:image:height" content="837" />
+        <meta
+            property="og:image:alt"
+            content="MSX Media Explorer's hex viewer showing an MSX-DOS 2 disk"
+        />
+        <meta property="og:type" content="article" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@graph": [
+                    {
+                        "@type": "TechArticle",
+                        "headline": "MSX Boot Sectors: A Reference",
+                        "description": "Sector 0 of an MSX floppy disk: its layout, MSX-DOS 1 vs DOS 2 differences, and the quirks that break strict PC FAT parsers.",
+                        "url": "https://media-explorer.generation-msx.nl/msx-boot-sectors.html",
+                        "image": "https://media-explorer.generation-msx.nl/screenshots/hex-view.png",
+                        "datePublished": "2026-07-09",
+                        "dateModified": "2026-07-09",
+                        "inLanguage": "en",
+                        "author": {
+                            "@type": "Organization",
+                            "name": "Generation-MSX",
+                            "url": "https://generation-msx.nl/"
+                        },
+                        "publisher": {
+                            "@type": "Organization",
+                            "name": "Generation-MSX",
+                            "url": "https://generation-msx.nl/"
+                        },
+                        "isPartOf": {
+                            "@type": "WebSite",
+                            "name": "MSX Media Explorer",
+                            "url": "https://media-explorer.generation-msx.nl/"
+                        }
+                    },
+                    {
+                        "@type": "BreadcrumbList",
+                        "itemListElement": [
+                            {
+                                "@type": "ListItem",
+                                "position": 1,
+                                "name": "MSX Media Explorer",
+                                "item": "https://media-explorer.generation-msx.nl/"
+                            },
+                            {
+                                "@type": "ListItem",
+                                "position": 2,
+                                "name": "MSX Boot Sectors",
+                                "item": "https://media-explorer.generation-msx.nl/msx-boot-sectors.html"
+                            }
+                        ]
+                    }
+                ]
+            }
+        </script>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
@@ -133,6 +199,11 @@
                 color: var(--ink-dim);
                 max-width: 64ch;
                 margin: 0;
+            }
+            .updated {
+                color: var(--ink-dim);
+                font-size: 13px;
+                margin: 14px 0 0;
             }
             .tagline strong {
                 color: var(--ink);
@@ -286,7 +357,7 @@
         <header>
             <div class="wrap">
                 <p class="crumb">
-                    <a href="index.html">&larr; MSX Media Explorer</a>
+                    <a href="./">&larr; MSX Media Explorer</a>
                 </p>
                 <h1>MSX Boot Sectors<span class="accent">_</span></h1>
                 <p class="tagline">
@@ -295,6 +366,9 @@
                     layout, the MSX-DOS 1 vs MSX-DOS 2 differences, the quirks
                     that break strict PC FAT parsers, and how MSX Media Explorer
                     reads, repairs, detects, and installs boot sectors.
+                </p>
+                <p class="updated">
+                    Last updated <time datetime="2026-07-09">9 July 2026</time>
                 </p>
             </div>
         </header>
@@ -1020,7 +1094,7 @@
         <footer>
             <div class="wrap">
                 <p>
-                    Part of <a href="index.html">MSX Media Explorer</a> — free
+                    Part of <a href="./">MSX Media Explorer</a> — free
                     software for browsing, inspecting and editing MSX disk and
                     tape images.
                 </p>

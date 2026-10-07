@@ -3,28 +3,128 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>
-            MSX Media Explorer — browse, inspect &amp; edit MSX disk and tape
-            images
-        </title>
+        <title>MSX Media Explorer — MSX disk &amp; tape image editor</title>
         <meta
             name="description"
             content="A free, cross-platform desktop tool for browsing, inspecting, editing and converting vintage MSX floppy, hard-disk and cassette images. Linux, Windows and macOS."
         />
+        <link rel="canonical" href="https://media-explorer.generation-msx.nl/" />
         <meta property="og:title" content="MSX Media Explorer" />
         <meta
             property="og:description"
             content="Browse, inspect, edit and convert vintage MSX disk and tape images on Linux, Windows and macOS."
         />
+        <meta property="og:url" content="https://media-explorer.generation-msx.nl/" />
+        <meta property="og:site_name" content="MSX Media Explorer" />
         <meta
             property="og:image"
             content="https://media-explorer.generation-msx.nl/screenshots/screen-view.png"
         />
-        <meta property="og:type" content="website" />
-        <link
-            rel="icon"
-            href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%232434dc'/><rect x='3' y='4' width='10' height='8' fill='%23eef0ff'/><rect x='5' y='6' width='6' height='4' fill='%232434dc'/></svg>"
+        <meta property="og:image:width" content="1400" />
+        <meta property="og:image:height" content="837" />
+        <meta
+            property="og:image:alt"
+            content="MSX Media Explorer showing a decoded MSX title screen from a disk image"
         />
+        <meta property="og:type" content="website" />
+        <meta name="twitter:card" content="summary_large_image" />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <!-- Keep softwareVersion in step with the #ver badge on each release. -->
+        <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@graph": [
+                    {
+                        "@type": "Organization",
+                        "@id": "https://generation-msx.nl/#org",
+                        "name": "Generation-MSX",
+                        "url": "https://generation-msx.nl/"
+                    },
+                    {
+                        "@type": "SoftwareApplication",
+                        "name": "MSX Media Explorer",
+                        "description": "A free, cross-platform desktop tool for browsing, inspecting, editing and converting vintage MSX floppy, hard-disk and cassette images. A modern, open-source successor to the Windows-only DskExplorer.",
+                        "url": "https://media-explorer.generation-msx.nl/",
+                        "applicationCategory": "UtilitiesApplication",
+                        "operatingSystem": "Windows 10, Windows 11, macOS, Linux",
+                        "softwareVersion": "0.6.2",
+                        "license": "https://spdx.org/licenses/GPL-2.0-or-later.html",
+                        "isAccessibleForFree": true,
+                        "offers": {
+                            "@type": "Offer",
+                            "price": "0",
+                            "priceCurrency": "EUR"
+                        },
+                        "downloadUrl": "https://github.com/sndpl/msx-media-explorer/releases/latest",
+                        "screenshot": "https://media-explorer.generation-msx.nl/screenshots/screen-view.png",
+                        "author": { "@id": "https://generation-msx.nl/#org" },
+                        "publisher": { "@id": "https://generation-msx.nl/#org" },
+                        "sameAs": "https://github.com/sndpl/msx-media-explorer"
+                    },
+                    {
+                        "@type": "FAQPage",
+                        "mainEntity": [
+                            {
+                                "@type": "Question",
+                                "name": "What is MSX Media Explorer?",
+                                "acceptedAnswer": {
+                                    "@type": "Answer",
+                                    "text": "MSX Media Explorer is a free desktop app for Linux, Windows and macOS that opens vintage MSX floppy, hard-disk and cassette images. You can browse the files, view them as hex, text, BASIC, Z80 disassembly or MSX graphics, add, rename and delete files, and convert between image formats."
+                                }
+                            },
+                            {
+                                "@type": "Question",
+                                "name": "Is it free, and is the source code available?",
+                                "acceptedAnswer": {
+                                    "@type": "Answer",
+                                    "text": "Yes. MSX Media Explorer is free software by Generation-MSX, licensed under the GPL version 2 or later. The full Rust source code, issue tracker and every release are on GitHub at github.com/sndpl/msx-media-explorer."
+                                }
+                            },
+                            {
+                                "@type": "Question",
+                                "name": "How do I open an MSX .dsk file on a Mac or Linux?",
+                                "acceptedAnswer": {
+                                    "@type": "Answer",
+                                    "text": "Download the macOS .dmg or the Linux binary, start the app and open the .dsk with File > Open or by dropping it on the window. The file tree shows the disk's contents, and selecting a file shows it in the Hex, Text, BASIC or Screen view."
+                                }
+                            },
+                            {
+                                "@type": "Question",
+                                "name": "How is MSX Media Explorer different from DskExplorer?",
+                                "acceptedAnswer": {
+                                    "@type": "Answer",
+                                    "text": "DskExplorer only runs on Windows. MSX Media Explorer runs on Linux, Windows and macOS, and also opens .xsa, .dmk, MSXPLAYer .sav, openMSX hard-disk images and .cas/.tsx tapes. It adds a BASIC detokenizer, a graphics viewer, a disk map, FAT integrity checks and a command-line companion."
+                                }
+                            },
+                            {
+                                "@type": "Question",
+                                "name": "Why does macOS warn me the first time I open it?",
+                                "acceptedAnswer": {
+                                    "@type": "Answer",
+                                    "text": "The macOS app is ad-hoc signed but not notarized by Apple, so Gatekeeper asks for confirmation on first launch. Right-click the app, choose Open and confirm once. After that it starts normally."
+                                }
+                            },
+                            {
+                                "@type": "Question",
+                                "name": "Can I edit .dmk or hard-disk images?",
+                                "acceptedAnswer": {
+                                    "@type": "Answer",
+                                    "text": "Not directly. Raw-track .dmk images and openMSX multi-partition hard-disk images open read-only. To change a .dmk, save it as a .dsk first and edit that. Floppy formats such as .dsk, .img, .msx, .ddi, .xsa and .sav are fully editable."
+                                }
+                            },
+                            {
+                                "@type": "Question",
+                                "name": "Is there a command-line version?",
+                                "acceptedAnswer": {
+                                    "@type": "Answer",
+                                    "text": "Yes. Every release ships mediaexplorer-cli for macOS, Windows and Linux. It runs on the same engine as the app and offers ls, add, extract, rm, mv, mkdir, new, bootsector, convert and split for scripting and batch work."
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        </script>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
         <link
@@ -540,7 +640,11 @@
             <div class="wrap hero">
                 <div>
                     <h1>
-                        MSX Media<br />Explorer<span class="accent">_</span>
+                        MSX Media <br />Explorer<span
+                            class="accent"
+                            aria-hidden="true"
+                            >_</span
+                        >
                     </h1>
                     <p class="tagline">
                         A free, cross-platform desktop tool for
@@ -548,7 +652,9 @@
                             >browsing, inspecting, editing and
                             converting</strong
                         >
-                        vintage MSX floppy, hard-disk and cassette images.
+                        vintage MSX floppy, hard-disk and cassette images. A
+                        modern, open-source successor to the Windows-only
+                        DskExplorer.
                     </p>
                     <div class="cta-row">
                         <a class="btn" href="#download">Download</a>
@@ -650,11 +756,17 @@
                 <div class="shots">
                     <figure>
                         <a href="screenshots/hex-view.png"
-                            ><img
-                                src="screenshots/hex-view.png"
-                                loading="lazy"
-                                alt="File tree of an MSX-DOS 2 disk with COMMAND2.COM open in the hex viewer"
-                        /></a>
+                            ><picture
+                                ><source
+                                    srcset="screenshots/hex-view.webp"
+                                    type="image/webp" /><img
+                                    src="screenshots/hex-view.png"
+                                    width="1400"
+                                    height="837"
+                                    loading="lazy"
+                                    alt="File tree of an MSX-DOS 2 disk with COMMAND2.COM open in the hex viewer"
+                                /></picture
+                        ></a>
                         <figcaption>
                             <strong>Hex view</strong> — byte-level inspection
                             with an ASCII column, selection, go-to-offset and a
@@ -663,11 +775,17 @@
                     </figure>
                     <figure>
                         <a href="screenshots/basic-view.png"
-                            ><img
-                                src="screenshots/basic-view.png"
-                                loading="lazy"
-                                alt="A tokenized MSX-BASIC program shown as a detokenized listing"
-                        /></a>
+                            ><picture
+                                ><source
+                                    srcset="screenshots/basic-view.webp"
+                                    type="image/webp" /><img
+                                    src="screenshots/basic-view.png"
+                                    width="1400"
+                                    height="837"
+                                    loading="lazy"
+                                    alt="A tokenized MSX-BASIC program shown as a detokenized listing"
+                                /></picture
+                        ></a>
                         <figcaption>
                             <strong>BASIC view</strong> — tokenized MSX-BASIC
                             programs detokenized into readable listings, with
@@ -676,11 +794,17 @@
                     </figure>
                     <figure>
                         <a href="screenshots/screen-view.png"
-                            ><img
-                                src="screenshots/screen-view.png"
-                                loading="lazy"
-                                alt="The Dark Castle title screen rendered from a .PIC file inside the disk image"
-                        /></a>
+                            ><picture
+                                ><source
+                                    srcset="screenshots/screen-view.webp"
+                                    type="image/webp" /><img
+                                    src="screenshots/screen-view.png"
+                                    width="1400"
+                                    height="837"
+                                    loading="lazy"
+                                    alt="The Dark Castle title screen rendered from a .PIC file inside the disk image"
+                                /></picture
+                        ></a>
                         <figcaption>
                             <strong>Screen view</strong> — MSX graphics decoded
                             straight from the disk.
@@ -688,11 +812,17 @@
                     </figure>
                     <figure>
                         <a href="screenshots/map-view.png"
-                            ><img
-                                src="screenshots/map-view.png"
-                                loading="lazy"
-                                alt="A colored disk-usage map showing reserved, FAT, root, used and free sectors"
-                        /></a>
+                            ><picture
+                                ><source
+                                    srcset="screenshots/map-view.webp"
+                                    type="image/webp" /><img
+                                    src="screenshots/map-view.png"
+                                    width="1400"
+                                    height="837"
+                                    loading="lazy"
+                                    alt="A colored disk-usage map showing reserved, FAT, root, used and free sectors"
+                                /></picture
+                        ></a>
                         <figcaption>
                             <strong>Disk map</strong> — every sector classified
                             (reserved / FAT / root / used / free); click a cell
@@ -733,7 +863,10 @@
                             Add, rename and delete files; edit bytes in hex;
                             edit sectors in place. Writes go back into the
                             original container — and the boot sector is never
-                            clobbered.
+                            clobbered
+                            (<a href="msx-boot-sectors.html"
+                                >why the boot sector matters</a
+                            >).
                         </p>
                     </div>
                     <div class="feature">
@@ -893,6 +1026,98 @@
                         </td>
                     </tr>
                 </table>
+            </div>
+        </section>
+
+        <section id="faq">
+            <div class="wrap">
+                <h2>FAQ</h2>
+                <p class="section-note">Quick answers to common questions.</p>
+                <div class="features">
+                    <div class="feature">
+                        <h3>What is MSX Media Explorer?</h3>
+                        <p>
+                            A free desktop app for Linux, Windows and macOS that
+                            opens vintage MSX floppy, hard-disk and cassette
+                            images. You can browse the files, view them as hex,
+                            text, BASIC, Z80 disassembly or MSX graphics, add,
+                            rename and delete files, and convert between image
+                            formats.
+                        </p>
+                    </div>
+                    <div class="feature">
+                        <h3>Is it free, and is the source code available?</h3>
+                        <p>
+                            Yes. MSX Media Explorer is free software by
+                            Generation-MSX, licensed under the GPL version 2 or
+                            later. The full Rust source code, issue tracker and
+                            every release are on
+                            <a href="https://github.com/sndpl/msx-media-explorer"
+                                >GitHub</a
+                            >.
+                        </p>
+                    </div>
+                    <div class="feature">
+                        <h3>How do I open an MSX .dsk file on a Mac or Linux?</h3>
+                        <p>
+                            <a href="#download">Download</a> the macOS
+                            <code>.dmg</code> or the Linux binary, start the app
+                            and open the <code>.dsk</code> with File &rarr; Open
+                            or by dropping it on the window. The file tree shows
+                            the disk's contents, and selecting a file shows it
+                            in the Hex, Text, BASIC or Screen view.
+                        </p>
+                    </div>
+                    <div class="feature">
+                        <h3>How is MSX Media Explorer different from DskExplorer?</h3>
+                        <p>
+                            DskExplorer only runs on Windows. MSX Media Explorer
+                            runs on Linux, Windows and macOS, and also opens
+                            <code>.xsa</code>, <code>.dmk</code>, MSXPLAYer
+                            <code>.sav</code>, openMSX hard-disk images and
+                            <code>.cas</code>/<code>.tsx</code> tapes. It adds a
+                            BASIC detokenizer, a graphics viewer, a disk map,
+                            FAT integrity checks and a command-line companion.
+                        </p>
+                    </div>
+                    <div class="feature">
+                        <h3>Why does macOS warn me the first time I open it?</h3>
+                        <p>
+                            The macOS app is ad-hoc signed but not notarized by
+                            Apple, so Gatekeeper asks for confirmation on first
+                            launch. Right-click the app, choose
+                            <code>Open</code> and confirm once. After that it
+                            starts normally.
+                        </p>
+                    </div>
+                    <div class="feature">
+                        <h3>Can I edit .dmk or hard-disk images?</h3>
+                        <p>
+                            Not directly. Raw-track <code>.dmk</code> images and
+                            openMSX multi-partition hard-disk images open
+                            read-only. To change a <code>.dmk</code>, save it as
+                            a <code>.dsk</code> first and edit that. Floppy
+                            formats such as <code>.dsk</code>,
+                            <code>.img</code>, <code>.msx</code>,
+                            <code>.ddi</code>, <code>.xsa</code> and
+                            <code>.sav</code> are fully editable.
+                        </p>
+                    </div>
+                    <div class="feature">
+                        <h3>Is there a command-line version?</h3>
+                        <p>
+                            Yes. Every release ships
+                            <code>mediaexplorer-cli</code> for macOS, Windows
+                            and Linux. It runs on the same engine as the app and
+                            offers <code>ls</code>, <code>add</code>,
+                            <code>extract</code>, <code>rm</code>,
+                            <code>mv</code>, <code>mkdir</code>,
+                            <code>new</code>, <code>bootsector</code>,
+                            <code>convert</code> and <code>split</code> for
+                            scripting and batch work.
+                        </p>
+                    </div>
+                </div>
             </div>
         </section>
 
@@ -1186,7 +1411,23 @@
 
         <footer>
             <div class="wrap">
-                <p>MSX Media Explorer is free software.</p>
+                <p>
+                    MSX Media Explorer is free software (GPL-2.0-or-later) by
+                    Generation-MSX.
+                    <a href="https://github.com/sndpl/msx-media-explorer"
+                        >Source</a
+                    >,
+                    <a
+                        href="https://github.com/sndpl/msx-media-explorer/issues"
+                        >issues</a
+                    >
+                    and
+                    <a
+                        href="https://github.com/sndpl/msx-media-explorer/releases"
+                        >releases</a
+                    >
+                    on GitHub.
+                </p>
                 <p>
                     Reading material:
                     <a href="msx-boot-sectors.html"

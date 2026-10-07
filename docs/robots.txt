@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://media-explorer.generation-msx.nl/sitemap.xml

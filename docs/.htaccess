@@ -1,0 +1,12 @@
+# Served from docs/ on the VPS. Needs mod_rewrite and mod_headers.
+ErrorDocument 404 /404.html
+
+# /index.html duplicates / ; send it to the canonical URL.
+RewriteEngine On
+RewriteCond %{THE_REQUEST} \s/index\.html[\s?]
+RewriteRule ^index\.html$ / [R=301,L]
+
+# The .md source stays reachable (the README links it) but out of search results.
+<FilesMatch "\.md$">
+    Header set X-Robots-Tag "noindex"
+</FilesMatch>
