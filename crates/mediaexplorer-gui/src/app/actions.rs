@@ -87,7 +87,7 @@ impl MediaExplorerApp {
     pub(crate) fn jump_to_current_match(&mut self) {
         if let Some(&offset) = self.search_matches.get(self.search_pos) {
             self.pending_scroll_row = Some(if self.view_mode == ViewMode::Hex {
-                offset / self.settings.hex.bytes_per_row.max(1)
+                offset / self.hex_bpr()
             } else {
                 // Listing views scroll by line (precomputed per match).
                 self.search_match_lines
@@ -317,6 +317,7 @@ impl MediaExplorerApp {
             "view.lnf.hex" => self.settings.hex.line_number_hex = true,
             "view.lnf.dec" => self.settings.hex.line_number_hex = false,
             "view.group.none" => self.settings.hex.grouping = ByteGrouping::None,
+            "view.bpr.auto" => self.settings.hex.auto_bytes_per_row = true,
             "encoding.auto" => {
                 self.charset_auto = true;
                 self.autodetect_charset();
@@ -349,6 +350,7 @@ impl MediaExplorerApp {
             _ if id.starts_with("view.bpr.") => {
                 if let Some(n) = id.strip_prefix("view.bpr.").and_then(|n| n.parse().ok()) {
                     self.settings.hex.bytes_per_row = n;
+                    self.settings.hex.auto_bytes_per_row = false;
                 }
             }
             _ if id.starts_with("view.group.") => {
@@ -476,8 +478,14 @@ impl MediaExplorerApp {
                 ui.checkbox(&mut self.settings.hex.show_columns, t!("menu.columns"));
                 ui.separator();
                 ui.menu_button(t!("menu.bytes_per_row"), |ui| {
+                    let hex = &mut self.settings.hex;
+                    ui.radio_value(&mut hex.auto_bytes_per_row, true, t!("menu.automatic"));
                     for n in crate::settings::ROW_SIZES {
-                        ui.radio_value(&mut self.settings.hex.bytes_per_row, n, n.to_string());
+                        let on = !hex.auto_bytes_per_row && hex.bytes_per_row == n;
+                        if ui.radio(on, n.to_string()).clicked() {
+                            hex.bytes_per_row = n;
+                            hex.auto_bytes_per_row = false;
+                        }
                     }
                 });
                 ui.menu_button(t!("menu.line_number_format"), |ui| {

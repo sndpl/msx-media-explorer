@@ -389,7 +389,12 @@ impl MediaExplorerApp {
                 &content.checksums,
             ),
             ViewMode::Hex => {
-                dump_to_string(&content.bytes, hex_config(&self.settings.hex), self.charset)
+                // Copy the rows as shown, including an automatically fitted width.
+                let opts = HexViewOptions {
+                    bytes_per_row: self.hex_bpr(),
+                    ..self.settings.hex
+                };
+                dump_to_string(&content.bytes, hex_config(&opts), self.charset)
             }
             ViewMode::Text => text::to_text(
                 &content.bytes,

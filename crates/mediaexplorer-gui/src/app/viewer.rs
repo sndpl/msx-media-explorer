@@ -230,7 +230,7 @@ impl MediaExplorerApp {
         let highlight = self
             .search_matches
             .get(self.search_pos)
-            .map(|&o| o / self.settings.hex.bytes_per_row.max(1));
+            .map(|&o| o / self.hex_bpr());
 
         if self.view_mode == ViewMode::Hex {
             // The hex view needs `&mut self` (selection state + inspector panel),
@@ -308,6 +308,31 @@ impl MediaExplorerApp {
         }
     }
 
+    /// Bytes per row of the file hex view: the fixed menu choice, or with
+    /// automatic sizing on, the width fitted on the last frame.
+    pub(crate) fn hex_bpr(&self) -> usize {
+        let hex = &self.settings.hex;
+        if hex.auto_bytes_per_row && self.hex.fit_bpr > 0 {
+            self.hex.fit_bpr
+        } else {
+            hex.bytes_per_row.max(1)
+        }
+    }
+
+    /// Fit the automatic bytes-per-row to the width left in `ui` for the dump
+    /// (after any side panels), less the vertical scrollbar.
+    fn fit_hex_bpr(&mut self, ui: &egui::Ui, max_addr: usize) {
+        let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+        let char_w = ui
+            .painter()
+            .layout_no_wrap("0".to_string(), font_id, egui::Color32::WHITE)
+            .rect
+            .width();
+        let width = ui.available_width() - ui.spacing().scroll.allocated_width();
+        let avail_cols = (width / char_w.max(1.0)).max(0.0) as usize;
+        self.hex.fit_bpr = fit_bytes_per_row(&self.settings.hex, avail_cols, max_addr);
+    }
+
     /// The Hex view: an optional data-inspector panel docked at the bottom and
     /// the interactive hex dump filling the rest. Selection gestures update
     /// [`MediaExplorerApp::hex`].
@@ -322,7 +347,6 @@ impl MediaExplorerApp {
             return;
         }
         let charset = self.charset;
-        let bpr = self.settings.hex.bytes_per_row.max(1);
         let origin = self
             .hex
             .cursor
@@ -362,6 +386,11 @@ impl MediaExplorerApp {
             selection: self.hex.selection,
         };
         let opts = self.settings.hex;
+        if opts.auto_bytes_per_row {
+            let len = self.content.as_ref().unwrap().bytes.len();
+            self.fit_hex_bpr(ui, len);
+        }
+        let bpr = self.hex_bpr();
         let gesture = {
             let bytes = &self.content.as_ref().unwrap().bytes;
             render_hex(ui, bytes, bpr, scroll_to, highlight, charset, sel, &opts)
@@ -397,7 +426,7 @@ impl MediaExplorerApp {
         }
         self.hex.cursor = Some(off);
         self.hex.selection = None;
-        self.pending_scroll_row = Some(off / self.settings.hex.bytes_per_row.max(1));
+        self.pending_scroll_row = Some(off / self.hex_bpr());
         self.status = t!("status.jumped_to", offset => format!("{off:06X}")).to_string();
     }
 
@@ -457,7 +486,7 @@ impl MediaExplorerApp {
             if let Some(off) = goto {
                 self.hex.cursor = Some(off);
                 self.hex.selection = None;
-                self.pending_scroll_row = Some(off / self.settings.hex.bytes_per_row.max(1));
+                self.pending_scroll_row = Some(off / self.hex_bpr());
             }
             if let Some(i) = remove {
                 self.hex.bookmarks.remove(i);

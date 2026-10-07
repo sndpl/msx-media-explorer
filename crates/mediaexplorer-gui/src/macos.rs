@@ -171,7 +171,10 @@ fn check_state(id: &str, s: &Settings) -> bool {
         "view.lnf.hex" => s.hex.line_number_hex,
         "view.lnf.dec" => !s.hex.line_number_hex,
         "view.group.none" => s.hex.grouping == ByteGrouping::None,
-        _ if id.starts_with("view.bpr.") => s.hex.bytes_per_row == id_suffix(id, "view.bpr."),
+        "view.bpr.auto" => s.hex.auto_bytes_per_row,
+        _ if id.starts_with("view.bpr.") => {
+            !s.hex.auto_bytes_per_row && s.hex.bytes_per_row == id_suffix(id, "view.bpr.")
+        }
         _ => s.hex.grouping == ByteGrouping::Of(id_suffix(id, "view.group.")),
     }
 }
@@ -308,6 +311,8 @@ pub fn build_menu(ctx: &egui::Context, settings: &Settings) -> MacMenu {
     let _ = lnf.append_items(&[&lnf_dec, &lnf_hex]);
 
     let bpr = Submenu::new(t!("menu.bytes_per_row"), true);
+    let bpr_auto = check("view.bpr.auto", t!("menu.automatic"), settings, &mut checks);
+    let _ = bpr.append(&bpr_auto);
     for n in ROW_SIZES {
         let item = check(
             Box::leak(format!("view.bpr.{n}").into_boxed_str()),
@@ -477,6 +482,24 @@ mod tests {
         assert!(check_state("view.group.4", &s));
         assert!(!check_state("view.group.none", &s));
         assert!(!check_state("view.group.8", &s));
+    }
+
+    /// Automatic sizing and a fixed row size are one radio group: only one is
+    /// checked at a time.
+    #[test]
+    fn bytes_per_row_check_follows_auto() {
+        let auto = Settings::default();
+        assert!(check_state("view.bpr.auto", &auto));
+        assert!(!check_state("view.bpr.16", &auto));
+        let fixed = Settings {
+            hex: HexViewOptions {
+                auto_bytes_per_row: false,
+                ..HexViewOptions::default()
+            },
+            ..Settings::default()
+        };
+        assert!(!check_state("view.bpr.auto", &fixed));
+        assert!(check_state("view.bpr.16", &fixed));
     }
 
     #[test]

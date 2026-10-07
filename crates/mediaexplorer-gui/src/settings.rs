@@ -116,8 +116,12 @@ pub struct HexViewOptions {
     pub show_ascii: bool,
     /// Show the column-offset header ruler.
     pub show_columns: bool,
-    /// Bytes shown per row in the file hex view (one of [`ROW_SIZES`]).
+    /// Bytes shown per row in the file hex view (one of [`ROW_SIZES`]) when
+    /// [`Self::auto_bytes_per_row`] is off.
     pub bytes_per_row: usize,
+    /// Size the file hex view's rows to the available width instead of using
+    /// `bytes_per_row`.
+    pub auto_bytes_per_row: bool,
     /// How hex bytes are clustered: ungrouped (no spaces) or N contiguous
     /// bytes per group, separated by a single space.
     pub grouping: ByteGrouping,
@@ -134,6 +138,7 @@ impl Default for HexViewOptions {
             show_ascii: true,
             show_columns: true,
             bytes_per_row: 16,
+            auto_bytes_per_row: true,
             // One byte per group = the classic space-separated hex dump.
             grouping: ByteGrouping::Of(1),
             hide_null_bytes: false,

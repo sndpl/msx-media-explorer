@@ -16,7 +16,7 @@ use msx_disk::view::hex::{ascii_char, dump_to_string, HexConfig};
 use msx_disk::view::text::{self, ControlMode};
 use msx_disk::{charset, DirEntry, ImageFormat, MsxCharset};
 
-use crate::hexlayout::{HexLayout, HexRegion};
+use crate::hexlayout::{fit_bytes_per_row, HexLayout, HexRegion};
 use crate::holdrepeat::{repeat_button, HoldRepeat};
 use crate::i18n::Lang;
 use crate::settings::{ByteGrouping, HexViewOptions, Settings, SETTINGS_KEY};
@@ -314,6 +314,9 @@ pub(crate) struct HexUiState {
     /// Which column the active selection was made in; decides whether
     /// Cmd/Ctrl+C copies the hex bytes or their ASCII rendering.
     region: HexRegion,
+    /// Bytes per row the automatic sizing fitted on the last frame (0 before
+    /// the first one).
+    fit_bpr: usize,
 }
 
 impl HexUiState {
