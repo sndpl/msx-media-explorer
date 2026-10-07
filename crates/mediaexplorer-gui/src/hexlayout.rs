@@ -169,6 +169,36 @@ impl HexLayout {
     }
 }
 
+/// Widest row the automatic bytes-per-row will pick; past this a row stops
+/// being readable at a glance.
+pub const MAX_AUTO_BYTES_PER_ROW: usize = 64;
+
+/// Bytes per row for automatic sizing: the widest row whose layout fits in
+/// `avail_cols` character columns, stepping by 8 bytes or, for a grouping that
+/// does not divide 8, by the least common multiple with it so every row ends
+/// on a whole group (groups of 3 step by 24). Never less than one step.
+pub fn fit_bytes_per_row(opts: &HexViewOptions, avail_cols: usize, max_addr: usize) -> usize {
+    let group = opts.grouping.size().unwrap_or(1);
+    let step = lcm(group, 8);
+    let mut best = step;
+    let mut bpr = step * 2;
+    while bpr <= MAX_AUTO_BYTES_PER_ROW
+        && HexLayout::new(opts, bpr, max_addr).total_cols() <= avail_cols
+    {
+        best = bpr;
+        bpr += step;
+    }
+    best
+}
+
+fn lcm(a: usize, b: usize) -> usize {
+    let (mut x, mut y) = (a, b);
+    while y != 0 {
+        (x, y) = (y, x % y);
+    }
+    a / x * b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,6 +206,58 @@ mod tests {
 
     fn defaults() -> HexViewOptions {
         HexViewOptions::default()
+    }
+
+    /// Columns a row of `bpr` bytes needs under `opts`.
+    fn cols(opts: &HexViewOptions, bpr: usize) -> usize {
+        HexLayout::new(opts, bpr, 0).total_cols()
+    }
+
+    #[test]
+    fn auto_width_steps_by_8_and_picks_the_widest_row_that_fits() {
+        let o = defaults();
+        assert_eq!(fit_bytes_per_row(&o, cols(&o, 16), 0), 16);
+        assert_eq!(fit_bytes_per_row(&o, cols(&o, 32), 0), 32);
+        // One column short of 32 falls back to the previous step.
+        assert_eq!(fit_bytes_per_row(&o, cols(&o, 32) - 1, 0), 24);
+    }
+
+    #[test]
+    fn auto_width_never_drops_below_one_step_or_exceeds_the_cap() {
+        let o = defaults();
+        assert_eq!(fit_bytes_per_row(&o, 0, 0), 8);
+        assert_eq!(fit_bytes_per_row(&o, 10_000, 0), MAX_AUTO_BYTES_PER_ROW);
+    }
+
+    #[test]
+    fn auto_width_ends_every_row_on_a_whole_group() {
+        let of = |n| HexViewOptions {
+            grouping: ByteGrouping::Of(n),
+            ..defaults()
+        };
+        // Groups of 3 step by 24, so a row never splits a group.
+        assert_eq!(fit_bytes_per_row(&of(3), cols(&of(3), 47), 0), 24);
+        assert_eq!(fit_bytes_per_row(&of(3), cols(&of(3), 48), 0), 48);
+        // Groups of 32 step by 32.
+        assert_eq!(fit_bytes_per_row(&of(32), cols(&of(32), 63), 0), 32);
+        assert_eq!(fit_bytes_per_row(&of(32), cols(&of(32), 64), 0), 64);
+        // Ungrouped bytes are narrower, so the same width fits more of them.
+        let none = HexViewOptions {
+            grouping: ByteGrouping::None,
+            ..defaults()
+        };
+        // 136 columns fit 32 single-spaced bytes, but 40 contiguous ones.
+        assert_eq!(fit_bytes_per_row(&none, cols(&defaults(), 32), 0), 40);
+    }
+
+    #[test]
+    fn auto_width_follows_hidden_columns() {
+        let ascii_only = HexViewOptions {
+            show_hex: false,
+            ..defaults()
+        };
+        // Without the hex columns a row is just address + text: 64 fit easily.
+        assert_eq!(fit_bytes_per_row(&ascii_only, cols(&defaults(), 16), 0), 64);
     }
 
     #[test]
