@@ -653,6 +653,41 @@ fn concatenated_disks_split_into_one_volume_each() {
     }
 }
 
+/// `1789 - La Revolution.dsk` is three 720 kB slots, each holding a 360 kB
+/// single-sided filesystem (BPB: 720 sectors) followed by raw data. It must
+/// split on the slots and every disk must mount; only disk 1 holds files (2 and
+/// 3 are raw-sector data disks behind a copy of its boot sector).
+#[test]
+fn single_sided_disks_in_720k_slots_split_into_one_volume_each() {
+    use msx_disk::fs::multidisk;
+    use msx_disk::image::geometry::SIZE_720K;
+
+    let path = skip_if_absent!("1789 - La Revolution.dsk");
+    let image = DiskImage::open(&path).expect("open");
+    let slices = multidisk::split(image.data()).expect("three concatenated disks");
+
+    assert_eq!(slices.len(), 3);
+    for (i, slice) in slices.iter().enumerate() {
+        assert_eq!(slice.lba_start, i * 1440);
+        assert_eq!(slice.byte_len(), SIZE_720K);
+        let volume = Volume::from_image_slice(image.data(), slice.lba_start, slice.sector_count)
+            .unwrap_or_else(|| panic!("disk {} does not mount", i + 1));
+        assert_eq!(volume.fat_type(), FatType::Fat12);
+        let tree = volume.tree();
+        if i == 0 {
+            assert!(tree.iter().any(|e| e.name == "AUTOEXEC.BAS"));
+        } else {
+            // The raw data in these root directories must not list as files.
+            assert!(
+                tree.is_empty(),
+                "disk {} lists {} junk entries",
+                i + 1,
+                tree.len()
+            );
+        }
+    }
+}
+
 /// The corpus guard for the split: no ordinary single-disk image may be torn
 /// apart, whatever its length happens to divide by.
 #[test]
